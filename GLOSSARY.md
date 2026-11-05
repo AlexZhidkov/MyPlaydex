@@ -1,6 +1,6 @@
-# Perth Sports & Activities Discovery
+# MyPlaydex
 
-A platform for discovering casual sports games, training sessions, and community sports clubs across Greater Perth, Western Australia.
+A global platform for discovering casual sports games, training sessions, and community sports clubs, launching initially across Greater Perth, Western Australia.
 
 ## Language
 

@@ -1,10 +1,10 @@
 ## Destination
 
-A build-ready Product & Technical Architecture Specification for the Perth Sports & Activities Discovery Platform, defining the data ingestion pipeline, domain schema, geo-search architecture, and verification lifecycle.
+A build-ready Product & Technical Architecture Specification for MyPlaydex (launching with Greater Perth sports discovery), defining the data ingestion pipeline, domain schema, geo-search architecture, and verification lifecycle.
 
 ## Notes
 
-Domain: Perth amateur and social sports discovery;
+Domain: MyPlaydex amateur and social sports discovery; Launch market: Greater Perth;
 Skills to consult: `research`, `prototype`, `grilling`, `domain-modeling`;
 Stack preferences: Firebase (Firestore + Hosting + Blaze tier), Vanilla JS + Leaflet.js (OpenStreetMap), GitHub Actions for scheduled crawling.
 
