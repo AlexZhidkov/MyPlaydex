@@ -16,13 +16,15 @@ Stack preferences: Firebase (Firestore + Hosting + Blaze tier), Vanilla JS + Lea
 - [03-grill-activity-taxonomy-and-filters](issues/03-grill-activity-taxonomy-and-filters.md): Lock 11 discrete sport categories (including separate tennis, pickleball, running, fitness, walking), binary Free-Only cost toggle, and basic gender/age filters; omit activity format tiers for MVP.
 - [04-prototype-vanilla-js-leaflet-map](issues/04-prototype-vanilla-js-leaflet-map.md): Adopt pure JS pub-sub store with Split Explorer (Variant A) dual-view for bi-directional map-pin/card synchronization and zero-cost client-side radius adjustments.
 - [05-task-setup-github-actions-crawler-harness](issues/05-task-setup-github-actions-crawler-harness.md): Configure GitHub Actions daily workflow (01:00 AWST, Node.js 22) with Firebase Admin SDK, precision-9 geohash generation, Activity schema sanitization, and <=500 batch Firestore upserts.
+- [06-grill-club-listing-verification-lifecycle](issues/06-grill-club-listing-verification-lifecycle.md): Curate listings via crawlers and manual mailto suggestions for MVP; rule out self-serve submission and moderation queues; expire one-off activities deterministically by date.
+- [07-grill-crawler-resilience-and-alerting](issues/07-grill-crawler-resilience-and-alerting.md): Enforce fail-fast execution without retries, fail on zero-yield (<1 listing) or >20% schema invalidation, write GitHub Step Summaries, and rely on native Actions email alerts.
+- [08-grill-url-routing-and-seo-meta](issues/08-grill-url-routing-and-seo-meta.md): Use HTML5 query parameters with pushState for filter changes and debounced replaceState for map dragging; deep-link activities via `?activity=<id>`; embed static Open Graph shell on Firebase Hosting.
+- [09-task-synthesize-architecture-spec](issues/09-task-synthesize-architecture-spec.md): Synthesize all technical decisions, schemas, crawler harness patterns, geohash search mechanisms, and UX flows into a canonical build-ready architecture specification at docs/spec.md.
 
 ## Not yet specified
 
 <!-- see "Fog of war": in-scope fog you can't ticket yet; graduates as the frontier advances -->
-- Organizer self-serve listing submission and anti-spam verification mechanism.
-- URL structure and dynamic meta tags for local SEO (e.g., per-suburb and per-sport landing pages).
-- Crawler resilience, schema drift detection, and breakage alerting.
+*(All initial fog has graduated into frontier tickets)*
 
 ## Out of scope
 
@@ -32,3 +34,5 @@ Stack preferences: Firebase (Firestore + Hosting + Blaze tier), Vanilla JS + Lea
 - Automated heartbeat verification and stale listing pruning (ruled out for MVP to minimize complexity; deferred to post-MVP).
 - Native mobile applications (iOS/Android) — responsive web only.
 - Attendee account creation or user login (open, zero-friction discovery).
+- Self-serve Club listing publication forms, automated club claiming, and pre-publish moderation queues (ruled out for MVP to eliminate operational complexity; defer to post-MVP).
+- Dynamic server-side rendering (SSR) via Cloud Functions / Cloud Run for per-activity Open Graph meta tags (deferred to post-MVP; static shell on Firebase Hosting).
