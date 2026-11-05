@@ -9,4 +9,4 @@ How should the Firestore document model and index structure be designed to suppo
 
 Store precision-9 geohash (`venue.geohash`) on write, but execute proximity discovery via temporal + sport category queries with client-side Haversine distance filtering. This eliminates the 9-query multi-box Firestore overhead, keeps reads well under the 50,000/day free tier for Perth's ~500–1,500 activities, and enables zero-cost interactive map pans and radius adjustments.
 
-Detailed research report captured on branch `research/02-research-firestore-geohash-schema` at [`docs/research/02-firestore-geohash-schema.md`](file:///home/alex/Source/MyPlaydex/docs/research/02-firestore-geohash-schema.md).
+Detailed research report captured on branch `research/02-research-firestore-geohash-schema` at [`docs/research/02-firestore-geohash-schema.md`](../../../docs/research/02-firestore-geohash-schema.md).

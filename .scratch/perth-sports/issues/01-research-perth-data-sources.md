@@ -16,4 +16,4 @@ Target 5 high-yield, publicly accessible sources for the MVP pipeline:
 
 PlayHQ and Football West/Squadi use protected or closed architectures (CloudFront WAF/no public API) and should be referenced via external links rather than deep fixture scraping. Facebook Events is ruled out due to Meta Graph API restrictions.
 
-Detailed technical report with sample payloads and endpoint schemas at [`docs/research/01-perth-sports-data-sources.md`](file:///home/alex/Source/MyPlaydex/docs/research/01-perth-sports-data-sources.md).
+Detailed technical report with sample payloads and endpoint schemas at [`docs/research/01-perth-sports-data-sources.md`](../../../docs/research/01-perth-sports-data-sources.md).

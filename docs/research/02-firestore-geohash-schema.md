@@ -199,7 +199,7 @@ In JavaScript/TypeScript running on V8 (modern browser or React Native mobile de
 
 ## 5. Document Schema Design: `activities` Collection
 
-In compliance with the project domain terminology ([GLOSSARY.md](file:///home/alex/Source/MyPlaydex/GLOSSARY.md)), entities are strictly named **Activity**, **Club**, **Venue**, and **Listing** (avoiding forbidden terms: *Event, Gig, Organizer, Host, Business, Facility*).
+In compliance with the project domain terminology ([GLOSSARY.md](../../GLOSSARY.md)), entities are strictly named **Activity**, **Club**, **Venue**, and **Listing** (avoiding forbidden terms: *Event, Gig, Organizer, Host, Business, Facility*).
 
 ### 5.1 TypeScript Interface
 
@@ -522,5 +522,5 @@ Because community activity schedules change infrequently (typically updated week
    [Firebase Official Pricing: Spark Plan Quotas](https://firebase.google.com/pricing)  
    *Documents the 50,000 daily read limit, 20,000 write limit, 1 GiB capacity cap, and `ResourceExhausted` behavior.*
 5. **Project Domain Glossary:**  
-   [`GLOSSARY.md`](file:///home/alex/Source/MyPlaydex/GLOSSARY.md)  
+   [`GLOSSARY.md`](../../GLOSSARY.md)
    *Authoritative terminology rules: Activity, Club, Venue, Listing.*
