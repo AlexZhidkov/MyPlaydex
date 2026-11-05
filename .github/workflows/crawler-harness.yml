@@ -1,0 +1,53 @@
+name: Scheduled Crawler Harness
+
+on:
+  schedule:
+    # 01:00 AWST (UTC+8) is 17:00 UTC previous day
+    - cron: '0 17 * * *'
+  workflow_dispatch:
+    inputs:
+      crawler:
+        description: 'Target crawler to execute (all, stirling, mock)'
+        required: false
+        default: 'all'
+      dry_run:
+        description: 'Run without writing changes to Firestore'
+        type: boolean
+        required: false
+        default: false
+
+jobs:
+  crawl:
+    name: Crawl and Ingest Activities
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Dependencies
+        run: |
+          npm install
+
+      - name: Run Verification Test Suite
+        run: |
+          npm test
+
+      - name: Execute Crawler Ingestion Pipeline
+        env:
+          FIREBASE_SERVICE_ACCOUNT_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_KEY }}
+          CRAWLER_TARGET: ${{ inputs.crawler || 'all' }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
+        run: |
+          FLAGS="--crawler=$CRAWLER_TARGET"
+          if [ "$DRY_RUN" = "true" ] || [ "$DRY_RUN" = "1" ]; then
+            FLAGS="$FLAGS --dry-run"
+          fi
+          echo "Running crawler runner with flags: $FLAGS"
+          node src/crawler-runner.js $FLAGS

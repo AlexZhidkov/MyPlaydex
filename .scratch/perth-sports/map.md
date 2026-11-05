@@ -15,6 +15,7 @@ Stack preferences: Firebase (Firestore + Hosting + Blaze tier), Vanilla JS + Lea
 - [02-research-firestore-geohash-schema](issues/02-research-firestore-geohash-schema.md): Store precision-9 geohash on ingestion, query by sport/date, and perform client-side Haversine distance ranking for zero-cost interactive filtering within Firebase free tier.
 - [03-grill-activity-taxonomy-and-filters](issues/03-grill-activity-taxonomy-and-filters.md): Lock 11 discrete sport categories (including separate tennis, pickleball, running, fitness, walking), binary Free-Only cost toggle, and basic gender/age filters; omit activity format tiers for MVP.
 - [04-prototype-vanilla-js-leaflet-map](issues/04-prototype-vanilla-js-leaflet-map.md): Adopt pure JS pub-sub store with Split Explorer (Variant A) dual-view for bi-directional map-pin/card synchronization and zero-cost client-side radius adjustments.
+- [05-task-setup-github-actions-crawler-harness](issues/05-task-setup-github-actions-crawler-harness.md): Configure GitHub Actions daily workflow (01:00 AWST, Node.js 22) with Firebase Admin SDK, precision-9 geohash generation, Activity schema sanitization, and <=500 batch Firestore upserts.
 
 ## Not yet specified
 
