@@ -24,7 +24,6 @@ export const MOCK_PERTH_ACTIVITIES = [
     title: 'Monday Night Social Mixed Futsal',
     sport: 'soccer',
     type: 'social',
-    skill_level: 'all',
     venue: {
       name: 'Loftus Recreation Centre',
       address: '99 Loftus St, Leederville WA 6007',
@@ -48,7 +47,6 @@ export const MOCK_PERTH_ACTIVITIES = [
     title: 'Sunset Social Beach Volleyball Pickup',
     sport: 'volleyball',
     type: 'social',
-    skill_level: 'all',
     venue: {
       name: 'Scarborough Beach Amphitheatre Courts',
       address: 'The Esplanade, Scarborough WA 6019',
@@ -72,7 +70,6 @@ export const MOCK_PERTH_ACTIVITIES = [
     title: 'Sunrise Botanic Gardens Social 5K Run',
     sport: 'running',
     type: 'social',
-    skill_level: 'beginner',
     venue: {
       name: 'Kings Park DNA Tower Entrance',
       address: 'Fraser Ave, West Perth WA 6005',
@@ -96,7 +93,6 @@ export const MOCK_PERTH_ACTIVITIES = [
     title: 'Twilight Riverview Social Pickleball',
     sport: 'pickleball',
     type: 'social',
-    skill_level: 'all',
     venue: {
       name: 'South Perth Tennis & Pickleball Centre',
       address: 'Sir James Mitchell Park, South Perth WA 6151',
@@ -120,7 +116,6 @@ export const MOCK_PERTH_ACTIVITIES = [
     title: 'Women Only Social Tennis & Drills',
     sport: 'tennis',
     type: 'training',
-    skill_level: 'intermediate',
     venue: {
       name: 'Robertson Park Tennis Centre',
       address: '176 Fitzgerald St, Perth WA 6000',
@@ -144,7 +139,6 @@ export const MOCK_PERTH_ACTIVITIES = [
     title: 'Open Pickup Run (Men Only - Full Court)',
     sport: 'basketball',
     type: 'game',
-    skill_level: 'intermediate',
     venue: {
       name: 'State Netball & Sports Centre',
       address: '200 Selby St, Jolimont WA 6014',
@@ -168,7 +162,6 @@ export const MOCK_PERTH_ACTIVITIES = [
     title: 'Saturday Social AFL 9s Mixed League',
     sport: 'afl',
     type: 'game',
-    skill_level: 'all',
     venue: {
       name: 'UWA Sports Park Oval',
       address: '10 McGillivray Rd, Mount Claremont WA 6010',
@@ -192,7 +185,6 @@ export const MOCK_PERTH_ACTIVITIES = [
     title: 'Lake Monger Masters Gentle Walking Group',
     sport: 'walking',
     type: 'social',
-    skill_level: 'beginner',
     venue: {
       name: 'Lake Monger Recreation Reserve',
       address: 'Gregory St, Wembley WA 6014',
@@ -216,7 +208,6 @@ export const MOCK_PERTH_ACTIVITIES = [
     title: 'Esplanade Park Social Tape-Ball Cricket',
     sport: 'cricket',
     type: 'social',
-    skill_level: 'all',
     venue: {
       name: 'Fremantle Esplanade Park',
       address: 'Marine Terrace, Fremantle WA 6160',
@@ -240,7 +231,6 @@ export const MOCK_PERTH_ACTIVITIES = [
     title: 'Outdoor Functional Calisthenics & Fitness',
     sport: 'social_fitness',
     type: 'training',
-    skill_level: 'all',
     venue: {
       name: 'Beatty Park Outdoor Fitness Park',
       address: '220 Vincent St, North Perth WA 6006',
@@ -264,7 +254,6 @@ export const MOCK_PERTH_ACTIVITIES = [
     title: 'Manning Community Centre Social Badminton & Table Tennis',
     sport: 'other',
     type: 'social',
-    skill_level: 'all',
     venue: {
       name: 'Manning Community Hub',
       address: '2 Conochie Cres, Manning WA 6152',
@@ -279,16 +268,38 @@ export const MOCK_PERTH_ACTIVITIES = [
     club_ref: 'clubs/manning_sports_hub',
     club_name: 'South Perth Multisport Hub',
     external_url: 'https://southperth.wa.gov.au/manning-hub',
-    cost_description: '$7 hall entry',
+    cost_description: '$7 venue fee',
     is_free: false,
     demographics: { gender: 'mixed', age: 'adults' }
+  },
+  {
+    id: 'act_junior_cricket_subiaco',
+    title: 'Subiaco Junior Cricket Skills & Fun Match (<18)',
+    sport: 'cricket',
+    type: 'training',
+    venue: {
+      name: 'Subiaco Common Reserve',
+      address: 'Juniper Bank Way, Subiaco WA 6008',
+      coordinates: { lat: -31.948212, lng: 115.823901 },
+      geohash: 'qd66h9m2q'
+    },
+    schedule: {
+      start_time: '2026-11-14T09:00:00.000Z',
+      end_time: '2026-11-14T11:00:00.000Z',
+      recurrence: { pattern: 'weekly', day_of_week: 'saturday', frequency: 1 }
+    },
+    club_ref: 'clubs/subiaco_junior_cricket',
+    club_name: 'Subiaco Junior Sports Club',
+    external_url: 'https://subiacocricket.org.au/juniors',
+    cost_description: 'Free community session',
+    is_free: true,
+    demographics: { gender: 'mixed', age: 'juniors' }
   },
   {
     id: 'act_beach_volleyball_citybeach',
     title: 'City Beach Morning Sand Volleyball Drills',
     sport: 'volleyball',
     type: 'training',
-    skill_level: 'intermediate',
     venue: {
       name: 'City Beach Volleyball Pitches',
       address: 'Challenger Parade, City Beach WA 6015',
@@ -303,7 +314,7 @@ export const MOCK_PERTH_ACTIVITIES = [
     club_ref: 'clubs/west_coast_sand_volleyball',
     club_name: 'West Coast Beach Volleyball',
     external_url: 'https://volleyballwa.com.au/city-beach',
-    cost_description: '$10 coach fee',
+    cost_description: '$10 court hire fee',
     is_free: false,
     demographics: { gender: 'mixed', age: 'adults' }
   }

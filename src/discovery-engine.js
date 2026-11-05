@@ -29,12 +29,12 @@ export function calculateDistanceKm(coordA, coordB) {
   const sinHalfDlat = Math.sin(dLat / 2);
   const sinHalfDlng = Math.sin(dLng / 2);
 
-  const a =
+  const chordLengthSq =
     sinHalfDlat * sinHalfDlat +
     Math.cos(lat1) * Math.cos(lat2) * sinHalfDlng * sinHalfDlng;
 
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  const distance = EARTH_RADIUS_KM * c;
+  const angularDistanceRad = 2 * Math.atan2(Math.sqrt(chordLengthSq), Math.sqrt(1 - chordLengthSq));
+  const distance = EARTH_RADIUS_KM * angularDistanceRad;
 
   return Math.round(distance * 100) / 100;
 }
@@ -71,7 +71,7 @@ export function filterActivities(activities, filters = {}) {
     // Age facet ('all', 'adults', 'juniors', 'masters')
     if (age && age !== 'all') {
       const actAge = activity.demographics?.age;
-      if (actAge && actAge !== age) {
+      if (actAge && actAge !== age && actAge !== 'all') {
         return false;
       }
     }
@@ -87,7 +87,6 @@ export function filterActivities(activities, filters = {}) {
  * @param {object} options
  * @param {{ lat: number, lng: number }} options.center
  * @param {number} [options.radiusKm=10]
- * @param {'distance' | 'time'} [options.sortBy='distance']
  * @param {object} [options.filters={}]
  * @returns {Array<object>} Filtered and distance-ranked activities
  */
@@ -95,7 +94,6 @@ export function filterAndRankActivities(activities, options = {}) {
   const {
     center = { lat: -31.9505, lng: 115.8605 },
     radiusKm = 10,
-    sortBy = 'distance',
     filters = {}
   } = options;
 
@@ -116,16 +114,8 @@ export function filterAndRankActivities(activities, options = {}) {
     }
   }
 
-  // Step 3: Sort by proximity or start time
-  if (sortBy === 'distance') {
-    withDistance.sort((a, b) => a.distanceKm - b.distanceKm);
-  } else if (sortBy === 'time') {
-    withDistance.sort((a, b) => {
-      const timeA = new Date(a.schedule?.start_time || 0).getTime();
-      const timeB = new Date(b.schedule?.start_time || 0).getTime();
-      return timeA - timeB;
-    });
-  }
+  // Step 3: Sort by proximity
+  withDistance.sort((a, b) => a.distanceKm - b.distanceKm);
 
   return withDistance;
 }
@@ -138,10 +128,9 @@ export function filterAndRankActivities(activities, options = {}) {
  * @param {object} [initialConfig={}]
  */
 export function createDiscoveryStore(initialActivities = [], initialConfig = {}) {
-  let activities = [...initialActivities];
+  const activities = [...initialActivities];
   let center = initialConfig.center || { lat: -31.9505, lng: 115.8605 };
   let radiusKm = initialConfig.radiusKm || 10;
-  let sortBy = initialConfig.sortBy || 'distance';
   let filters = {
     sport: 'all',
     freeOnly: false,
@@ -158,7 +147,6 @@ export function createDiscoveryStore(initialActivities = [], initialConfig = {})
     return filterAndRankActivities(activities, {
       center,
       radiusKm,
-      sortBy,
       filters
     });
   }
@@ -179,7 +167,6 @@ export function createDiscoveryStore(initialActivities = [], initialConfig = {})
       activities,
       center: { ...center },
       radiusKm,
-      sortBy,
       filters: { ...filters },
       selectedActivityId,
       hoveredActivityId,
@@ -197,16 +184,8 @@ export function createDiscoveryStore(initialActivities = [], initialConfig = {})
       radiusKm = Number(newRadiusKm);
       notify('radius');
     },
-    setSortBy(newSortBy) {
-      sortBy = newSortBy;
-      notify('sort');
-    },
     setFilter(key, value) {
       filters[key] = value;
-      notify('filter');
-    },
-    setFilters(newFilters) {
-      filters = { ...filters, ...newFilters };
       notify('filter');
     },
     setSelectedActivity(id) {
@@ -217,10 +196,6 @@ export function createDiscoveryStore(initialActivities = [], initialConfig = {})
       if (hoveredActivityId === id) return;
       hoveredActivityId = id;
       notify('hover');
-    },
-    setActivities(newActivities) {
-      activities = [...newActivities];
-      notify('activities');
     },
     subscribe(listener) {
       listeners.add(listener);

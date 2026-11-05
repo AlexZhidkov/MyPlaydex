@@ -430,9 +430,9 @@
       box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1);
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
       gap: 0.75rem;
-      max-width: 90vw;
-      overflow-x: auto;
+      max-width: 92vw;
     }
 
     .variant-b-drawer {
@@ -759,7 +759,7 @@
     </div>
     <div class="hud-row">
       <span>Matched Activities:</span>
-      <span class="hud-val" id="hud-matched">0 / 12</span>
+      <span class="hud-val" id="hud-matched">0 / 13</span>
     </div>
     <div class="hud-row">
       <span>Hovered Pin ID:</span>
@@ -801,7 +801,6 @@
     const store = createDiscoveryStore(MOCK_PERTH_ACTIVITIES, {
       center: { lat: -31.9505, lng: 115.8605 },
       radiusKm: 10,
-      sortBy: 'distance',
       filters: {
         sport: 'all',
         freeOnly: false,
@@ -962,6 +961,13 @@
         title: 'Search Center (Drag me!)'
       }).addTo(map);
 
+      // Real-time circle follow during drag
+      centerMarker.on('drag', (e) => {
+        const latlng = e.target.getLatLng();
+        radiusCircle.setLatLng(latlng);
+      });
+
+      // Complete store sync on drag end
       centerMarker.on('dragend', (e) => {
         const { lat, lng } = e.target.getLatLng();
         store.setCenter({ lat: Math.round(lat * 10000) / 10000, lng: Math.round(lng * 10000) / 10000 });
@@ -982,7 +988,6 @@
 
     // Shared Map Pin Refresh Helper
     function renderMapPins(map, activities) {
-      // Clear old activity markers
       currentActivityMarkers.forEach(marker => map.removeLayer(marker));
       currentActivityMarkers.clear();
 
@@ -1051,7 +1056,6 @@
       }
 
       if (changeType === 'hover') {
-        // Toggle highlight pin style
         document.querySelectorAll('.custom-sport-pin').forEach(el => {
           el.classList.toggle('highlighted', el.dataset.id === state.hoveredActivityId);
         });
@@ -1067,8 +1071,13 @@
         card.classList.toggle('is-selected', isSelected);
       });
 
-      // If activities or radius or filters changed, re-render card feeds
-      if (changeType === 'filter' || changeType === 'radius' || changeType === 'center' || changeType === 'sort') {
+      // Update listing count labels in headers
+      document.querySelectorAll('.listing-count-label').forEach(el => {
+        el.textContent = `${state.filteredActivities.length}`;
+      });
+
+      // Re-render feed if filters, radius, or center changed
+      if (changeType === 'filter' || changeType === 'radius' || changeType === 'center') {
         const feedContainer = document.getElementById('card-feed-container');
         if (feedContainer) {
           feedContainer.innerHTML = state.filteredActivities.length > 0
@@ -1096,7 +1105,6 @@
             ${activity.is_free ? '<span class="tag tag-free">Free</span>' : ''}
             <span class="tag">${activity.demographics?.gender || 'Mixed'}</span>
             <span class="tag">${activity.demographics?.age || 'All Ages'}</span>
-            <span class="tag">${activity.skill_level} level</span>
           </div>
           <div class="card-footer">
             <span class="card-cost">${activity.cost_description}</span>
@@ -1134,6 +1142,15 @@
       });
     }
 
+    function bindRadiusPills(containerSelector) {
+      document.querySelectorAll(`${containerSelector} .radius-btn`).forEach(btn => {
+        btn.addEventListener('click', () => {
+          store.setRadius(btn.dataset.radius);
+          document.querySelectorAll(`${containerSelector} .radius-btn`).forEach(b => b.classList.toggle('active', b === btn));
+        });
+      });
+    }
+
     // =========================================================================
     // VARIANT A: Split Explorer (Side-by-side Dual View)
     // =========================================================================
@@ -1166,7 +1183,7 @@
                 `).join('')}
               </div>
 
-              <!-- Secondary Demographics & Cost Toggle -->
+              <!-- Demographics & Cost Toggle -->
               <div class="facet-controls">
                 <label class="toggle-label">
                   <input type="checkbox" id="free-toggle-a" ${state.filters.freeOnly ? 'checked' : ''} />
@@ -1183,11 +1200,12 @@
                 <select class="select-input" id="age-select-a">
                   <option value="all" ${state.filters.age === 'all' ? 'selected' : ''}>All Ages</option>
                   <option value="adults" ${state.filters.age === 'adults' ? 'selected' : ''}>Adults (18+)</option>
+                  <option value="juniors" ${state.filters.age === 'juniors' ? 'selected' : ''}>Juniors (<18)</option>
                   <option value="masters" ${state.filters.age === 'masters' ? 'selected' : ''}>Masters (35+)</option>
                 </select>
 
                 <span style="font-size: 0.8rem; color: #64748b; margin-left: auto;">
-                  <strong>${state.filteredActivities.length}</strong> listings
+                  <strong class="listing-count-label">${state.filteredActivities.length}</strong> listings
                 </span>
               </div>
             </div>
@@ -1207,14 +1225,7 @@
 
       renderMapPins(map, state.filteredActivities);
       bindCardEvents();
-
-      // Radius pills listener
-      document.querySelectorAll('#radius-selector-a .radius-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-          store.setRadius(btn.dataset.radius);
-          document.querySelectorAll('#radius-selector-a .radius-btn').forEach(b => b.classList.toggle('active', b === btn));
-        });
-      });
+      bindRadiusPills('#radius-selector-a');
 
       // Sport chips listener
       document.querySelectorAll('#sport-chips-a .filter-chip').forEach(btn => {
@@ -1265,6 +1276,20 @@
               <input type="checkbox" id="free-toggle-b" ${state.filters.freeOnly ? 'checked' : ''} />
               <span>Free Only</span>
             </label>
+
+            <select class="select-input" id="gender-select-b">
+              <option value="all" ${state.filters.gender === 'all' ? 'selected' : ''}>All Genders</option>
+              <option value="mixed" ${state.filters.gender === 'mixed' ? 'selected' : ''}>Mixed</option>
+              <option value="women" ${state.filters.gender === 'women' ? 'selected' : ''}>Women Only</option>
+              <option value="men" ${state.filters.gender === 'men' ? 'selected' : ''}>Men Only</option>
+            </select>
+
+            <select class="select-input" id="age-select-b">
+              <option value="all" ${state.filters.age === 'all' ? 'selected' : ''}>All Ages</option>
+              <option value="adults" ${state.filters.age === 'adults' ? 'selected' : ''}>Adults (18+)</option>
+              <option value="juniors" ${state.filters.age === 'juniors' ? 'selected' : ''}>Juniors (<18)</option>
+              <option value="masters" ${state.filters.age === 'masters' ? 'selected' : ''}>Masters (35+)</option>
+            </select>
           </div>
 
           <!-- Bottom Drawer (Collapsed carousel / Expanded grid) -->
@@ -1273,7 +1298,7 @@
               <div>
                 <div class="drawer-bar"></div>
                 <div style="font-size: 0.85rem; font-weight: 700; color: #1e293b;">
-                  📍 ${state.filteredActivities.length} Activities Found Nearby
+                  📍 <span class="listing-count-label">${state.filteredActivities.length}</span> Activities Found Nearby
                 </div>
               </div>
               <button style="background: none; border: none; font-size: 0.8rem; color: #0284c7; font-weight: 600; cursor: pointer;" id="drawer-btn-label">
@@ -1298,6 +1323,7 @@
 
       renderMapPins(map, state.filteredActivities);
       bindCardEvents();
+      bindRadiusPills('#radius-selector-b');
 
       // Drawer toggle
       const drawer = document.getElementById('bottom-drawer-b');
@@ -1318,11 +1344,11 @@
       document.getElementById('free-toggle-b').addEventListener('change', (e) => {
         store.setFilter('freeOnly', e.target.checked);
       });
-      document.querySelectorAll('#radius-selector-b .radius-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-          store.setRadius(btn.dataset.radius);
-          document.querySelectorAll('#radius-selector-b .radius-btn').forEach(b => b.classList.toggle('active', b === btn));
-        });
+      document.getElementById('gender-select-b').addEventListener('change', (e) => {
+        store.setFilter('gender', e.target.value);
+      });
+      document.getElementById('age-select-b').addEventListener('change', (e) => {
+        store.setFilter('age', e.target.value);
       });
     }
 
@@ -1358,6 +1384,7 @@
               <select class="select-input" id="age-select-c">
                 <option value="all" ${state.filters.age === 'all' ? 'selected' : ''}>All Ages</option>
                 <option value="adults" ${state.filters.age === 'adults' ? 'selected' : ''}>Adults (18+)</option>
+                <option value="juniors" ${state.filters.age === 'juniors' ? 'selected' : ''}>Juniors (<18)</option>
                 <option value="masters" ${state.filters.age === 'masters' ? 'selected' : ''}>Masters (35+)</option>
               </select>
 
@@ -1368,7 +1395,7 @@
               </div>
 
               <span style="font-size: 0.85rem; color: #64748b; margin-left: auto;">
-                Showing <strong>${state.filteredActivities.length}</strong> matching listings
+                Showing <strong class="listing-count-label">${state.filteredActivities.length}</strong> matching listings
               </span>
             </div>
           </div>
@@ -1405,18 +1432,13 @@
 
       renderMapPins(map, state.filteredActivities);
       bindCardEvents();
+      bindRadiusPills('#radius-selector-c');
 
       // Filter events
       document.querySelectorAll('#sport-chips-c .filter-chip').forEach(btn => {
         btn.addEventListener('click', () => {
           store.setFilter('sport', btn.dataset.sport);
           document.querySelectorAll('#sport-chips-c .filter-chip').forEach(b => b.classList.toggle('active', b === btn));
-        });
-      });
-      document.querySelectorAll('#radius-selector-c .radius-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-          store.setRadius(btn.dataset.radius);
-          document.querySelectorAll('#radius-selector-c .radius-btn').forEach(b => b.classList.toggle('active', b === btn));
         });
       });
       document.getElementById('free-toggle-c').addEventListener('change', (e) => {

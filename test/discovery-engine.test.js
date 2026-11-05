@@ -43,13 +43,20 @@ const mockActivities = [
     is_free: true,
     demographics: { gender: 'mixed', age: 'masters' },
     venue: { coordinates: { lat: -31.9610, lng: 115.8330 } }
+  },
+  {
+    id: 'act_5',
+    title: 'Perth Junior Basketball Clinic (<18)',
+    sport: 'basketball',
+    cost_description: 'Free',
+    is_free: true,
+    demographics: { gender: 'mixed', age: 'juniors' },
+    venue: { coordinates: { lat: -31.9500, lng: 115.8600 } }
   }
 ];
 
 test('Seam 1: calculates accurate Haversine distance between Perth coordinates', () => {
-  // Perth CBD coordinates: -31.9505, 115.8605
   const perthCbd = { lat: -31.9505, lng: 115.8605 };
-  // Fremantle Oval coordinates: -32.0569, 115.7439
   const fremantle = { lat: -32.0569, lng: 115.7439 };
 
   const distance = calculateDistanceKm(perthCbd, fremantle);
@@ -64,7 +71,7 @@ test('Seam 1: calculates accurate Haversine distance between Perth coordinates',
 test('Seam 2: filters activities across sport, cost, gender, and age facets', () => {
   // Unfiltered returns all
   const all = filterActivities(mockActivities, {});
-  assert.equal(all.length, 4);
+  assert.equal(all.length, 5);
 
   // Filter by sport
   const volleyball = filterActivities(mockActivities, { sport: 'volleyball' });
@@ -73,18 +80,25 @@ test('Seam 2: filters activities across sport, cost, gender, and age facets', ()
 
   // Filter by freeOnly
   const freeOnly = filterActivities(mockActivities, { freeOnly: true });
-  assert.equal(freeOnly.length, 3);
+  assert.equal(freeOnly.length, 4);
   assert.ok(freeOnly.every((a) => a.is_free));
 
-  // Filter by gender
+  // Filter by gender: women only
   const womenOnly = filterActivities(mockActivities, { gender: 'women' });
   assert.equal(womenOnly.length, 1);
   assert.equal(womenOnly[0].id, 'act_3');
 
-  // Filter by age group
+  // Filter by age group: juniors
+  const juniors = filterActivities(mockActivities, { age: 'juniors' });
+  // act_5 is juniors, and act_2 is 'all' (open to all including juniors)
+  assert.equal(juniors.length, 2);
+  assert.ok(juniors.some(a => a.id === 'act_5'));
+
+  // Filter by age group: masters
   const masters = filterActivities(mockActivities, { age: 'masters' });
-  assert.equal(masters.length, 1);
-  assert.equal(masters[0].id, 'act_4');
+  // act_4 is masters, and act_2 is 'all'
+  assert.equal(masters.length, 2);
+  assert.ok(masters.some(a => a.id === 'act_4'));
 
   // Combined facets (freeOnly + tennis)
   const freeTennis = filterActivities(mockActivities, { sport: 'tennis', freeOnly: true });
@@ -95,41 +109,34 @@ test('Seam 2: filters activities across sport, cost, gender, and age facets', ()
 test('Seam 3: ranks activities by proximity and excludes items outside radius', () => {
   const perthCbd = { lat: -31.9505, lng: 115.8605 };
 
-  // Center: Perth CBD.
-  // act_1 (North Perth ~2.2 km)
-  // act_4 (Kings Park ~2.8 km)
-  // act_3 (South Perth/Como ~4.7 km)
-  // act_2 (Scarborough ~11.5 km)
-
-  // 1. Within 5 km radius: should return act_1, act_4, act_3, but NOT act_2
+  // 1. Within 5 km radius: returns items in CBD, North Perth, Kings Park, South Perth
   const within5km = filterAndRankActivities(mockActivities, {
     center: perthCbd,
-    radiusKm: 5,
-    sortBy: 'distance'
+    radiusKm: 5
   });
 
-  assert.equal(within5km.length, 3);
-  assert.equal(within5km[0].id, 'act_1'); // Closest
+  // act_5 is right at CBD (~0.07 km), act_1 is ~2.2 km, act_4 is ~2.8 km, act_3 is ~3.1 km
+  assert.equal(within5km.length, 4);
+  assert.equal(within5km[0].id, 'act_5'); // Closest
   assert.ok(within5km[0].distanceKm < within5km[1].distanceKm);
   assert.ok(within5km.every((a) => a.distanceKm <= 5));
 
-  // 2. Within 15 km radius: includes act_2
+  // 2. Within 15 km radius: includes Scarborough act_2 (~11.6 km)
   const within15km = filterAndRankActivities(mockActivities, {
     center: perthCbd,
-    radiusKm: 15,
-    sortBy: 'distance'
+    radiusKm: 15
   });
-  assert.equal(within15km.length, 4);
-  assert.equal(within15km[3].id, 'act_2'); // Furthest
+  assert.equal(within15km.length, 5);
+  assert.equal(within15km[4].id, 'act_2'); // Furthest
 
   // 3. Combined facet filtering and radius slicing
-  const freeWithin5km = filterAndRankActivities(mockActivities, {
+  const freeTennisWithin5km = filterAndRankActivities(mockActivities, {
     center: perthCbd,
     radiusKm: 5,
-    sortBy: 'distance',
-    filters: { freeOnly: true }
+    filters: { sport: 'tennis', freeOnly: true }
   });
-  assert.equal(freeWithin5km.length, 2); // act_4 and act_3 (act_1 is not free)
+  assert.equal(freeTennisWithin5km.length, 1);
+  assert.equal(freeTennisWithin5km[0].id, 'act_3');
 });
 
 test('Seam 4: reactive discovery store notifies listeners on state updates and tracks hover/selection', () => {
@@ -139,7 +146,7 @@ test('Seam 4: reactive discovery store notifies listeners on state updates and t
   });
 
   const state0 = store.getState();
-  assert.equal(state0.filteredActivities.length, 3);
+  assert.equal(state0.filteredActivities.length, 4);
   assert.equal(state0.radiusKm, 5);
   assert.equal(state0.hoveredActivityId, null);
 
@@ -150,10 +157,10 @@ test('Seam 4: reactive discovery store notifies listeners on state updates and t
 
   // Change radius to 15km
   store.setRadius(15);
-  assert.equal(store.getState().filteredActivities.length, 4);
+  assert.equal(store.getState().filteredActivities.length, 5);
   assert.equal(events.length, 1);
   assert.equal(events[0].changeType, 'radius');
-  assert.equal(events[0].count, 4);
+  assert.equal(events[0].count, 5);
 
   // Filter by sport: volleyball
   store.setFilter('sport', 'volleyball');
