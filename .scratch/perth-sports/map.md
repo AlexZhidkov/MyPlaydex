@@ -14,6 +14,7 @@ Stack preferences: Firebase (Firestore + Hosting + Blaze tier), Vanilla JS + Lea
 - [01-research-perth-data-sources](issues/01-research-perth-data-sources.md): Target 5 high-yield accessible sources (WA DLGSC Directory, City of Stirling Events, Eventbrite JSON-LD, Meetup SSR JSON, and Volleyball WA) for automated ingestion; rely on external links for PlayHQ/Squadi; rule out Facebook Events.
 - [02-research-firestore-geohash-schema](issues/02-research-firestore-geohash-schema.md): Store precision-9 geohash on ingestion, query by sport/date, and perform client-side Haversine distance ranking for zero-cost interactive filtering within Firebase free tier.
 - [03-grill-activity-taxonomy-and-filters](issues/03-grill-activity-taxonomy-and-filters.md): Lock 11 discrete sport categories (including separate tennis, pickleball, running, fitness, walking), binary Free-Only cost toggle, and basic gender/age filters; omit activity format tiers for MVP.
+- [04-prototype-vanilla-js-leaflet-map](issues/04-prototype-vanilla-js-leaflet-map.md): Adopt pure JS pub-sub store with Split Explorer (Variant A) dual-view for bi-directional map-pin/card synchronization and zero-cost client-side radius adjustments.
 
 ## Not yet specified
 

@@ -8,6 +8,7 @@ What exact sport categories, skill level tiers (e.g., social, casual, competitiv
 ## Answer
 
 Settled taxonomy and filtering facets for MVP:
+
 1. **Sports Taxonomy (Individual First-Class Categories)**:
    - Soccer (Football)
    - Volleyball (Indoor & Beach)
@@ -26,5 +27,5 @@ Settled taxonomy and filtering facets for MVP:
    - Binary "Free Only" filter toggle in the UI.
    - Exact fee (e.g., "Free", "$5 gold coin", "$10 court hire") displayed on the Activity card as a descriptive label.
 4. **Demographic Filters**:
-   - Gender: Mixed / Co-ed, Women Only, Men Only.
+   - Gender: Mixed, Women Only, Men Only.
    - Age: All Ages, Adults (18+), Juniors (<18), Masters (35+).

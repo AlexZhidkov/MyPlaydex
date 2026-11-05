@@ -1,0 +1,13 @@
+{
+  "name": "myplaydex",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "MyPlaydex amateur sports and activities discovery platform",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "prototype": "python3 -m http.server 3000"
+  },
+  "keywords": ["sports", "discovery", "leaflet", "perth", "vanilla-js"],
+  "author": "MyPlaydex Team",
+  "license": "MIT"
+}
