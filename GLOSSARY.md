@@ -1,20 +1,24 @@
 # MyPlaydex
 
-A global platform for discovering casual sports games, training sessions, and community sports clubs, launching initially across Greater Perth, Western Australia.
+A global discovery platform for social sports, cultural performances, family activities, and community gatherings, launching initially across Greater Perth, Western Australia.
 
 ## Language
 
 **Activity**:
-A sports game, social kickabout, training session, or match that people can attend.
+Any scheduled social, recreational, cultural, or sporting gathering that people can attend.
 _Avoid_: Event, Gig, Happening
 
-**Club**:
-The sports club, community group, or league that hosts and organizes activities.
-_Avoid_: Organizer, Host, Business, Vendor
+**Organizer**:
+The club, association, promoter, business, or group that hosts and organizes activities.
+_Avoid_: Host, Vendor, Provider
 
 **Venue**:
-The physical location (park, court, leisure centre, sports ground) where an activity takes place, with geo-coordinates.
+The physical location (park, court, leisure centre, hall, theatre, stadium) where an activity takes place, with geo-coordinates.
 _Avoid_: Place, Facility, Ground
+
+**Region**:
+A distinct geographical metropolitan area or administrative territory used to partition activities and queries.
+_Avoid_: City, Area, Market
 
 **Listing**:
 The published record on the platform representing an Activity, with dates, skill level, and external referral link.
