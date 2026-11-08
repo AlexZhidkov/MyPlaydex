@@ -104,8 +104,36 @@ export function createFirestoreAdapter(options = {}) {
  */
 export async function initFirestoreFromEnv(env = process.env, options = {}) {
   const rawKey = env.FIREBASE_SERVICE_ACCOUNT_KEY;
+  const useAdc = options.useAdc || env.FIREBASE_USE_ADC === 'true' || Boolean(env.FIREBASE_PROJECT_ID);
+  const projectId = env.FIREBASE_PROJECT_ID || options.projectId || (useAdc ? 'myplaydex' : null);
 
   if (!rawKey) {
+    if (useAdc) {
+      try {
+        const adminApp = await import('firebase-admin/app');
+        const adminFirestore = await import('firebase-admin/firestore');
+
+        const app = adminApp.getApps().length > 0
+          ? adminApp.getApps()[0]
+          : adminApp.initializeApp({
+              credential: adminApp.applicationDefault(),
+              projectId: projectId || 'myplaydex'
+            });
+
+        const db = adminFirestore.getFirestore(app);
+        return {
+          db,
+          dryRun: false,
+          projectId: projectId || 'myplaydex'
+        };
+      } catch (err) {
+        if (options.requireCredentials) {
+          throw new Error(`Failed to initialize Firestore via ADC: ${err.message}`);
+        }
+        return { db: null, dryRun: true, projectId: null };
+      }
+    }
+
     if (options.requireCredentials) {
       throw new Error('Missing required secret: FIREBASE_SERVICE_ACCOUNT_KEY is required to write to Firestore');
     }

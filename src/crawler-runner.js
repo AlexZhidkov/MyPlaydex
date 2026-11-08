@@ -140,14 +140,20 @@ export function getDefaultCrawlers(options = {}) {
 async function main() {
   const args = process.argv.slice(2);
   const isDryRunArg = args.includes('--dry-run');
+  const isSeed = args.includes('--seed');
   const crawlerArgMatch = args.find(a => a.startsWith('--crawler='));
   const targetCrawler = crawlerArgMatch ? crawlerArgMatch.split('=')[1] : 'all';
+  const projectArgMatch = args.find(a => a.startsWith('--project='));
+  const targetProject = projectArgMatch ? projectArgMatch.split('=')[1] : (process.env.FIREBASE_PROJECT_ID || 'myplaydex');
+  const useAdc = args.includes('--use-adc') || isSeed || Boolean(process.env.FIREBASE_USE_ADC);
 
-  console.log(`[Crawler Harness] Initializing run (crawler: ${targetCrawler}, dry-run: ${isDryRunArg})`);
+  console.log(`[Crawler Harness] Initializing run (crawler: ${targetCrawler}, dry-run: ${isDryRunArg}, seed: ${isSeed}, project: ${targetProject})`);
 
-  // Initialize Firestore from environment credentials (enforce key if live run)
+  // Initialize Firestore from environment credentials (enforce key if live run and not using ADC)
   const firestoreEnv = await initFirestoreFromEnv(process.env, {
-    requireCredentials: !isDryRunArg
+    requireCredentials: !isDryRunArg && !useAdc,
+    useAdc,
+    projectId: targetProject
   });
   const effectiveDryRun = isDryRunArg || firestoreEnv.dryRun;
 
@@ -162,7 +168,7 @@ async function main() {
     console.log(`[Crawler Harness] Connected to Firestore project: ${firestoreEnv.projectId}`);
   }
 
-  const includeMock = targetCrawler === 'mock';
+  const includeMock = targetCrawler === 'mock' || isSeed || args.includes('--include-mock');
   const crawlers = getDefaultCrawlers({ includeMock });
 
   const summary = await runCrawlerHarness({

@@ -7,12 +7,18 @@
     "test": "node --test test/*.test.js",
     "crawl": "node src/crawler-runner.js",
     "crawl:dry-run": "node src/crawler-runner.js --dry-run",
+    "seed": "node src/crawler-runner.js --seed",
     "prototype": "python3 -m http.server 3000"
   },
   "dependencies": {
     "firebase-admin": "^12.0.0"
   },
-  "keywords": ["sports", "discovery", "leaflet", "perth", "vanilla-js"],
-  "author": "MyPlaydex Team",
+  "keywords": [
+    "sports",
+    "discovery",
+    "perth",
+    "vanilla-js"
+  ],
+  "author": "Alexander Zhidkov",
   "license": "MIT"
 }
