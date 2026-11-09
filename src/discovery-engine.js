@@ -51,20 +51,32 @@ export function filterActivities(activities, filters = {}) {
 
   return activities.filter((activity) => {
     // Sport facet
-    if (sport && sport !== 'all' && activity.sport !== sport) {
-      return false;
+    if (sport && sport !== 'all') {
+      const actSport = activity.subcategory || activity.sport;
+      if (actSport !== sport) {
+        return false;
+      }
     }
 
     // Cost facet
-    if (freeOnly && !activity.is_free) {
+    const isFree = activity.cost ? activity.cost.is_free : Boolean(activity.is_free);
+    if (freeOnly && !isFree) {
       return false;
     }
 
-    // Gender facet ('all', 'mixed', 'women', 'men')
+    // Gender facet ('all', 'women_only', 'men_only')
     if (gender && gender !== 'all') {
       const actGender = activity.demographics?.gender;
       if (actGender && actGender !== gender) {
-        return false;
+        if (gender === 'women' && actGender === 'women_only') {
+          // match
+        } else if (gender === 'men' && actGender === 'men_only') {
+          // match
+        } else if (gender === 'mixed' && actGender === 'all') {
+          // match
+        } else {
+          return false;
+        }
       }
     }
 

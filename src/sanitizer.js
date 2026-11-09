@@ -1,7 +1,8 @@
 /**
  * Activity Data Sanitizer and Normalizer
- * Enforces canonical domain schema (GLOSSARY.md, Ticket 02 & 03),
- * derives precision-9 geohash, normalizes sports taxonomy, and cleans attributes.
+ * Enforces canonical domain schema (GLOSSARY.md and ADR 0001),
+ * derives precision-9 Base32 geohashes, normalizes sports taxonomy,
+ * structures AWST schedules, and extracts multi-collection entities.
  */
 
 import { encodeGeohash } from './geohash.js';
@@ -12,6 +13,20 @@ export class SanitizationError extends Error {
     this.name = 'SanitizationError';
     this.details = details;
   }
+}
+
+/**
+ * Creates a clean snake_case slug from a string.
+ *
+ * @param {string} str
+ * @returns {string}
+ */
+export function slugify(str = '') {
+  return String(str)
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
 }
 
 /**
@@ -66,17 +81,247 @@ export function determineIsFree(costDescription = '', explicitIsFree = undefined
   return false;
 }
 
+const DAY_NAME_TO_INT = {
+  sunday: 0,
+  sun: 0,
+  monday: 1,
+  mon: 1,
+  tuesday: 2,
+  tue: 2,
+  wednesday: 3,
+  wed: 3,
+  thursday: 4,
+  thu: 4,
+  friday: 5,
+  fri: 5,
+  saturday: 6,
+  sat: 6
+};
+
 /**
- * Parses and validates an ISO date string, falling back to current time if unparseable.
+ * Formats a Date object or timestamp into AWST (UTC+08:00) date and time strings.
  *
- * @param {string|Date} val
- * @param {string} fallback
- * @returns {string} ISO-8601 timestamp string
+ * @param {Date} date
+ * @returns {{ date: string, time: string }}
  */
-function toIsoDate(val, fallback) {
-  if (!val) return fallback;
-  const parsed = new Date(val);
-  return Number.isNaN(parsed.getTime()) ? fallback : parsed.toISOString();
+function formatAwstDateTime(date) {
+  // AWST is UTC+8 with no daylight saving time
+  const awstDateStr = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Australia/Perth',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(date);
+
+  const awstTimeStr = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Australia/Perth',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).format(date);
+
+  return { date: awstDateStr, time: awstTimeStr };
+}
+
+/**
+ * Parses raw date/time information into structured schedule fields in AWST.
+ *
+ * @param {object} raw
+ * @param {string} nowIso
+ * @returns {object} Canonical schedule object
+ */
+export function parseSchedule(raw, nowIso) {
+  const scheduleInput = raw.schedule || {};
+
+  // Check recurrence
+  let recurrence = 'none';
+  const rawRecurrence = scheduleInput.recurrence || raw.recurrence;
+  if (
+    rawRecurrence === 'weekly' ||
+    (typeof rawRecurrence === 'object' && rawRecurrence?.pattern === 'weekly')
+  ) {
+    recurrence = 'weekly';
+  }
+
+  let startDate = scheduleInput.start_date || raw.start_date;
+  let startTime = scheduleInput.start_time || raw.start_time;
+  let endDate = scheduleInput.end_date || raw.end_date || null;
+  let endTime = scheduleInput.end_time || raw.end_time || null;
+
+  // Process start time if it contains an ISO timestamp
+  if (startTime && typeof startTime === 'string' && (startTime.includes('T') || (startTime.includes('-') && startTime.includes(':')))) {
+    const parsedStart = new Date(startTime);
+    if (!Number.isNaN(parsedStart.getTime())) {
+      const awst = formatAwstDateTime(parsedStart);
+      if (!startDate) {
+        startDate = awst.date;
+      }
+      startTime = awst.time;
+    }
+  }
+
+  // Process end time if it contains an ISO timestamp
+  if (endTime && typeof endTime === 'string' && (endTime.includes('T') || (endTime.includes('-') && endTime.includes(':')))) {
+    const parsedEnd = new Date(endTime);
+    if (!Number.isNaN(parsedEnd.getTime())) {
+      const awst = formatAwstDateTime(parsedEnd);
+      if (!endDate && recurrence === 'none') {
+        endDate = awst.date;
+      }
+      endTime = awst.time;
+    }
+  }
+
+  // Ensure start_date defaults to today in AWST if missing
+  if (!startDate) {
+    startDate = formatAwstDateTime(new Date(nowIso)).date;
+  }
+
+  // Weekly recurring activities have null end_date by canonical specification
+  if (recurrence === 'weekly') {
+    endDate = null;
+  }
+
+  // Validate format of HH:mm
+  const timeRegex = /^\d{2}:\d{2}$/;
+  if (startTime && !timeRegex.test(startTime)) {
+    startTime = null;
+  }
+  if (endTime && !timeRegex.test(endTime)) {
+    endTime = null;
+  }
+
+  // Determine day_of_week
+  let dayOfWeek = null;
+  const rawDayOfWeek = scheduleInput.day_of_week ?? raw.day_of_week ?? scheduleInput.recurrence?.day_of_week ?? raw.recurrence?.day_of_week;
+  if (typeof rawDayOfWeek === 'number' && rawDayOfWeek >= 0 && rawDayOfWeek <= 6) {
+    dayOfWeek = rawDayOfWeek;
+  } else if (typeof rawDayOfWeek === 'string') {
+    const lower = rawDayOfWeek.toLowerCase().trim();
+    if (lower in DAY_NAME_TO_INT) {
+      dayOfWeek = DAY_NAME_TO_INT[lower];
+    }
+  }
+
+  if (dayOfWeek === null && startDate) {
+    const dateObj = new Date(`${startDate}T12:00:00Z`);
+    if (!Number.isNaN(dateObj.getTime())) {
+      dayOfWeek = dateObj.getUTCDay();
+    }
+  }
+
+  return {
+    start_date: startDate,
+    end_date: endDate,
+    start_time: startTime || null,
+    end_time: endTime || null,
+    recurrence,
+    day_of_week: dayOfWeek
+  };
+}
+
+/**
+ * Normalizes gender to "all" | "women_only" | "men_only".
+ *
+ * @param {string} rawGender
+ * @returns {"all" | "women_only" | "men_only"}
+ */
+export function normalizeGender(rawGender = '') {
+  const g = String(rawGender).toLowerCase().trim();
+  if (g === 'women' || g === 'women_only' || g === 'female') return 'women_only';
+  if (g === 'men' || g === 'men_only' || g === 'male') return 'men_only';
+  return 'all';
+}
+
+/**
+ * Normalizes age to "all" | "adults" | "juniors" | "masters".
+ *
+ * @param {string} rawAge
+ * @returns {"all" | "adults" | "juniors" | "masters"}
+ */
+export function normalizeAge(rawAge = '') {
+  const a = String(rawAge).toLowerCase().trim();
+  if (['adults', 'juniors', 'masters'].includes(a)) return a;
+  return 'all';
+}
+
+/**
+ * Standard region definitions.
+ */
+export const CANONICAL_REGIONS = {
+  perth: {
+    id: 'perth',
+    name: 'Greater Perth',
+    coordinates: { lat: -31.9505, lng: 115.8605 },
+    default_radius_km: 25
+  }
+};
+
+/**
+ * Gets canonical region document.
+ *
+ * @param {string} regionId
+ * @param {string} updatedAt
+ * @returns {object}
+ */
+export function getCanonicalRegion(regionId = 'perth', updatedAt = new Date().toISOString()) {
+  const base = CANONICAL_REGIONS[regionId] || {
+    id: regionId,
+    name: regionId.charAt(0).toUpperCase() + regionId.slice(1),
+    coordinates: { lat: 0, lng: 0 },
+    default_radius_km: 25
+  };
+
+  return {
+    ...base,
+    updated_at: updatedAt
+  };
+}
+
+/**
+ * Extracts canonical multi-collection entity documents (/activities, /venues, /organizers, /regions).
+ *
+ * @param {object} activity - Canonical ActivityDocument
+ * @param {object} [raw={}] - Raw un-sanitized listing input
+ * @returns {{ activity: object, venue: object, organizer: object, region: object }}
+ */
+export function extractCanonicalEntities(activity, raw = {}) {
+  const venueAddress = raw.address || raw.venue?.address || activity.venue?.address || activity.venue?.name;
+  const organizerWebsite = raw.website || raw.organizer?.website || raw.club_website || raw.external_url || activity.source_url || null;
+  const organizerContact = raw.contact || raw.organizer?.contact || {
+    email: raw.email || raw.organizer?.email || null,
+    phone: raw.phone || raw.organizer?.phone || null
+  };
+
+  const venue = {
+    id: activity.venue.id,
+    name: activity.venue.name,
+    address: venueAddress,
+    coordinates: {
+      lat: activity.venue.coordinates.lat,
+      lng: activity.venue.coordinates.lng
+    },
+    geohash: activity.venue.geohash,
+    region_id: activity.region_id,
+    updated_at: activity.updated_at
+  };
+
+  const organizer = {
+    id: activity.organizer.id,
+    name: activity.organizer.name,
+    website: organizerWebsite,
+    contact: organizerContact,
+    updated_at: activity.updated_at
+  };
+
+  const region = getCanonicalRegion(activity.region_id, activity.updated_at);
+
+  return {
+    activity,
+    venue,
+    organizer,
+    region
+  };
 }
 
 /**
@@ -96,7 +341,7 @@ export function sanitizeActivity(raw = {}, options = {}) {
     throw new SanitizationError('Missing required field: title', { raw });
   }
 
-  const coords = raw.coordinates || raw.venue?.coordinates;
+  const coords = raw.coordinates || raw.venue?.coordinates || (raw.lat !== undefined && raw.lng !== undefined ? { lat: raw.lat, lng: raw.lng } : null);
   if (!coords || typeof coords.lat !== 'number' || typeof coords.lng !== 'number' || Number.isNaN(coords.lat) || Number.isNaN(coords.lng)) {
     throw new SanitizationError('Missing valid coordinates: venue coordinates { lat, lng } are required', { raw });
   }
@@ -105,59 +350,77 @@ export function sanitizeActivity(raw = {}, options = {}) {
   const cleanSourceId = String(raw.source_id).replace(/[^a-zA-Z0-9_-]/g, '_');
   const id = `${cleanSource}_${cleanSourceId}`;
 
-  const sport = normalizeSport(raw.sport || raw.category || '');
-  const type = ['social', 'training', 'game', 'club'].includes(raw.type) ? raw.type : 'social';
+  const regionId = raw.region_id || options.regionId || 'perth';
+  const sourceUrl = raw.source_url || raw.external_url || raw.url || '';
+  const description = typeof raw.description === 'string' ? raw.description.trim() : '';
 
+  const category = 'sports';
+  const subcategory = normalizeSport(raw.subcategory || raw.sport || raw.category || '');
+
+  // Venue extraction
   const venueName = raw.venue_name || raw.venue?.name || title;
-  const address = raw.address || raw.venue?.address || venueName;
   const geohash = raw.geohash || raw.venue?.geohash || encodeGeohash(coords.lat, coords.lng, 9);
+  const geohash6 = geohash.slice(0, 6);
+  const venueSlug = slugify(venueName) || 'venue';
+  const venueId = raw.venue?.id || `venue_${venueSlug}_${geohash6}`;
 
-  const costDescription = raw.cost_description || (raw.is_free ? 'Free' : '');
-  const isFree = determineIsFree(costDescription, raw.is_free);
+  // Organizer extraction
+  const organizerName = raw.organizer?.name || raw.organizer_name || raw.club_name || raw.club?.name || raw.club || title;
+  const organizerSlug = slugify(organizerName) || 'unknown';
+  const organizerId = raw.organizer?.id || `org_${organizerSlug}`;
 
+  // Cost extraction
+  const costDescription = raw.cost_description || raw.display_price || raw.cost?.display_price || (raw.is_free ? 'Free' : '');
+  const isFree = determineIsFree(costDescription, raw.is_free ?? raw.cost?.is_free);
+  const displayPrice = costDescription || (isFree ? 'Free' : '');
+
+  // Demographics extraction
   const rawGender = raw.demographics?.gender || raw.gender || 'all';
   const rawAge = raw.demographics?.age || raw.age || 'all';
-
-  const gender = ['all', 'mixed', 'women', 'men'].includes(rawGender) ? rawGender : 'all';
-  const age = ['all', 'adults', 'juniors', 'masters'].includes(rawAge) ? rawAge : 'all';
+  const gender = normalizeGender(rawGender);
+  const age = normalizeAge(rawAge);
 
   const nowIso = new Date().toISOString();
-  const startTime = toIsoDate(raw.start_time || raw.schedule?.start_time, nowIso);
-  const endTime = toIsoDate(raw.end_time || raw.schedule?.end_time, startTime);
+  const schedule = parseSchedule(raw, nowIso);
 
-  const clubName = raw.club_name || raw.club || title;
-  const clubRef = raw.club_ref || `clubs/${cleanSource}_${cleanSourceId}`;
+  const verified = raw.verified !== undefined ? Boolean(raw.verified) : true;
+  const createdAt = raw.created_at || nowIso;
+  const updatedAt = raw.updated_at || nowIso;
 
   return {
     id,
+    region_id: regionId,
+    source: cleanSource,
+    source_id: cleanSourceId,
+    source_url: sourceUrl,
     title,
-    sport,
-    type,
+    description,
+    category,
+    subcategory,
+    organizer: {
+      id: organizerId,
+      name: organizerName
+    },
     venue: {
+      id: venueId,
       name: venueName,
-      address,
       coordinates: {
         lat: coords.lat,
         lng: coords.lng
       },
       geohash
     },
-    schedule: {
-      start_time: startTime,
-      end_time: endTime,
-      recurrence: raw.schedule?.recurrence || raw.recurrence || null
+    schedule,
+    cost: {
+      is_free: isFree,
+      display_price: displayPrice
     },
-    club_ref: clubRef,
-    club_name: clubName,
-    cost_description: costDescription,
-    is_free: isFree,
     demographics: {
       gender,
       age
     },
-    external_url: raw.external_url || raw.url || '',
-    is_active: raw.is_active !== undefined ? Boolean(raw.is_active) : true,
-    updated_at: toIsoDate(raw.updated_at, nowIso),
-    created_at: toIsoDate(raw.created_at, nowIso)
+    verified,
+    created_at: createdAt,
+    updated_at: updatedAt
   };
 }

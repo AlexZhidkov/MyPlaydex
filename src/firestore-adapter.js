@@ -1,10 +1,29 @@
 /**
  * Firestore Ingestion Adapter
- * Provides batched, idempotent upserts into Cloud Firestore with <=500 doc chunking
+ * Provides batched, idempotent upserts into Cloud Firestore across canonical collections
+ * (/activities, /venues, /organizers, /regions) with <=500 write operations chunking
  * and zero-network dry-run capabilities.
  */
 
+import { extractCanonicalEntities } from './sanitizer.js';
+
 const FIRESTORE_MAX_BATCH_SIZE = 500;
+
+/**
+ * Creates a clean copy of an activity document without internal private properties.
+ *
+ * @param {object} activity
+ * @returns {object}
+ */
+function getCleanActivity(activity) {
+  const clean = { ...activity };
+  for (const key of Object.keys(clean)) {
+    if (key.startsWith('_')) {
+      delete clean[key];
+    }
+  }
+  return clean;
+}
 
 /**
  * Creates a Firestore Ingestion Adapter instance.
@@ -12,8 +31,11 @@ const FIRESTORE_MAX_BATCH_SIZE = 500;
  * @param {object} options
  * @param {object} [options.db] - Firestore database instance (e.g. from firebase-admin)
  * @param {boolean} [options.dryRun=false] - Whether to simulate writes without calling Firestore
- * @param {number} [options.batchSize=500] - Batch chunk limit (max 500 per Firestore specs)
- * @param {string} [options.collectionName='activities'] - Destination collection name
+ * @param {number} [options.batchSize=500] - Batch chunk limit of write operations (max 500 per Firestore specs)
+ * @param {string} [options.collectionName='activities'] - Destination activities collection name
+ * @param {string} [options.venuesCollectionName='venues'] - Destination venues collection name
+ * @param {string} [options.organizersCollectionName='organizers'] - Destination organizers collection name
+ * @param {string} [options.regionsCollectionName='regions'] - Destination regions collection name
  * @returns {object} Adapter with batchUpsertActivities method
  */
 export function createFirestoreAdapter(options = {}) {
@@ -21,10 +43,14 @@ export function createFirestoreAdapter(options = {}) {
     db = null,
     dryRun = !db,
     batchSize = FIRESTORE_MAX_BATCH_SIZE,
-    collectionName = 'activities'
+    collectionName = 'activities',
+    venuesCollectionName = 'venues',
+    organizersCollectionName = 'organizers',
+    regionsCollectionName = 'regions'
   } = options;
 
-  const effectiveBatchSize = Math.min(Math.max(1, batchSize), FIRESTORE_MAX_BATCH_SIZE);
+  // Minimum batch size of 4 ensures atomic write of activity + venue + organizer + region
+  const effectiveBatchSize = Math.min(Math.max(4, batchSize), FIRESTORE_MAX_BATCH_SIZE);
 
   return {
     isDryRun() {
@@ -32,7 +58,8 @@ export function createFirestoreAdapter(options = {}) {
     },
 
     /**
-     * Upserts an array of activity documents in batches.
+     * Upserts an array of activity documents and their canonical entities in batches.
+     * Atomically updates /activities, /venues, /organizers, and /regions collections.
      *
      * @param {Array<object>} activities
      * @returns {Promise<{ total: number, upserted: number, failed: number, batches: number, errors: Array<Error>, dryRun: boolean }>}
@@ -50,33 +77,118 @@ export function createFirestoreAdapter(options = {}) {
         };
       }
 
-      let upserted = 0;
-      let failed = 0;
-      let batchCount = 0;
-      const errors = [];
+      // Group activities into multi-collection batches where operations count <= effectiveBatchSize
+      // and each activity's related entities are committed in the same atomic batch write
+      const batches = [];
+      let currentBatchOps = new Map();
+      let currentBatchActivities = [];
 
-      for (let i = 0; i < total; i += effectiveBatchSize) {
-        const chunk = activities.slice(i, i + effectiveBatchSize);
-        batchCount += 1;
+      for (const item of activities) {
+        const entities = item._canonicalEntities || extractCanonicalEntities(item);
+        const cleanActivity = getCleanActivity(entities.activity || item);
 
-        if (dryRun || !db) {
-          upserted += chunk.length;
-          continue;
+        // Candidate operations for this activity
+        const candidateOps = [];
+
+        // 1. Activity doc
+        if (cleanActivity.id) {
+          candidateOps.push({
+            col: collectionName,
+            id: cleanActivity.id,
+            data: cleanActivity
+          });
         }
 
+        // 2. Venue doc
+        if (entities.venue && entities.venue.id) {
+          candidateOps.push({
+            col: venuesCollectionName,
+            id: entities.venue.id,
+            data: entities.venue
+          });
+        }
+
+        // 3. Organizer doc
+        if (entities.organizer && entities.organizer.id) {
+          candidateOps.push({
+            col: organizersCollectionName,
+            id: entities.organizer.id,
+            data: entities.organizer
+          });
+        }
+
+        // 4. Region doc
+        if (entities.region && entities.region.id) {
+          candidateOps.push({
+            col: regionsCollectionName,
+            id: entities.region.id,
+            data: entities.region
+          });
+        }
+
+        // Calculate how many new ops would be added
+        let newOpsCount = 0;
+        for (const op of candidateOps) {
+          const key = `${op.col}/${op.id}`;
+          if (!currentBatchOps.has(key)) {
+            newOpsCount += 1;
+          }
+        }
+
+        // If adding these operations would exceed effectiveBatchSize, flush current batch
+        if (currentBatchOps.size > 0 && currentBatchOps.size + newOpsCount > effectiveBatchSize) {
+          batches.push({
+            ops: Array.from(currentBatchOps.values()),
+            activities: currentBatchActivities
+          });
+          currentBatchOps = new Map();
+          currentBatchActivities = [];
+        }
+
+        // Add all candidate operations atomically to the current batch
+        for (const op of candidateOps) {
+          const key = `${op.col}/${op.id}`;
+          currentBatchOps.set(key, op);
+        }
+        currentBatchActivities.push(item);
+      }
+
+      if (currentBatchOps.size > 0) {
+        batches.push({
+          ops: Array.from(currentBatchOps.values()),
+          activities: currentBatchActivities
+        });
+      }
+
+      const batchCount = batches.length;
+
+      if (dryRun || !db) {
+        return {
+          total,
+          upserted: total,
+          failed: 0,
+          batches: batchCount,
+          errors: [],
+          dryRun
+        };
+      }
+
+      let upserted = 0;
+      let failed = 0;
+      const errors = [];
+
+      for (const batchPlan of batches) {
         try {
           const batch = db.batch();
-          const colRef = db.collection(collectionName);
-
-          for (const item of chunk) {
-            const docRef = colRef.doc(item.id);
-            batch.set(docRef, item, { merge: true });
+          for (const op of batchPlan.ops) {
+            const docRef = db.collection(op.col).doc(op.id);
+            batch.set(docRef, op.data, { merge: true });
           }
 
           await batch.commit();
-          upserted += chunk.length;
+          upserted += batchPlan.activities.length;
         } catch (err) {
-          failed += chunk.length;
+          failed += batchPlan.activities.length;
           errors.push(err);
         }
       }
@@ -171,7 +283,6 @@ export async function initFirestoreFromEnv(env = process.env, options = {}) {
       projectId: credentials.project_id || null
     };
   } catch (err) {
-    // If firebase-admin is not installed in the environment, fallback to dryRun with warning
     return {
       db: null,
       dryRun: true,

@@ -4,6 +4,8 @@
  * based on the researched Kendo UI JSON endpoint.
  */
 
+import { determineIsFree } from '../sanitizer.js';
+
 export const STIRLING_ENDPOINT = 'https://www.stirling.wa.gov.au/ksearchevent/ksearchresult';
 
 /**
@@ -56,23 +58,46 @@ export function createStirlingCrawler(options = {}) {
       const json = await response.json();
       const records = json.Data || json.data || [];
 
-      // Map raw API records to intermediate crawler format
+      // Map raw API records to canonical intermediate crawler format
       return records.map((item, index) => {
         // Fallback default coordinates for Scarborough Beach / Stirling area if missing
         const lat = typeof item.Latitude === 'number' ? item.Latitude : -31.8942;
         const lng = typeof item.Longitude === 'number' ? item.Longitude : 115.7571;
+        const url = item.PageUrl ? `https://www.stirling.wa.gov.au${item.PageUrl}` : 'https://www.stirling.wa.gov.au';
+        const costStr = item.Cost || 'Free';
 
         return {
           source: 'stirling',
           source_id: item.NodeGUID || item.ArticleID || String(index + 1),
+          source_url: url,
+          external_url: url,
+          region_id: 'perth',
           title: item.ArticleTitle || 'Community Activity',
+          description: item.ArticleTeaser || item.ArticleDescription || '',
+          category: 'sports',
+          subcategory: item.ArticleCategories || 'other',
           sport: item.ArticleCategories || 'other',
+          organizer: {
+            id: 'org_city_of_stirling',
+            name: 'City of Stirling',
+            website: 'https://www.stirling.wa.gov.au'
+          },
+          venue: {
+            name: item.ArticleAddressTitle || 'City of Stirling Venue',
+            address: item.ArticleAddressTitle || 'Scarborough WA',
+            coordinates: { lat, lng }
+          },
           venue_name: item.ArticleAddressTitle || 'City of Stirling Venue',
           address: item.ArticleAddressTitle || 'Scarborough WA',
           coordinates: { lat, lng },
           start_time: item.EventDisplayDate || new Date().toISOString(),
-          cost_description: item.Cost || 'Free',
-          external_url: item.PageUrl ? `https://www.stirling.wa.gov.au${item.PageUrl}` : 'https://www.stirling.wa.gov.au'
+          cost_description: costStr,
+          display_price: costStr,
+          is_free: determineIsFree(costStr),
+          demographics: {
+            gender: 'all',
+            age: 'all'
+          }
         };
       });
     }

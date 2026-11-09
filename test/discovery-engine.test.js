@@ -184,8 +184,37 @@ test('Seam 4: reactive discovery store notifies listeners on state updates and t
   assert.equal(events.length, 4); // No new event recorded
 });
 
-test('Integration: MOCK_PERTH_ACTIVITIES integrates with discovery store and filters properly', async () => {
-  const { MOCK_PERTH_ACTIVITIES } = await import('../src/mock-perth-activities.js');
+test('Integration: MOCK_PERTH_ACTIVITIES conforms to canonical schema and integrates with discovery store', async () => {
+  const { MOCK_PERTH_ACTIVITIES, PERTH_SPORTS_CATEGORIES } = await import('../src/mock-perth-activities.js');
+
+  const validSubcategories = new Set([
+    'soccer', 'volleyball', 'basketball', 'afl', 'tennis',
+    'pickleball', 'running', 'social-fitness', 'walking', 'cricket', 'other'
+  ]);
+
+  // Check each activity conforms to canonical schema
+  for (const item of MOCK_PERTH_ACTIVITIES) {
+    assert.ok(item.id.startsWith('mock_'), `Expected id to start with mock_, got: ${item.id}`);
+    assert.equal(item.region_id, 'perth');
+    assert.equal(item.source, 'mock');
+    assert.ok(item.source_id);
+    assert.ok(item.source_url);
+    assert.ok(item.title);
+    assert.equal(item.category, 'sports');
+    assert.ok(validSubcategories.has(item.subcategory), `Invalid subcategory: ${item.subcategory}`);
+    assert.ok(item.venue.id.startsWith('venue_'));
+    assert.equal(item.venue.geohash.length, 9);
+    assert.ok(item.organizer.id.startsWith('org_'));
+    assert.ok(item.organizer.name);
+    assert.ok(item.schedule.start_date);
+    assert.ok(['none', 'weekly'].includes(item.schedule.recurrence));
+    assert.equal(typeof item.cost.is_free, 'boolean');
+    assert.ok(item.cost.display_price);
+    assert.ok(['all', 'women_only', 'men_only'].includes(item.demographics.gender));
+    assert.ok(['all', 'adults', 'juniors', 'masters'].includes(item.demographics.age));
+    assert.equal(item.verified, true);
+  }
+
   const store = createDiscoveryStore(MOCK_PERTH_ACTIVITIES, {
     center: { lat: -31.9505, lng: 115.8605 },
     radiusKm: 10
@@ -195,8 +224,10 @@ test('Integration: MOCK_PERTH_ACTIVITIES integrates with discovery store and fil
   assert.ok(state.filteredActivities.length > 0);
   assert.ok(state.filteredActivities.every((a) => a.distanceKm <= 10));
 
-  // Filter for volleyball
+  // Filter for volleyball within 15 km
+  store.setRadius(15);
   store.setFilter('sport', 'volleyball');
   const vbState = store.getState();
-  assert.ok(vbState.filteredActivities.every((a) => a.sport === 'volleyball'));
+  assert.ok(vbState.filteredActivities.length > 0);
+  assert.ok(vbState.filteredActivities.every((a) => a.subcategory === 'volleyball' || a.sport === 'volleyball'));
 });
