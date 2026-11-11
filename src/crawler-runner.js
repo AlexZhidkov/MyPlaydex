@@ -8,6 +8,8 @@ import { pathToFileURL } from 'node:url';
 import { sanitizeActivity } from './sanitizer.js';
 import { createFirestoreAdapter, initFirestoreFromEnv } from './firestore-adapter.js';
 import { createStirlingCrawler } from './crawlers/stirling-crawler.js';
+import { createDlgscCrawler } from './crawlers/dlgsc-crawler.js';
+import { createVolleyballWaCrawler } from './crawlers/volleyball-wa-crawler.js';
 import { createMockCrawler } from './crawlers/mock-crawler.js';
 import { formatStepSummaryTable, writeStepSummary } from './crawler-reporter.js';
 
@@ -211,7 +213,9 @@ export async function runCrawlerHarness({ crawlers = [], adapter, options = {} }
  */
 export function getDefaultCrawlers(options = {}) {
   const crawlers = [
-    createStirlingCrawler()
+    createStirlingCrawler(),
+    createDlgscCrawler(),
+    createVolleyballWaCrawler()
   ];
   if (options.includeMock) {
     crawlers.push(createMockCrawler());

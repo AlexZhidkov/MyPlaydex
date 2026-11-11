@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { runCrawlerHarness, formatStepSummaryTable, writeStepSummary } from '../src/crawler-runner.js';
+import { runCrawlerHarness, formatStepSummaryTable, writeStepSummary, getDefaultCrawlers } from '../src/crawler-runner.js';
 
 const execFileAsync = promisify(execFile);
 import { createFirestoreAdapter } from '../src/firestore-adapter.js';
@@ -451,4 +451,87 @@ test('Seam 4C: CLI exits with status 1 on anomaly and writes GITHUB_STEP_SUMMARY
   } finally {
     rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+test('Seam 7: getDefaultCrawlers registers dlgsc and volleyball_wa alongside stirling in production suite', () => {
+  const crawlers = getDefaultCrawlers();
+  const names = crawlers.map(c => c.name);
+
+  assert.ok(names.includes('stirling'), 'stirling should be in default crawlers');
+  assert.ok(names.includes('dlgsc'), 'dlgsc should be in default crawlers');
+  assert.ok(names.includes('volleyball_wa'), 'volleyball_wa should be in default crawlers');
+  assert.equal(names.length, 3);
+});
+
+test('Seam 7: runCrawlerHarness targets dlgsc and volleyball_wa individually', async () => {
+  const mockAdapter = {
+    async batchUpsertActivities(items) {
+      return { total: items.length, upserted: items.length, failed: 0, batches: 1, errors: [], dryRun: true };
+    }
+  };
+
+  const executed = [];
+  const testCrawlers = [
+    {
+      name: 'stirling',
+      async fetchListings() {
+        executed.push('stirling');
+        return [];
+      }
+    },
+    {
+      name: 'dlgsc',
+      async fetchListings() {
+        executed.push('dlgsc');
+        return [
+          {
+            source: 'dlgsc',
+            source_id: 'dlg-1',
+            title: 'Subiaco Soccer',
+            sport: 'Soccer',
+            coordinates: { lat: -31.94, lng: 115.82 },
+            venue_name: 'Rosalie Park'
+          }
+        ];
+      }
+    },
+    {
+      name: 'volleyball_wa',
+      async fetchListings() {
+        executed.push('volleyball_wa');
+        return [
+          {
+            source: 'volleyball_wa',
+            source_id: 'vwa-1',
+            title: 'The HUB Volleyball',
+            sport: 'volleyball',
+            coordinates: { lat: -31.94, lng: 115.84 },
+            venue_name: 'The HUB'
+          }
+        ];
+      }
+    }
+  ];
+
+  // Test targeting dlgsc individually
+  executed.length = 0;
+  const dlgscSummary = await runCrawlerHarness({
+    crawlers: testCrawlers,
+    adapter: mockAdapter,
+    options: { crawler: 'dlgsc' }
+  });
+  assert.deepEqual(executed, ['dlgsc']);
+  assert.equal(dlgscSummary.successfulCrawlers, 1);
+  assert.equal(dlgscSummary.totalValid, 1);
+
+  // Test targeting volleyball_wa individually
+  executed.length = 0;
+  const vwaSummary = await runCrawlerHarness({
+    crawlers: testCrawlers,
+    adapter: mockAdapter,
+    options: { crawler: 'volleyball_wa' }
+  });
+  assert.deepEqual(executed, ['volleyball_wa']);
+  assert.equal(vwaSummary.successfulCrawlers, 1);
+  assert.equal(vwaSummary.totalValid, 1);
 });
