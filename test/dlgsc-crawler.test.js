@@ -105,6 +105,7 @@ test('Seam 5: DLGSC Crawler parses public club search JSON, filters for Greater 
   assert.equal(raw.organizer.contact.phone, '08 9381 0000');
   assert.equal(raw.cost_description, 'KidSport eligible');
   assert.equal(raw.demographics.age, 'juniors');
+  assert.equal(raw.schedule.recurrence, 'weekly');
 
   // Verify that the emitted listing sanitizes cleanly without error
   const sanitized = sanitizeActivity(raw);
@@ -118,6 +119,7 @@ test('Seam 5: DLGSC Crawler parses public club search JSON, filters for Greater 
   assert.equal(sanitized.venue.coordinates.lat, -31.9445);
   assert.equal(sanitized.venue.coordinates.lng, 115.828);
   assert.equal(sanitized.venue.geohash.length, 9);
+  assert.equal(sanitized.schedule.recurrence, 'weekly');
   assert.equal(sanitized.demographics.age, 'juniors');
 });
 

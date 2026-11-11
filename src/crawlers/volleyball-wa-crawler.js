@@ -7,6 +7,7 @@
 import { slugify } from '../sanitizer.js';
 
 export const VOLLEYBALL_WA_ENDPOINT = 'https://volleyballwa.com.au/wp-admin/admin-ajax.php';
+export const DEFAULT_VWA_CENTER = { lat: -31.95, lng: 115.86 };
 
 /**
  * Formats address components from store locator record.
@@ -23,12 +24,25 @@ function formatAddress(item) {
 }
 
 /**
+ * Strips HTML tags from opening hours table to provide readable schedule summary.
+ *
+ * @param {string} hoursHtml
+ * @returns {string}
+ */
+function summarizeHours(hoursHtml = '') {
+  if (!hoursHtml || typeof hoursHtml !== 'string') return '';
+  return hoursHtml
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
  * Creates a Volleyball WA crawler instance.
  *
  * @param {object} [options]
  * @param {typeof fetch} [options.fetchFn=globalThis.fetch]
- * @param {number} [options.lat=-31.95]
- * @param {number} [options.lng=115.86]
+ * @param {{ lat: number, lng: number }} [options.center=DEFAULT_VWA_CENTER]
  * @param {number} [options.maxResults=100]
  * @param {number} [options.searchRadius=100]
  * @param {number} [options.timeoutMs=15000]
@@ -36,8 +50,10 @@ function formatAddress(item) {
  */
 export function createVolleyballWaCrawler(options = {}) {
   const fetchFn = options.fetchFn || globalThis.fetch;
-  const lat = options.lat !== undefined ? options.lat : -31.95;
-  const lng = options.lng !== undefined ? options.lng : 115.86;
+  const center = options.center || {
+    lat: options.lat !== undefined ? options.lat : DEFAULT_VWA_CENTER.lat,
+    lng: options.lng !== undefined ? options.lng : DEFAULT_VWA_CENTER.lng
+  };
   const maxResults = options.maxResults || 100;
   const searchRadius = options.searchRadius || 100;
   const timeoutMs = options.timeoutMs || 15000;
@@ -47,7 +63,7 @@ export function createVolleyballWaCrawler(options = {}) {
     ...(typeof options.minExpectedListings === 'number' ? { minExpectedListings: options.minExpectedListings } : {}),
 
     async fetchListings() {
-      const url = `${VOLLEYBALL_WA_ENDPOINT}?action=store_search&lat=${lat}&lng=${lng}&max_results=${maxResults}&search_radius=${searchRadius}`;
+      const url = `${VOLLEYBALL_WA_ENDPOINT}?action=store_search&lat=${center.lat}&lng=${center.lng}&max_results=${maxResults}&search_radius=${searchRadius}`;
       const headers = {
         'User-Agent': 'Mozilla/5.0 (compatible; MyPlaydexCrawler/1.0; +https://myplaydex.com/bot; Linux x86_64)',
         'Accept': 'application/json'
@@ -80,10 +96,22 @@ export function createVolleyballWaCrawler(options = {}) {
           continue;
         }
 
-        const storeName = (item.store || 'Volleyball Club').trim();
+        const clubName = (item.store || 'Volleyball Club').trim();
         const address = formatAddress(item);
         const urlLink = item.url && item.url.startsWith('http') ? item.url : 'https://volleyballwa.com.au/places/find-a-club/';
         const costDescription = 'Casual volleyball fees apply';
+
+        const terms = (item.terms || '').trim();
+        const isBeach = clubName.toLowerCase().includes('beach') ||
+          (item.address && item.address.toLowerCase().includes('beach')) ||
+          terms.toLowerCase().includes('beach');
+        const disciplineLabel = isBeach ? 'Beach volleyball' : 'Indoor and social volleyball';
+
+        const hoursSummary = summarizeHours(item.hours);
+        const hoursSuffix = hoursSummary ? ` Weekly schedule: ${hoursSummary.slice(0, 100)}...` : '';
+
+        // Follow GLOSSARY.md avoiding 'facilities', 'places', or 'grounds'
+        const description = `${clubName} (${terms || 'Volleyball Venue'}) - ${disciplineLabel} sessions and social competitions in Greater Perth.${hoursSuffix}`;
 
         listings.push({
           source: 'volleyball_wa',
@@ -91,14 +119,14 @@ export function createVolleyballWaCrawler(options = {}) {
           source_url: urlLink,
           external_url: urlLink,
           region_id: 'perth',
-          title: storeName,
-          description: `${storeName} - Volleyball sessions and court facilities in Greater Perth.`,
+          title: clubName,
+          description,
           category: 'sports',
           subcategory: 'volleyball',
           sport: 'volleyball',
           organizer: {
-            id: `org_${slugify(storeName)}`,
-            name: storeName,
+            id: `org_${slugify(clubName)}`,
+            name: clubName,
             website: item.url || null,
             contact: {
               phone: item.phone || null,
@@ -106,11 +134,11 @@ export function createVolleyballWaCrawler(options = {}) {
             }
           },
           venue: {
-            name: storeName,
+            name: clubName,
             address,
             coordinates: { lat: itemLat, lng: itemLng }
           },
-          venue_name: storeName,
+          venue_name: clubName,
           address,
           coordinates: { lat: itemLat, lng: itemLng },
           cost_description: costDescription,
