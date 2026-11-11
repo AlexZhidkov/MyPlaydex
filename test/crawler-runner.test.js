@@ -453,17 +453,19 @@ test('Seam 4C: CLI exits with status 1 on anomaly and writes GITHUB_STEP_SUMMARY
   }
 });
 
-test('Seam 7: getDefaultCrawlers registers dlgsc and volleyball_wa alongside stirling in production suite', () => {
+test('Seam 7: getDefaultCrawlers registers all 5 canonical crawlers in production suite', () => {
   const crawlers = getDefaultCrawlers();
   const names = crawlers.map(c => c.name);
 
   assert.ok(names.includes('stirling'), 'stirling should be in default crawlers');
   assert.ok(names.includes('dlgsc'), 'dlgsc should be in default crawlers');
   assert.ok(names.includes('volleyball_wa'), 'volleyball_wa should be in default crawlers');
-  assert.equal(names.length, 3);
+  assert.ok(names.includes('eventbrite'), 'eventbrite should be in default crawlers');
+  assert.ok(names.includes('meetup'), 'meetup should be in default crawlers');
+  assert.equal(names.length, 5);
 });
 
-test('Seam 7: runCrawlerHarness targets dlgsc and volleyball_wa individually', async () => {
+test('Seam 7: runCrawlerHarness targets dlgsc, volleyball_wa, eventbrite, and meetup individually', async () => {
   const mockAdapter = {
     async batchUpsertActivities(items) {
       return { total: items.length, upserted: items.length, failed: 0, batches: 1, errors: [], dryRun: true };
@@ -510,6 +512,38 @@ test('Seam 7: runCrawlerHarness targets dlgsc and volleyball_wa individually', a
           }
         ];
       }
+    },
+    {
+      name: 'eventbrite',
+      async fetchListings() {
+        executed.push('eventbrite');
+        return [
+          {
+            source: 'eventbrite',
+            source_id: 'eb-1',
+            title: 'Perth Running Collective 5K',
+            sport: 'running',
+            coordinates: { lat: -31.96, lng: 115.84 },
+            venue_name: 'Kings Park'
+          }
+        ];
+      }
+    },
+    {
+      name: 'meetup',
+      async fetchListings() {
+        executed.push('meetup');
+        return [
+          {
+            source: 'meetup',
+            source_id: 'mu-1',
+            title: 'Social Badminton',
+            sport: 'badminton',
+            coordinates: { lat: -31.81, lng: 115.82 },
+            venue_name: 'Kingsway Stadium'
+          }
+        ];
+      }
     }
   ];
 
@@ -534,4 +568,26 @@ test('Seam 7: runCrawlerHarness targets dlgsc and volleyball_wa individually', a
   assert.deepEqual(executed, ['volleyball_wa']);
   assert.equal(vwaSummary.successfulCrawlers, 1);
   assert.equal(vwaSummary.totalValid, 1);
+
+  // Test targeting eventbrite individually
+  executed.length = 0;
+  const ebSummary = await runCrawlerHarness({
+    crawlers: testCrawlers,
+    adapter: mockAdapter,
+    options: { crawler: 'eventbrite' }
+  });
+  assert.deepEqual(executed, ['eventbrite']);
+  assert.equal(ebSummary.successfulCrawlers, 1);
+  assert.equal(ebSummary.totalValid, 1);
+
+  // Test targeting meetup individually
+  executed.length = 0;
+  const muSummary = await runCrawlerHarness({
+    crawlers: testCrawlers,
+    adapter: mockAdapter,
+    options: { crawler: 'meetup' }
+  });
+  assert.deepEqual(executed, ['meetup']);
+  assert.equal(muSummary.successfulCrawlers, 1);
+  assert.equal(muSummary.totalValid, 1);
 });

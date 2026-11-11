@@ -7,9 +7,18 @@ on:
   workflow_dispatch:
     inputs:
       crawler:
-        description: 'Target crawler to execute (all, stirling, mock)'
+        description: 'Target crawler to execute'
         required: false
         default: 'all'
+        type: choice
+        options:
+          - all
+          - stirling
+          - dlgsc
+          - volleyball_wa
+          - eventbrite
+          - meetup
+          - mock
       dry_run:
         description: 'Run without writing changes to Firestore'
         type: boolean

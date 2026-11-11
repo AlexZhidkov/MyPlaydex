@@ -10,6 +10,8 @@ import { createFirestoreAdapter, initFirestoreFromEnv } from './firestore-adapte
 import { createStirlingCrawler } from './crawlers/stirling-crawler.js';
 import { createDlgscCrawler } from './crawlers/dlgsc-crawler.js';
 import { createVolleyballWaCrawler } from './crawlers/volleyball-wa-crawler.js';
+import { createEventbriteCrawler } from './crawlers/eventbrite-crawler.js';
+import { createMeetupCrawler } from './crawlers/meetup-crawler.js';
 import { createMockCrawler } from './crawlers/mock-crawler.js';
 import { formatStepSummaryTable, writeStepSummary } from './crawler-reporter.js';
 
@@ -215,7 +217,9 @@ export function getDefaultCrawlers(options = {}) {
   const crawlers = [
     createStirlingCrawler(),
     createDlgscCrawler(),
-    createVolleyballWaCrawler()
+    createVolleyballWaCrawler(),
+    createEventbriteCrawler(),
+    createMeetupCrawler()
   ];
   if (options.includeMock) {
     crawlers.push(createMockCrawler());
