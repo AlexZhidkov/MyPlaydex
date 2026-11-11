@@ -9,6 +9,39 @@ import { sanitizeActivity } from './sanitizer.js';
 import { createFirestoreAdapter, initFirestoreFromEnv } from './firestore-adapter.js';
 import { createStirlingCrawler } from './crawlers/stirling-crawler.js';
 import { createMockCrawler } from './crawlers/mock-crawler.js';
+import { formatStepSummaryTable, writeStepSummary } from './crawler-reporter.js';
+
+export { formatStepSummaryTable, writeStepSummary };
+
+/** Maximum fraction of invalid records allowed before triggering ERR_SCHEMA_DRIFT */
+export const MAX_INVALID_DROP_RATE = 0.20;
+
+/**
+ * Builds a standardized crawler execution record.
+ */
+function createResultRecord({
+  crawlerName,
+  status,
+  errorCode = null,
+  error = null,
+  rawCount = 0,
+  validCount = 0,
+  invalidCount = 0,
+  upsertedCount = 0,
+  durationMs = 0
+}) {
+  return {
+    crawlerName,
+    status,
+    errorCode,
+    error,
+    rawCount,
+    validCount,
+    invalidCount,
+    upsertedCount,
+    durationMs
+  };
+}
 
 /**
  * Executes a suite of crawlers through the sanitization and ingestion pipeline.
@@ -41,9 +74,14 @@ export async function runCrawlerHarness({ crawlers = [], adapter, options = {} }
 
   for (const crawler of activeCrawlers) {
     const startTime = Date.now();
+    let rawItems = [];
+    let validItems = [];
+    let invalidItems = [];
+    let upsertedCount = 0;
+
     try {
       logger.log?.(`[Harness] Starting crawler: ${crawler.name}`);
-      let rawItems = await crawler.fetchListings();
+      rawItems = await crawler.fetchListings();
 
       if (limit && limit > 0) {
         rawItems = rawItems.slice(0, limit);
@@ -51,8 +89,27 @@ export async function runCrawlerHarness({ crawlers = [], adapter, options = {} }
 
       totalRaw += rawItems.length;
 
-      const validItems = [];
-      const invalidItems = [];
+      const minExpectedListings = typeof crawler.minExpectedListings === 'number'
+        ? crawler.minExpectedListings
+        : (typeof options.minExpectedListings === 'number' ? options.minExpectedListings : 1);
+
+      if (rawItems.length < minExpectedListings) {
+        const durationMs = Date.now() - startTime;
+        failedCrawlers += 1;
+        results.push(createResultRecord({
+          crawlerName: crawler.name,
+          status: 'failed',
+          errorCode: 'ERR_ZERO_YIELD',
+          error: 'ERR_ZERO_YIELD',
+          rawCount: rawItems.length,
+          validCount: 0,
+          invalidCount: 0,
+          upsertedCount: 0,
+          durationMs
+        }));
+        logger.error?.(`[Harness] Crawler ${crawler.name} failed with ERR_ZERO_YIELD: returned ${rawItems.length} items (expected at least ${minExpectedListings})`);
+        continue;
+      }
 
       for (const item of rawItems) {
         try {
@@ -66,7 +123,6 @@ export async function runCrawlerHarness({ crawlers = [], adapter, options = {} }
       totalValid += validItems.length;
       totalInvalid += invalidItems.length;
 
-      let upsertedCount = 0;
       if (validItems.length > 0) {
         const writeResult = await adapter.batchUpsertActivities(validItems);
         upsertedCount = writeResult.upserted;
@@ -74,38 +130,57 @@ export async function runCrawlerHarness({ crawlers = [], adapter, options = {} }
       }
 
       const durationMs = Date.now() - startTime;
-      successfulCrawlers += 1;
+      const isSchemaDrift = rawItems.length > 0 && (invalidItems.length / rawItems.length) > MAX_INVALID_DROP_RATE;
 
-      results.push({
-        crawlerName: crawler.name,
-        status: 'ok',
-        rawCount: rawItems.length,
-        validCount: validItems.length,
-        invalidCount: invalidItems.length,
-        upsertedCount,
-        durationMs
-      });
-
-      logger.log?.(`[Harness] Finished ${crawler.name}: ${validItems.length} valid / ${rawItems.length} raw (${durationMs}ms)`);
+      if (isSchemaDrift) {
+        failedCrawlers += 1;
+        results.push(createResultRecord({
+          crawlerName: crawler.name,
+          status: 'failed',
+          errorCode: 'ERR_SCHEMA_DRIFT',
+          error: 'ERR_SCHEMA_DRIFT',
+          rawCount: rawItems.length,
+          validCount: validItems.length,
+          invalidCount: invalidItems.length,
+          upsertedCount,
+          durationMs
+        }));
+        logger.error?.(`[Harness] Crawler ${crawler.name} breached anomaly gate ERR_SCHEMA_DRIFT: drop rate ${((invalidItems.length / rawItems.length) * 100).toFixed(1)}% exceeds ${(MAX_INVALID_DROP_RATE * 100).toFixed(0)}% threshold`);
+      } else {
+        successfulCrawlers += 1;
+        results.push(createResultRecord({
+          crawlerName: crawler.name,
+          status: 'ok',
+          errorCode: null,
+          error: null,
+          rawCount: rawItems.length,
+          validCount: validItems.length,
+          invalidCount: invalidItems.length,
+          upsertedCount,
+          durationMs
+        }));
+        logger.log?.(`[Harness] Finished ${crawler.name}: ${validItems.length} valid / ${rawItems.length} raw (${durationMs}ms)`);
+      }
     } catch (err) {
       const durationMs = Date.now() - startTime;
       failedCrawlers += 1;
       logger.error?.(`[Harness] Crawler ${crawler.name} failed:`, err);
 
-      results.push({
+      results.push(createResultRecord({
         crawlerName: crawler.name,
         status: 'failed',
+        errorCode: err.code || 'ERR_EXECUTION_FAILED',
         error: err.message,
-        rawCount: 0,
-        validCount: 0,
-        invalidCount: 0,
-        upsertedCount: 0,
+        rawCount: rawItems.length,
+        validCount: validItems.length,
+        invalidCount: invalidItems.length,
+        upsertedCount,
         durationMs
-      });
+      }));
     }
   }
 
-  return {
+  const summary = {
     totalCrawlers: activeCrawlers.length,
     successfulCrawlers,
     failedCrawlers,
@@ -115,6 +190,16 @@ export async function runCrawlerHarness({ crawlers = [], adapter, options = {} }
     totalUpserted,
     results
   };
+
+  const stepSummaryFile = options.stepSummaryFile !== undefined
+    ? options.stepSummaryFile
+    : process.env.GITHUB_STEP_SUMMARY;
+
+  if (stepSummaryFile) {
+    writeStepSummary(summary, stepSummaryFile);
+  }
+
+  return summary;
 }
 
 /**
@@ -145,6 +230,8 @@ async function main() {
   const targetCrawler = crawlerArgMatch ? crawlerArgMatch.split('=')[1] : 'all';
   const projectArgMatch = args.find(a => a.startsWith('--project='));
   const targetProject = projectArgMatch ? projectArgMatch.split('=')[1] : (process.env.FIREBASE_PROJECT_ID || 'myplaydex');
+  const minExpectedArgMatch = args.find(a => a.startsWith('--min-expected=') || a.startsWith('--min-expected-listings='));
+  const minExpectedListings = minExpectedArgMatch ? parseInt(minExpectedArgMatch.split('=')[1], 10) : undefined;
   const useAdc = args.includes('--use-adc') || isSeed || Boolean(process.env.FIREBASE_USE_ADC);
 
   console.log(`[Crawler Harness] Initializing run (crawler: ${targetCrawler}, dry-run: ${isDryRunArg}, seed: ${isSeed}, project: ${targetProject})`);
@@ -174,7 +261,10 @@ async function main() {
   const summary = await runCrawlerHarness({
     crawlers,
     adapter,
-    options: { crawler: targetCrawler }
+    options: {
+      crawler: targetCrawler,
+      minExpectedListings
+    }
   });
 
   console.log('\n--- Ingestion Summary Report ---');

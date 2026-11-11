@@ -19,9 +19,11 @@ export const STIRLING_ENDPOINT = 'https://www.stirling.wa.gov.au/ksearchevent/ks
 export function createStirlingCrawler(options = {}) {
   const fetchFn = options.fetchFn || globalThis.fetch;
   const pageSize = options.pageSize || 50;
+  const timeoutMs = options.timeoutMs || 15000;
 
   return {
     name: 'stirling',
+    ...(typeof options.minExpectedListings === 'number' ? { minExpectedListings: options.minExpectedListings } : {}),
 
     async fetchListings() {
       const searchParam = JSON.stringify([
@@ -45,10 +47,13 @@ export function createStirlingCrawler(options = {}) {
         take: pageSize
       });
 
+      const signal = options.signal || (typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(timeoutMs) : undefined);
+
       const response = await fetchFn(STIRLING_ENDPOINT, {
         method: 'POST',
         headers,
-        body
+        body,
+        ...(signal ? { signal } : {})
       });
 
       if (!response.ok) {
