@@ -231,3 +231,158 @@ test('Integration: MOCK_PERTH_ACTIVITIES conforms to canonical schema and integr
   assert.ok(vbState.filteredActivities.length > 0);
   assert.ok(vbState.filteredActivities.every((a) => a.subcategory === 'volleyball' || a.sport === 'volleyball'));
 });
+
+test('Seam 1: Discovery store supports cold-start location: null, numeric and "all" radius, and 50-item cap', () => {
+  const manyActivities = Array.from({ length: 60 }, (_, i) => ({
+    id: `act_${i}`,
+    title: `Activity ${i}`,
+    sport: 'soccer',
+    subcategory: 'soccer',
+    cost: { is_free: true, display_price: 'Free' },
+    venue: {
+      name: `Venue ${i}`,
+      coordinates: {
+        lat: -31.9505 + (i * 0.01), // spreading outwards north
+        lng: 115.8605
+      }
+    },
+    schedule: {
+      start_date: '2026-11-01',
+      end_date: null,
+      recurrence: 'weekly'
+    }
+  }));
+
+  // Cold start: location is null -> 0 activities
+  const store = createDiscoveryStore({
+    activities: manyActivities,
+    location: null,
+    radiusKm: 10,
+    filters: { sports: [] },
+    maxResults: 50
+  });
+
+  const coldState = store.getState();
+  assert.equal(coldState.location, null);
+  assert.equal(coldState.filteredActivities.length, 0);
+
+  // Set location to Perth CBD
+  store.setLocation({ name: 'Perth CBD', lat: -31.9505, lng: 115.8605 });
+  const activeState = store.getState();
+  assert.ok(activeState.location !== null);
+  assert.ok(activeState.filteredActivities.length > 0);
+  assert.ok(activeState.filteredActivities.every(a => typeof a.distanceKm === 'number'));
+  assert.ok(activeState.filteredActivities.every(a => a.distanceKm <= 10));
+
+  // Switch radius to 'all' -> distance cutoff removed, sorted nearest to furthest, capped at 50
+  store.setRadius('all');
+  const allState = store.getState();
+  assert.equal(allState.radiusKm, 'all');
+  assert.equal(allState.filteredActivities.length, 50); // Capped at maxResults: 50
+  for (let i = 0; i < allState.filteredActivities.length - 1; i++) {
+    assert.ok(allState.filteredActivities[i].distanceKm <= allState.filteredActivities[i + 1].distanceKm);
+  }
+});
+
+test('Seam 1: Deterministic AWST expiration filters out expired one-off activities and keeps weekly recurring', () => {
+  const testActivities = [
+    {
+      id: 'expired_one_off',
+      title: 'Past One-off Workshop',
+      subcategory: 'soccer',
+      venue: { coordinates: { lat: -31.9505, lng: 115.8605 } },
+      schedule: {
+        start_date: '2026-11-01',
+        end_date: '2026-11-05',
+        recurrence: 'none'
+      }
+    },
+    {
+      id: 'active_one_off',
+      title: 'Upcoming Tournament',
+      subcategory: 'soccer',
+      venue: { coordinates: { lat: -31.9505, lng: 115.8605 } },
+      schedule: {
+        start_date: '2026-11-20',
+        end_date: '2026-11-22',
+        recurrence: 'none'
+      }
+    },
+    {
+      id: 'weekly_recurring_past_start',
+      title: 'Weekly Social Kickabout',
+      subcategory: 'soccer',
+      venue: { coordinates: { lat: -31.9505, lng: 115.8605 } },
+      schedule: {
+        start_date: '2025-01-01',
+        end_date: null,
+        recurrence: 'weekly'
+      }
+    }
+  ];
+
+  // Simulating today as 2026-11-11 in AWST
+  const results = filterAndRankActivities(testActivities, {
+    location: { lat: -31.9505, lng: 115.8605 },
+    radiusKm: 25,
+    todayAwst: '2026-11-11'
+  });
+
+  const ids = results.map(r => r.id);
+  assert.ok(!ids.includes('expired_one_off'), 'expired_one_off should be excluded');
+  assert.ok(ids.includes('active_one_off'), 'active_one_off should be included');
+  assert.ok(ids.includes('weekly_recurring_past_start'), 'weekly_recurring_past_start should be included');
+});
+
+test('Seam 1: Multi-sport OR filtering matches any selected sport category', () => {
+  const testActivities = [
+    { id: '1', subcategory: 'soccer', venue: { coordinates: { lat: -31.95, lng: 115.86 } } },
+    { id: '2', subcategory: 'volleyball', venue: { coordinates: { lat: -31.95, lng: 115.86 } } },
+    { id: '3', subcategory: 'pickleball', venue: { coordinates: { lat: -31.95, lng: 115.86 } } }
+  ];
+
+  const store = createDiscoveryStore({
+    activities: testActivities,
+    location: { lat: -31.95, lng: 115.86 },
+    filters: { sports: ['soccer', 'pickleball'] }
+  });
+
+  const state = store.getState();
+  const ids = state.filteredActivities.map(a => a.id);
+  assert.deepEqual(ids.sort(), ['1', '3']);
+
+  // Clear filters
+  store.setSportsFilter([]);
+  assert.equal(store.getState().filteredActivities.length, 3);
+});
+
+test('Seam 1: store.subscribe supports targeted event subscriptions per spec.md §7.2', () => {
+  const store = createDiscoveryStore({
+    activities: [
+      { id: '1', subcategory: 'soccer', venue: { coordinates: { lat: -31.95, lng: 115.86 } } }
+    ],
+    location: null
+  });
+
+  const locationEvents = [];
+  store.subscribe('location', (state) => {
+    locationEvents.push(state.location?.name);
+  });
+
+  const radiusEvents = [];
+  store.subscribe('radius', (state) => {
+    radiusEvents.push(state.radiusKm);
+  });
+
+  store.setLocation({ name: 'Perth', lat: -31.95, lng: 115.86 });
+  assert.equal(locationEvents.length, 1);
+  assert.equal(locationEvents[0], 'Perth');
+  assert.equal(radiusEvents.length, 0);
+
+  store.setRadius(25);
+  assert.equal(locationEvents.length, 1);
+  assert.equal(radiusEvents.length, 1);
+  assert.equal(radiusEvents[0], 25);
+});
+
+

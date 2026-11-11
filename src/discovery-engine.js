@@ -1,7 +1,7 @@
 /**
  * Discovery Engine for MyPlaydex
  * Pure JavaScript module implementing geospatial calculation, multi-facet filtering,
- * and reactive discovery state synchronization.
+ * deterministic AWST listing expiration, and reactive discovery state synchronization.
  */
 
 const EARTH_RADIUS_KM = 6371;
@@ -40,18 +40,75 @@ export function calculateDistanceKm(coordA, coordB) {
 }
 
 /**
- * Filter activities by categorical facets.
+ * Formats a Date object or current time to an ISO YYYY-MM-DD date in AWST (UTC+08:00).
+ *
+ * @param {Date} [date=new Date()]
+ * @returns {string} Date string e.g. "2026-11-11"
+ */
+export function getTodayAwstDate(date = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Australia/Perth',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(date);
+}
+
+/**
+ * Checks whether an activity is expired based on AWST date comparison.
+ * Weekly recurring activities are retained indefinitely.
+ * Non-recurring activities with end_date (or start_date) < today in AWST are expired.
+ *
+ * @param {object} activity
+ * @param {string} [todayAwst=getTodayAwstDate()]
+ * @returns {boolean}
+ */
+export function isActivityExpired(activity, todayAwst = getTodayAwstDate()) {
+  const schedule = activity?.schedule;
+  if (!schedule) return false;
+
+  const recurrence = schedule.recurrence || activity.recurrence || 'none';
+  if (recurrence === 'weekly') {
+    return false;
+  }
+
+  const endDate = schedule.end_date || activity.end_date;
+  if (endDate && endDate < todayAwst) {
+    return true;
+  }
+
+  const startDate = schedule.start_date || activity.start_date;
+  if (!endDate && startDate && startDate < todayAwst) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Filter activities by categorical facets and deterministic AWST expiration.
  *
  * @param {Array<object>} activities
- * @param {{ sport?: string, freeOnly?: boolean, gender?: string, age?: string }} filters
+ * @param {{ sport?: string, sports?: string[], freeOnly?: boolean, gender?: string, age?: string }} [filters={}]
+ * @param {string} [todayAwst=getTodayAwstDate()]
  * @returns {Array<object>} Filtered activities
  */
-export function filterActivities(activities, filters = {}) {
-  const { sport, freeOnly, gender, age } = filters;
+export function filterActivities(activities, filters = {}, todayAwst = getTodayAwstDate()) {
+  const { sport, sports, freeOnly, gender, age } = filters;
 
   return activities.filter((activity) => {
-    // Sport facet
-    if (sport && sport !== 'all') {
+    // Expiration check
+    if (isActivityExpired(activity, todayAwst)) {
+      return false;
+    }
+
+    // Sport facets: multi-sport array (OR logic) or single sport string
+    if (Array.isArray(sports) && sports.length > 0) {
+      const actSport = activity.subcategory || activity.sport;
+      if (!sports.includes(actSport)) {
+        return false;
+      }
+    } else if (sport && sport !== 'all') {
       const actSport = activity.subcategory || activity.sport;
       if (actSport !== sport) {
         return false;
@@ -93,32 +150,44 @@ export function filterActivities(activities, filters = {}) {
 }
 
 /**
- * Filter and rank activities by distance from center and selected facets.
+ * Filter and rank activities by distance from location and selected facets.
+ * Supports location: null (returns []), numeric and 'all' radius, and maxResults cap.
  *
  * @param {Array<object>} activities
- * @param {object} options
- * @param {{ lat: number, lng: number }} options.center
- * @param {number} [options.radiusKm=10]
+ * @param {object} [options={}]
+ * @param {{ lat: number, lng: number }|null} [options.location]
+ * @param {{ lat: number, lng: number }} [options.center]
+ * @param {number|'all'} [options.radiusKm=10]
  * @param {object} [options.filters={}]
+ * @param {number} [options.maxResults=50]
+ * @param {string} [options.todayAwst]
  * @returns {Array<object>} Filtered and distance-ranked activities
  */
 export function filterAndRankActivities(activities, options = {}) {
-  const {
-    center = { lat: -31.9505, lng: 115.8605 },
-    radiusKm = 10,
-    filters = {}
-  } = options;
+  const location = options.location !== undefined ? options.location : options.center;
+  // Cold start gate: if location is null or undefined, return no activities
+  if (!location || typeof location.lat !== 'number' || typeof location.lng !== 'number') {
+    return [];
+  }
 
-  // Step 1: Filter by categorical facets
-  const facetMatched = filterActivities(activities, filters);
+  const radiusKm = options.radiusKm !== undefined ? options.radiusKm : 10;
+  const filters = options.filters || {};
+  const maxResults = options.maxResults !== undefined ? options.maxResults : 50;
+  const todayAwst = options.todayAwst || getTodayAwstDate();
 
-  // Step 2: Compute distance for each and filter by radius
+  // Step 1: Filter by categorical facets and expiration
+  const facetMatched = filterActivities(activities, filters, todayAwst);
+
+  // Step 2: Compute distance for each and filter by radius (unless radiusKm === 'all')
+  const isAllRadius = radiusKm === 'all' || radiusKm === Infinity;
+  const numericRadius = Number(radiusKm);
+
   const withDistance = [];
   for (const activity of facetMatched) {
-    const coords = activity.venue?.coordinates;
-    const distanceKm = coords ? calculateDistanceKm(center, coords) : Infinity;
+    const coords = activity.venue?.coordinates || (activity.venue?.lat !== undefined ? activity.venue : null);
+    const distanceKm = coords ? calculateDistanceKm(location, coords) : Infinity;
 
-    if (distanceKm <= radiusKm) {
+    if (isAllRadius || distanceKm <= numericRadius) {
       withDistance.push({
         ...activity,
         distanceKm
@@ -126,8 +195,13 @@ export function filterAndRankActivities(activities, options = {}) {
     }
   }
 
-  // Step 3: Sort by proximity
+  // Step 3: Sort by proximity (nearest to furthest)
   withDistance.sort((a, b) => a.distanceKm - b.distanceKm);
+
+  // Step 4: Cap at maxResults if specified
+  if (typeof maxResults === 'number' && maxResults > 0) {
+    return withDistance.slice(0, maxResults);
+  }
 
   return withDistance;
 }
@@ -136,19 +210,32 @@ export function filterAndRankActivities(activities, options = {}) {
  * Creates a reactive Discovery State Store.
  * Provides subscription listeners and state transition methods for zero-framework UI synchronization.
  *
- * @param {Array<object>} initialActivities
- * @param {object} [initialConfig={}]
+ * @param {Array<object>|object} [activitiesOrConfig=[]] Initial activities array or unified configuration object
+ * @param {object} [optionalConfig={}] Configuration object if first argument is array
  */
-export function createDiscoveryStore(initialActivities = [], initialConfig = {}) {
+export function createDiscoveryStore(activitiesOrConfig = [], optionalConfig = {}) {
+  let initialActivities = [];
+  let config = {};
+
+  if (Array.isArray(activitiesOrConfig)) {
+    initialActivities = activitiesOrConfig;
+    config = optionalConfig || {};
+  } else if (activitiesOrConfig && typeof activitiesOrConfig === 'object') {
+    initialActivities = activitiesOrConfig.activities || [];
+    config = activitiesOrConfig;
+  }
+
   const activities = [...initialActivities];
-  let center = initialConfig.center || { lat: -31.9505, lng: 115.8605 };
-  let radiusKm = initialConfig.radiusKm || 10;
+  let location = config.location !== undefined ? config.location : (config.center || null);
+  let radiusKm = config.radiusKm !== undefined ? config.radiusKm : 10;
+  let maxResults = config.maxResults !== undefined ? config.maxResults : 50;
   let filters = {
+    sports: [],
     sport: 'all',
     freeOnly: false,
     gender: 'all',
     age: 'all',
-    ...(initialConfig.filters || {})
+    ...(config.filters || {})
   };
   let selectedActivityId = null;
   let hoveredActivityId = null;
@@ -157,9 +244,10 @@ export function createDiscoveryStore(initialActivities = [], initialConfig = {})
 
   function computeFiltered() {
     return filterAndRankActivities(activities, {
-      center,
+      location,
       radiusKm,
-      filters
+      filters,
+      maxResults
     });
   }
 
@@ -177,27 +265,47 @@ export function createDiscoveryStore(initialActivities = [], initialConfig = {})
   function getState() {
     return {
       activities,
-      center: { ...center },
+      location: location ? { ...location } : null,
+      center: location ? { ...location } : null,
       radiusKm,
-      filters: { ...filters },
+      filters: { ...filters, sports: [...(filters.sports || [])] },
       selectedActivityId,
       hoveredActivityId,
+      maxResults,
       filteredActivities: computeFiltered()
     };
   }
 
   return {
     getState,
+    setLocation(newLocation) {
+      location = newLocation ? { ...newLocation } : null;
+      notify('location');
+    },
     setCenter(newCenter) {
-      center = { ...newCenter };
+      location = newCenter ? { ...newCenter } : null;
       notify('center');
     },
     setRadius(newRadiusKm) {
-      radiusKm = Number(newRadiusKm);
+      radiusKm = newRadiusKm === 'all' ? 'all' : Number(newRadiusKm);
       notify('radius');
     },
     setFilter(key, value) {
       filters[key] = value;
+      notify('filter');
+    },
+    setSportsFilter(sportsList = []) {
+      filters.sports = Array.isArray(sportsList) ? [...sportsList] : [];
+      notify('filter');
+    },
+    clearFilters() {
+      filters = {
+        sports: [],
+        sport: 'all',
+        freeOnly: false,
+        gender: 'all',
+        age: 'all'
+      };
       notify('filter');
     },
     setSelectedActivity(id) {
@@ -209,7 +317,21 @@ export function createDiscoveryStore(initialActivities = [], initialConfig = {})
       hoveredActivityId = id;
       notify('hover');
     },
-    subscribe(listener) {
+    subscribe(eventOrListener, optionalListener) {
+      let listener;
+      if (typeof eventOrListener === 'string' && typeof optionalListener === 'function') {
+        const targetEvent = eventOrListener;
+        listener = (state, changeType) => {
+          if (changeType === targetEvent || targetEvent === '*') {
+            optionalListener(state, changeType);
+          }
+        };
+      } else if (typeof eventOrListener === 'function') {
+        listener = eventOrListener;
+      } else {
+        return () => {};
+      }
+
       listeners.add(listener);
       return () => listeners.delete(listener);
     }

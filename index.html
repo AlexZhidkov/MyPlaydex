@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MyPlaydex — Greater Perth Amateur &amp; Casual Sports Discovery</title>
+  <meta name="description" content="Discover casual sports games, weekly social kickabouts, and club sessions across Greater Perth without accounts or apps." />
+
+  <!-- Open Graph / Facebook -->
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://myplaydex.com.au/" />
+  <meta property="og:title" content="MyPlaydex — Greater Perth Amateur Sports Discovery" />
+  <meta property="og:description" content="Find social soccer, volleyball, basketball, AFL, tennis, pickleball, and run clubs near you in Greater Perth." />
+  <meta property="og:image" content="https://myplaydex.com.au/og-card.png" />
+
+  <!-- Twitter -->
+  <meta property="twitter:card" content="summary_large_image" />
+  <meta property="twitter:title" content="MyPlaydex — Greater Perth Amateur Sports Discovery" />
+  <meta property="twitter:description" content="Find social soccer, volleyball, basketball, AFL, tennis, pickleball, and run clubs near you in Greater Perth." />
+
+  <link rel="stylesheet" href="./src/styles.css" />
+</head>
+<body>
+  <!-- Top Sticky Navigation Header -->
+  <header class="app-header">
+    <div class="header-container">
+      <a href="/" class="brand">
+        <span class="brand-icon" aria-hidden="true">🏅</span>
+        <span class="brand-name">MyPlaydex</span>
+        <span class="brand-badge">Perth</span>
+      </a>
+
+      <div class="header-actions">
+        <button
+          type="button"
+          class="location-switcher-btn"
+          id="location-switcher-btn"
+          aria-label="Change current location"
+        >
+          <span aria-hidden="true">📍</span>
+          <span id="current-location-label" class="location-name-text">Set Location</span>
+          <span class="caret-icon" aria-hidden="true">▾</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Feed & Controls -->
+  <main class="main-layout">
+    <!-- Proximity Radius Selector Bar -->
+    <section class="radius-bar-section" aria-label="Proximity Radius">
+      <div class="radius-pill-group" role="radiogroup" aria-label="Distance filter radius">
+        <button type="button" class="radius-pill" data-radius="5" role="radio" aria-checked="false">5 km</button>
+        <button type="button" class="radius-pill active" data-radius="10" role="radio" aria-checked="true">10 km</button>
+        <button type="button" class="radius-pill" data-radius="25" role="radio" aria-checked="false">25 km</button>
+        <button type="button" class="radius-pill" data-radius="all" role="radio" aria-checked="false">All</button>
+      </div>
+    </section>
+
+    <!-- Feed Meta & Count Summary -->
+    <div class="feed-meta-row">
+      <span id="result-count-label" class="result-count-label">Loading activities...</span>
+    </div>
+
+    <!-- Reactive Activity Feed Container -->
+    <section id="feed-container" class="feed-container" aria-live="polite">
+      <!-- Activity cards or empty state render here -->
+    </section>
+  </main>
+
+  <!-- Cold-Start Location Gate & Switcher Overlay -->
+  <div id="location-gate-overlay" class="location-gate-overlay" role="dialog" aria-modal="true" aria-labelledby="gate-title">
+    <div class="location-gate-card">
+      <button type="button" id="gate-close-btn" class="gate-close-btn" aria-label="Close location selector" style="display: none;">
+        &times;
+      </button>
+
+      <div class="gate-hero-icon" aria-hidden="true">📍</div>
+      <h2 id="gate-title" class="gate-title">Find Social Sports Near You</h2>
+      <p class="gate-subtitle">
+        Explore casual social sports, club training sessions, and weekend kickabouts across Greater Perth.
+      </p>
+
+      <div class="gate-actions">
+        <button type="button" class="btn btn-primary btn-gps" data-action="use-gps">
+          📍 Use My Current Location
+        </button>
+      </div>
+
+      <div class="gate-divider">
+        <span>or choose your suburb</span>
+      </div>
+
+      <div class="suburb-search-box">
+        <label for="suburb-search-input" class="visually-hidden">Search Greater Perth Suburb or Postcode</label>
+        <div class="input-with-icon">
+          <span class="search-icon" aria-hidden="true">🔎</span>
+          <input
+            type="text"
+            id="suburb-search-input"
+            name="suburb-search"
+            placeholder="Search suburb or postcode (e.g. Scarborough, 6000)..."
+            autocomplete="off"
+          />
+        </div>
+        <div id="suburb-suggestions-list" class="suburb-suggestions-list" role="listbox"></div>
+      </div>
+
+      <div class="gate-quick-presets">
+        <span class="presets-label">Popular suburbs:</span>
+        <div class="preset-chips">
+          <button type="button" class="chip-preset" data-suburb="Perth">Perth CBD</button>
+          <button type="button" class="chip-preset" data-suburb="Scarborough">Scarborough</button>
+          <button type="button" class="chip-preset" data-suburb="Fremantle">Fremantle</button>
+          <button type="button" class="chip-preset" data-suburb="Joondalup">Joondalup</button>
+          <button type="button" class="chip-preset" data-suburb="Cottesloe">Cottesloe</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="./src/app.js"></script>
+</body>
+</html>
