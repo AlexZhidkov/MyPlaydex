@@ -41,4 +41,9 @@ test('Seam 4: index.html exists, contains no Leaflet or map tile references, and
 
   // Verify top header location switcher
   assert.ok(html.includes('location-switcher') || html.includes('header-location'), 'Must include header location element');
+
+  // Seam D: Verify top header filter button and filter view container for Issue #6
+  assert.ok(html.includes('filter-header-btn') || html.includes('id="filter-header-btn"'), 'Must include header filter button');
+  assert.ok(html.includes('filter-view-overlay') || html.includes('id="filter-view-overlay"'), 'Must include filter view container');
+  assert.ok(html.includes('filter-count-badge') || html.includes('id="filter-count-badge"'), 'Must include filter count badge');
 });

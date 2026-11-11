@@ -33,6 +33,17 @@
       <div class="header-actions">
         <button
           type="button"
+          class="filter-header-btn"
+          id="filter-header-btn"
+          aria-label="Filter sports"
+          title="Filter by sport category"
+        >
+          <span class="filter-header-icon" aria-hidden="true">⚡</span>
+          <span class="filter-btn-text">Filters</span>
+          <span class="filter-count-badge hidden" id="filter-count-badge">0</span>
+        </button>
+        <button
+          type="button"
           class="location-switcher-btn"
           id="location-switcher-btn"
           aria-label="Change current location"
@@ -118,6 +129,9 @@
       </div>
     </div>
   </div>
+
+  <!-- Dedicated Multi-Category Sport Filter View Overlay (/#filters) -->
+  <div id="filter-view-overlay" class="filter-view-overlay hidden"></div>
 
   <script type="module" src="./src/app.js"></script>
 </body>

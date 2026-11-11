@@ -4,6 +4,8 @@ import {
   renderActivityCard,
   renderEmptyState,
   renderLocationGate,
+  renderFilterView,
+  CANONICAL_SPORTS,
   createOutboundDirectionsUrl,
   formatScheduleText
 } from '../src/discovery-ui.js';
@@ -107,3 +109,32 @@ test('Seam 3: renderLocationGate renders GPS trigger and search input', () => {
   assert.ok(html.includes('data-action="use-gps"'), 'Must have data-action for GPS');
   assert.ok(html.includes('id="suburb-search-input"') || html.includes('name="suburb-search"'), 'Must have suburb search input');
 });
+
+test('Seam A: CANONICAL_SPORTS defines all 11 sports and renderFilterView renders interactive chips and controls', () => {
+  assert.equal(CANONICAL_SPORTS.length, 11, 'Must define exactly 11 canonical sport subcategories');
+  const expectedSlugs = [
+    'soccer', 'volleyball', 'basketball', 'afl', 'tennis',
+    'pickleball', 'running', 'social-fitness', 'walking', 'cricket', 'other'
+  ];
+  for (const slug of expectedSlugs) {
+    assert.ok(CANONICAL_SPORTS.some(s => s.slug === slug), `Missing canonical sport: ${slug}`);
+  }
+
+  // Render with soccer and pickleball selected
+  const html = renderFilterView(['soccer', 'pickleball']);
+
+  // All 11 sport chips present
+  for (const slug of expectedSlugs) {
+    assert.ok(html.includes(`data-sport="${slug}"`), `Must contain chip for ${slug}`);
+  }
+
+  // Verify active state for selected sports
+  assert.ok(html.includes('data-sport="soccer"') && html.includes('aria-checked="true"'));
+  assert.ok(html.includes('data-sport="pickleball"') && html.includes('aria-checked="true"'));
+
+  // Action buttons
+  assert.ok(html.includes('data-action="apply-filters"'), 'Must have Apply Filters action');
+  assert.ok(html.includes('data-action="clear-filters"') || html.includes('data-action="clear-all"'), 'Must have Clear All action');
+  assert.ok(html.includes('data-action="close-filters"'), 'Must have Close action');
+});
+

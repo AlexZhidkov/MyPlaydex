@@ -4,7 +4,7 @@
  * Zero embedded map canvas per ADR 0002.
  */
 
-const SPORT_ICONS = {
+export const SPORT_ICONS = {
   soccer: '⚽',
   volleyball: '🏐',
   basketball: '🏀',
@@ -17,6 +17,20 @@ const SPORT_ICONS = {
   cricket: '🏏',
   other: '🎯'
 };
+
+export const CANONICAL_SPORTS = [
+  { slug: 'soccer', name: 'Soccer / Football' },
+  { slug: 'volleyball', name: 'Volleyball' },
+  { slug: 'basketball', name: 'Basketball' },
+  { slug: 'afl', name: 'AFL / Footy' },
+  { slug: 'tennis', name: 'Tennis' },
+  { slug: 'pickleball', name: 'Pickleball' },
+  { slug: 'running', name: 'Running' },
+  { slug: 'social-fitness', name: 'Social Fitness' },
+  { slug: 'walking', name: 'Walking' },
+  { slug: 'cricket', name: 'Cricket' },
+  { slug: 'other', name: 'Other Sports' }
+].map((sport) => ({ ...sport, icon: SPORT_ICONS[sport.slug] }));
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -240,3 +254,59 @@ export function renderLocationGate() {
     </div>
   `.trim();
 }
+
+/**
+ * Renders the full-screen Dedicated Multi-Category Sport Filter View (/#filters).
+ *
+ * @param {string[]} [selectedSports=[]]
+ * @returns {string} HTML string
+ */
+export function renderFilterView(selectedSports = []) {
+  const selectedSet = new Set(selectedSports);
+
+  const chipsHtml = CANONICAL_SPORTS.map((sport) => {
+    const isSelected = selectedSet.has(sport.slug);
+    return `
+      <button
+        type="button"
+        class="sport-filter-chip ${isSelected ? 'active' : ''}"
+        data-sport="${escapeHtml(sport.slug)}"
+        role="checkbox"
+        aria-checked="${isSelected ? 'true' : 'false'}"
+      >
+        <span class="chip-icon" aria-hidden="true">${sport.icon}</span>
+        <span class="chip-label">${escapeHtml(sport.name)}</span>
+      </button>
+    `.trim();
+  }).join('\n');
+
+  return `
+    <div class="filter-view-modal" id="filter-view-modal" role="dialog" aria-modal="true" aria-labelledby="filter-view-title">
+      <div class="filter-view-container">
+        <div class="filter-view-header">
+          <h2 id="filter-view-title" class="filter-view-title">Filter by Sport</h2>
+          <button type="button" class="btn-icon filter-close-btn" data-action="close-filters" aria-label="Close filters">
+            &times;
+          </button>
+        </div>
+
+        <div class="filter-view-body">
+          <p class="filter-instructions">Select sports to filter the feed (matches any selected sport):</p>
+          <div class="sport-chips-grid" role="group" aria-label="Sport categories">
+            ${chipsHtml}
+          </div>
+        </div>
+
+        <div class="filter-view-footer">
+          <button type="button" class="btn btn-outline" data-action="clear-filters">
+            Clear All
+          </button>
+          <button type="button" class="btn btn-primary" data-action="apply-filters">
+            Apply Filters
+          </button>
+        </div>
+      </div>
+    </div>
+  `.trim();
+}
+
