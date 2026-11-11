@@ -7,7 +7,9 @@ import {
   renderFilterView,
   CANONICAL_SPORTS,
   createOutboundDirectionsUrl,
-  formatScheduleText
+  formatScheduleText,
+  createSuggestActivityMailtoUrl,
+  createSuggestEditMailtoUrl
 } from '../src/discovery-ui.js';
 
 test('Seam 3: createOutboundDirectionsUrl generates valid Google Maps query URL per ADR 0002', () => {
@@ -136,5 +138,57 @@ test('Seam A: CANONICAL_SPORTS defines all 11 sports and renderFilterView render
   assert.ok(html.includes('data-action="apply-filters"'), 'Must have Apply Filters action');
   assert.ok(html.includes('data-action="clear-filters"') || html.includes('data-action="clear-all"'), 'Must have Clear All action');
   assert.ok(html.includes('data-action="close-filters"'), 'Must have Close action');
+});
+
+test('Seam 1: createSuggestActivityMailtoUrl and createSuggestEditMailtoUrl generate pre-populated mailto drafts', () => {
+  // Test suggest activity URL
+  const suggestUrl = createSuggestActivityMailtoUrl();
+  assert.ok(suggestUrl.startsWith('mailto:azhidkov@gmail.com?'), 'Must target azhidkov@gmail.com');
+  assert.ok(suggestUrl.includes('subject='), 'Must include subject parameter');
+  assert.ok(suggestUrl.includes('body='), 'Must include body parameter');
+  const decodedSuggest = decodeURIComponent(suggestUrl);
+  assert.ok(decodedSuggest.includes('Suggest an Activity'), 'Subject must mention Suggest an Activity');
+  assert.ok(decodedSuggest.includes('Club / Organizer Name:'), 'Body must prompt for club name');
+  assert.ok(decodedSuggest.includes('Sport / Activity:'), 'Body must prompt for sport');
+  assert.ok(decodedSuggest.includes('Venue Name & Address / Suburb:'), 'Body must prompt for venue');
+
+  // Test suggest edit URL with activity context
+  const activity = {
+    id: 'act_tennis_101',
+    title: 'Social Doubles Tennis',
+    subcategory: 'tennis',
+    source_url: 'https://example.com/tennis-club',
+    venue: {
+      name: 'Robertson Park Tennis Centre',
+      address: '176 Fitzgerald St, Perth WA 6000'
+    },
+    organizer: {
+      name: 'Tennis WA'
+    },
+    schedule: {
+      start_date: '2026-11-20',
+      start_time: '18:00',
+      end_time: '20:00',
+      recurrence: 'weekly',
+      day_of_week: 5
+    }
+  };
+
+  const editUrl = createSuggestEditMailtoUrl(activity);
+  assert.ok(editUrl.startsWith('mailto:azhidkov@gmail.com?'), 'Must target azhidkov@gmail.com');
+  const decodedEdit = decodeURIComponent(editUrl);
+  assert.ok(decodedEdit.includes('act_tennis_101'), 'Must include Activity ID');
+  assert.ok(decodedEdit.includes('Social Doubles Tennis'), 'Must include Activity Title');
+  assert.ok(decodedEdit.includes('tennis'), 'Must include sport subcategory');
+  assert.ok(decodedEdit.includes('Tennis WA'), 'Must include organizer name');
+  assert.ok(decodedEdit.includes('Robertson Park Tennis Centre'), 'Must include venue name');
+  assert.ok(decodedEdit.includes('176 Fitzgerald St'), 'Must include venue address');
+  assert.ok(decodedEdit.includes('https://example.com/tennis-club'), 'Must include source URL');
+
+  // Verify renderActivityCard includes the "Suggest an edit" link
+  const cardHtml = renderActivityCard(activity);
+  assert.ok(cardHtml.includes('Suggest an edit'), 'Activity card must include "Suggest an edit" link');
+  assert.ok(cardHtml.includes('mailto:azhidkov@gmail.com'), 'Card edit link must target mailto:azhidkov@gmail.com');
+  assert.ok(cardHtml.includes('suggest-edit-link'), 'Card edit link must have suggest-edit-link class');
 });
 

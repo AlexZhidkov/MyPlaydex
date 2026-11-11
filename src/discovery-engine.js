@@ -237,18 +237,29 @@ export function createDiscoveryStore(activitiesOrConfig = [], optionalConfig = {
     age: 'all',
     ...(config.filters || {})
   };
-  let selectedActivityId = null;
+  let selectedActivityId = config.selectedActivityId || config.pinnedActivityId || null;
   let hoveredActivityId = null;
 
   const listeners = new Set();
 
   function computeFiltered() {
-    return filterAndRankActivities(activities, {
+    const list = filterAndRankActivities(activities, {
       location,
       radiusKm,
       filters,
       maxResults
     });
+
+    if (selectedActivityId && !list.some((a) => a.id === selectedActivityId)) {
+      const target = activities.find((a) => a.id === selectedActivityId);
+      if (target) {
+        const coords = target.venue?.coordinates || (target.venue?.lat !== undefined ? target.venue : null);
+        const distanceKm = coords && location ? calculateDistanceKm(location, coords) : null;
+        list.unshift({ ...target, distanceKm: distanceKm !== null ? distanceKm : 0 });
+      }
+    }
+
+    return list;
   }
 
   function notify(changeType) {

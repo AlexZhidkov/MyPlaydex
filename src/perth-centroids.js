@@ -173,3 +173,63 @@ export function getSuburbByPostcodeOrName(identifier = '') {
     ) || null
   );
 }
+
+/**
+ * Converts a suburb name into a URL-friendly slug.
+ *
+ * @param {string} name Suburb name
+ * @returns {string} URL slug
+ */
+export function suburbNameToSlug(name = '') {
+  if (!name || typeof name !== 'string') return '';
+  return name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+/**
+ * Finds a single suburb matching an exact name, postcode, or URL slug.
+ *
+ * @param {string} identifier Suburb name, postcode, or slug
+ * @returns {{ name: string, postcode: string, lat: number, lng: number } | null}
+ */
+export function getSuburbBySlugOrName(identifier = '') {
+  const directMatch = getSuburbByPostcodeOrName(identifier);
+  if (directMatch) return directMatch;
+
+  const targetSlug = suburbNameToSlug(identifier);
+  if (!targetSlug) return null;
+
+  return (
+    PERTH_SUBURB_CENTROIDS.find((s) => suburbNameToSlug(s.name) === targetSlug) || null
+  );
+}
+
+/**
+ * Finds the nearest Greater Perth suburb centroid to a given set of coordinates.
+ *
+ * @param {{ lat: number, lng: number }} coords
+ * @returns {{ name: string, postcode: string, lat: number, lng: number } | null}
+ */
+export function findNearestSuburb(coords) {
+  if (!coords || typeof coords.lat !== 'number' || typeof coords.lng !== 'number') {
+    return null;
+  }
+
+  let nearest = null;
+  let minDistance = Infinity;
+
+  for (const suburb of PERTH_SUBURB_CENTROIDS) {
+    const dLat = suburb.lat - coords.lat;
+    const dLng = suburb.lng - coords.lng;
+    const distSq = dLat * dLat + dLng * dLng;
+    if (distSq < minDistance) {
+      minDistance = distSq;
+      nearest = suburb;
+    }
+  }
+
+  return nearest;
+}

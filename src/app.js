@@ -7,11 +7,90 @@
 
 import { createDiscoveryStore } from './discovery-engine.js';
 import { MOCK_PERTH_ACTIVITIES } from './mock-perth-activities.js';
-import { searchSuburbs, getSuburbByPostcodeOrName } from './perth-centroids.js';
-import { renderActivityCard, renderEmptyState, renderFilterView } from './discovery-ui.js';
+import { searchSuburbs, getSuburbByPostcodeOrName, getSuburbBySlugOrName, suburbNameToSlug, findNearestSuburb } from './perth-centroids.js';
+import { renderActivityCard, renderEmptyState, renderFilterView, createSuggestActivityMailtoUrl } from './discovery-ui.js';
 
 const STORAGE_KEY_LOCATION = 'myplaydex_location';
 const STORAGE_KEY_SPORTS = 'myplaydex_sports_filters';
+
+/**
+ * Parses query parameters from window.location.search or given search string.
+ *
+ * @param {string} [search]
+ * @returns {{ suburb: string | null, radius: number | 'all' | null, activity: string | null }}
+ */
+export function parseDiscoveryUrlParams(search) {
+  const searchStr = search !== undefined
+    ? search
+    : (typeof window !== 'undefined' && window.location ? window.location.search : '');
+
+  if (!searchStr) {
+    return { suburb: null, radius: null, activity: null };
+  }
+
+  const params = new URLSearchParams(searchStr);
+  const suburb = params.get('suburb') || null;
+  const radiusRaw = params.get('radius');
+  let radius = null;
+  if (radiusRaw === 'all') {
+    radius = 'all';
+  } else if (radiusRaw !== null && radiusRaw !== '') {
+    const num = Number(radiusRaw);
+    if (!Number.isNaN(num) && num > 0) {
+      radius = num;
+    }
+  }
+  const activity = params.get('activity') || null;
+
+  return { suburb, radius, activity };
+}
+
+/**
+ * Updates URL search parameters using history.replaceState without adding history entries.
+ *
+ * @param {{ suburb?: string | null, radius?: number | string | null, activity?: string | null }} newParams
+ */
+export function syncUrlState(newParams = {}) {
+  if (typeof window === 'undefined' || !window.location || !window.history || typeof window.history.replaceState !== 'function') {
+    return;
+  }
+
+  const params = new URLSearchParams(window.location.search);
+
+  if (newParams.suburb !== undefined) {
+    if (newParams.suburb) {
+      const resolved = getSuburbBySlugOrName(newParams.suburb);
+      if (resolved) {
+        params.set('suburb', suburbNameToSlug(resolved.name));
+      } else {
+        params.delete('suburb');
+      }
+    } else {
+      params.delete('suburb');
+    }
+  }
+
+  if (newParams.radius !== undefined) {
+    if (newParams.radius) {
+      params.set('radius', String(newParams.radius));
+    } else {
+      params.delete('radius');
+    }
+  }
+
+  if (newParams.activity !== undefined) {
+    if (newParams.activity) {
+      params.set('activity', newParams.activity);
+    } else {
+      params.delete('activity');
+    }
+  }
+
+  const qs = params.toString();
+  const hash = window.location.hash || '';
+  const newUrl = `${window.location.pathname}${qs ? `?${qs}` : ''}${hash}`;
+  window.history.replaceState(null, '', newUrl);
+}
 
 /**
  * Reads persisted sport filters from localStorage.
@@ -98,14 +177,48 @@ export function saveLocation(location) {
  * @returns {object} Application context and store
  */
 export function initApp(options = {}) {
+  const urlParams = parseDiscoveryUrlParams();
   const initialActivities = options.activities || MOCK_PERTH_ACTIVITIES;
-  const savedLocation = options.location !== undefined ? options.location : getSavedLocation();
+
+  let initialLocation = options.location !== undefined ? options.location : null;
+  if (!initialLocation && urlParams.suburb) {
+    initialLocation = getSuburbBySlugOrName(urlParams.suburb);
+  }
+  if (!initialLocation && options.location === undefined) {
+    initialLocation = getSavedLocation();
+  }
+
+  const targetActivityId = options.activityId || urlParams.activity;
+  let deepLinkedActivity = null;
+  if (targetActivityId) {
+    deepLinkedActivity = initialActivities.find((a) => a.id === targetActivityId) || null;
+    if (!initialLocation && deepLinkedActivity) {
+      const venue = deepLinkedActivity.venue || {};
+      const coords = venue.coordinates || (venue.lat !== undefined && venue.lng !== undefined ? venue : null);
+      if (coords && typeof coords.lat === 'number' && typeof coords.lng === 'number') {
+        const nearestSuburb = findNearestSuburb(coords);
+        initialLocation = {
+          name: nearestSuburb ? nearestSuburb.name : (venue.name || 'Perth'),
+          postcode: nearestSuburb ? nearestSuburb.postcode : undefined,
+          lat: coords.lat,
+          lng: coords.lng
+        };
+      }
+    }
+  }
+
+  let initialRadius = options.radiusKm !== undefined ? options.radiusKm : 10;
+  if (options.radiusKm === undefined && urlParams.radius !== null) {
+    initialRadius = urlParams.radius;
+  }
+
   const savedSports = options.sports !== undefined ? options.sports : getSavedSportsFilters();
 
   const store = createDiscoveryStore({
     activities: initialActivities,
-    location: savedLocation,
-    radiusKm: options.radiusKm || 10,
+    location: initialLocation,
+    radiusKm: initialRadius,
+    selectedActivityId: targetActivityId,
     filters: {
       sports: savedSports
     },
@@ -126,8 +239,14 @@ export function initApp(options = {}) {
   const filterHeaderBtn = document.getElementById('filter-header-btn');
   const filterCountBadge = document.getElementById('filter-count-badge');
   const filterOverlay = document.getElementById('filter-view-overlay');
+  const suggestHeaderBtn = document.getElementById('suggest-header-btn');
+
+  if (suggestHeaderBtn) {
+    suggestHeaderBtn.href = createSuggestActivityMailtoUrl();
+  }
 
   let stagedSports = new Set(store.getState().filters.sports);
+  let hasHandledDeepLink = false;
 
   function updateFilterHeaderUI(filters) {
     const sports = filters?.sports || [];
@@ -361,6 +480,22 @@ export function initApp(options = {}) {
     }
 
     feedContainer.innerHTML = filteredActivities.map(renderActivityCard).join('\n');
+
+    if (targetActivityId && !hasHandledDeepLink) {
+      hasHandledDeepLink = true;
+      highlightAndScrollToActivity(targetActivityId);
+    }
+  }
+
+  function highlightAndScrollToActivity(activityId) {
+    if (!activityId || typeof document === 'undefined') return;
+    const card = document.querySelector(`.activity-card[data-id="${activityId}"]`);
+    if (card) {
+      card.classList.add('highlight-pulse');
+      if (typeof card.scrollIntoView === 'function') {
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }
   }
 
   // Filter Header Button Handler
@@ -462,9 +597,27 @@ export function initApp(options = {}) {
     }
   });
 
+  let lastSyncedLocationName = initialLocation ? initialLocation.name : null;
+  let lastSyncedRadius = store.getState().radiusKm;
+
   // Subscribe to store updates
   store.subscribe((state) => {
     renderFeed(state);
+
+    const currentLocationName = state.location ? state.location.name : null;
+    const currentRadius = state.radiusKm;
+
+    if (currentLocationName !== lastSyncedLocationName || currentRadius !== lastSyncedRadius) {
+      lastSyncedLocationName = currentLocationName;
+      lastSyncedRadius = currentRadius;
+      const suburbSlug = currentLocationName && currentLocationName !== 'Near Me'
+        ? suburbNameToSlug(currentLocationName)
+        : null;
+      syncUrlState({
+        suburb: suburbSlug,
+        radius: currentRadius
+      });
+    }
   });
 
   // Initial render & state hydration
@@ -480,7 +633,15 @@ export function initApp(options = {}) {
     openFilterView();
   }
 
-  return { store, openLocationGate, closeLocationGate, openFilterView, closeFilterView, applySportsFilters };
+  return {
+    store,
+    openLocationGate,
+    closeLocationGate,
+    openFilterView,
+    closeFilterView,
+    applySportsFilters,
+    highlightAndScrollToActivity
+  };
 }
 
 // Auto-bootstrap when loaded in browser environment

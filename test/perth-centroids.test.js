@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import {
   searchSuburbs,
   PERTH_SUBURB_CENTROIDS,
-  getSuburbByPostcodeOrName
+  getSuburbByPostcodeOrName,
+  suburbNameToSlug,
+  getSuburbBySlugOrName
 } from '../src/perth-centroids.js';
 
 test('Seam 2: PERTH_SUBURB_CENTROIDS contains comprehensive Greater Perth suburbs with valid coordinates', () => {
@@ -64,4 +66,34 @@ test('Seam 2: getSuburbByPostcodeOrName accurately resolves exact name or postco
 
   const notFound = getSuburbByPostcodeOrName('Sydney');
   assert.equal(notFound, null);
+});
+
+test('Seam 2: suburbNameToSlug and getSuburbBySlugOrName support clean URL slug resolution', () => {
+  // Test slug generation
+  assert.equal(suburbNameToSlug('Scarborough'), 'scarborough');
+  assert.equal(suburbNameToSlug('Mount Lawley'), 'mount-lawley');
+  assert.equal(suburbNameToSlug('East Perth'), 'east-perth');
+  assert.equal(suburbNameToSlug('Peppermint Grove'), 'peppermint-grove');
+  assert.equal(suburbNameToSlug(''), '');
+  assert.equal(suburbNameToSlug(null), '');
+
+  // Test slug and name resolution
+  const cottesloe = getSuburbBySlugOrName('cottesloe');
+  assert.ok(cottesloe);
+  assert.equal(cottesloe.name, 'Cottesloe');
+  assert.equal(cottesloe.postcode, '6011');
+
+  const mtLawleySlug = getSuburbBySlugOrName('mount-lawley');
+  assert.ok(mtLawleySlug);
+  assert.equal(mtLawleySlug.name, 'Mount Lawley');
+
+  const mtLawleyName = getSuburbBySlugOrName('Mount Lawley');
+  assert.ok(mtLawleyName);
+  assert.equal(mtLawleyName.name, 'Mount Lawley');
+
+  const byPostcode = getSuburbBySlugOrName('6019');
+  assert.ok(byPostcode);
+  assert.equal(byPostcode.name, 'Scarborough');
+
+  assert.equal(getSuburbBySlugOrName('non-existent-suburb'), null);
 });

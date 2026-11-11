@@ -47,3 +47,38 @@ test('Seam 4: index.html exists, contains no Leaflet or map tile references, and
   assert.ok(html.includes('filter-view-overlay') || html.includes('id="filter-view-overlay"'), 'Must include filter view container');
   assert.ok(html.includes('filter-count-badge') || html.includes('id="filter-count-badge"'), 'Must include filter count badge');
 });
+
+test('Seam 4: index.html embeds static Open Graph, Twitter Card metadata and header Suggest link', () => {
+  const indexHtmlPath = path.join(REPO_ROOT, 'index.html');
+  const html = fs.readFileSync(indexHtmlPath, 'utf8');
+
+  // Open Graph
+  assert.ok(html.includes('<meta property="og:title"'), 'Must include og:title');
+  assert.ok(html.includes('<meta property="og:description"'), 'Must include og:description');
+  assert.ok(html.includes('<meta property="og:type"'), 'Must include og:type');
+  assert.ok(html.includes('<meta property="og:url"'), 'Must include og:url');
+
+  // Twitter Card
+  assert.ok(
+    html.includes('<meta name="twitter:card"') || html.includes('<meta property="twitter:card"'),
+    'Must include twitter:card'
+  );
+  assert.ok(
+    html.includes('<meta name="twitter:title"') || html.includes('<meta property="twitter:title"'),
+    'Must include twitter:title'
+  );
+  assert.ok(
+    html.includes('<meta name="twitter:description"') || html.includes('<meta property="twitter:description"'),
+    'Must include twitter:description'
+  );
+
+  // Header "Suggest an Activity" action
+  assert.ok(
+    html.includes('suggest-header-btn') || html.includes('suggest-header-link'),
+    'Must include suggest link/button in header'
+  );
+  assert.ok(
+    html.includes('mailto:azhidkov@gmail.com'),
+    'Header suggest link must point to mailto:azhidkov@gmail.com'
+  );
+});

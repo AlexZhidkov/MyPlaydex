@@ -14,9 +14,11 @@
   <meta property="og:image" content="https://myplaydex.com.au/og-card.png" />
 
   <!-- Twitter -->
-  <meta property="twitter:card" content="summary_large_image" />
-  <meta property="twitter:title" content="MyPlaydex — Greater Perth Amateur Sports Discovery" />
-  <meta property="twitter:description" content="Find social soccer, volleyball, basketball, AFL, tennis, pickleball, and run clubs near you in Greater Perth." />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="MyPlaydex — Greater Perth Amateur Sports Discovery" />
+  <meta name="twitter:description" content="Find social soccer, volleyball, basketball, AFL, tennis, pickleball, and run clubs near you in Greater Perth." />
+  <meta name="twitter:image" content="https://myplaydex.com.au/og-card.png" />
+  <meta name="twitter:url" content="https://myplaydex.com.au/" />
 
   <link rel="stylesheet" href="./src/styles.css" />
 </head>
@@ -31,6 +33,18 @@
       </a>
 
       <div class="header-actions">
+        <a
+          href="mailto:azhidkov@gmail.com?subject=%5BMyPlaydex%5D%20Suggest%20an%20Activity%20%2F%20Club&amp;body=Hi%20Alex%2C%0A%0AI%20would%20like%20to%20suggest%20a%20new%20sports%20activity%20or%20club%20for%20MyPlaydex%3A%0A%0AClub%20%2F%20Organizer%20Name%3A%20%0ASport%20%2F%20Activity%3A%20%0AVenue%20Name%20%26%20Address%20%2F%20Suburb%3A%20%0ASchedule%20%2F%20Day%20%26%20Time%3A%20%0ACost%20%2F%20Free%3A%20%0AWebsite%20or%20Referral%20Link%3A%20%0AAdditional%20Notes%3A%20%0A"
+          class="suggest-header-link"
+          id="suggest-header-btn"
+          aria-label="Suggest an Activity"
+          title="Suggest an activity or club"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <span class="suggest-header-icon" aria-hidden="true">➕</span>
+          <span class="suggest-btn-text">Suggest an Activity</span>
+        </a>
         <button
           type="button"
           class="filter-header-btn"

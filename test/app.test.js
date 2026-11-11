@@ -262,3 +262,322 @@ test('Seam C: Hash Router & Application Controller Integration (/#filters, persi
   storage.clear();
 });
 
+test('Seam 2: URL query state synchronization (?suburb=...&radius=...) via history.replaceState and initial hydration', () => {
+  const storage = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => storage.get(key) || null,
+    setItem: (key, val) => storage.set(key, String(val)),
+    removeItem: (key) => storage.delete(key),
+    clear: () => storage.clear()
+  };
+
+  const domListeners = new Map();
+  const elements = new Map();
+
+  function createMockEl(id, tag = 'div', classes = []) {
+    const classSet = new Set(classes);
+    const listeners = new Map();
+    let innerHTML = '';
+    let textContent = '';
+    const attrs = new Map();
+
+    const el = {
+      id,
+      tagName: tag.toUpperCase(),
+      style: {},
+      get innerHTML() { return innerHTML; },
+      set innerHTML(val) { innerHTML = val; },
+      get textContent() { return textContent; },
+      set textContent(val) { textContent = val; },
+      classList: {
+        add: (...c) => c.forEach(name => classSet.add(name)),
+        remove: (...c) => c.forEach(name => classSet.delete(name)),
+        toggle: (name, force) => {
+          if (force === undefined) {
+            classSet.has(name) ? classSet.delete(name) : classSet.add(name);
+          } else if (force) {
+            classSet.add(name);
+          } else {
+            classSet.delete(name);
+          }
+        },
+        contains: (name) => classSet.has(name)
+      },
+      getAttribute: (name) => attrs.get(name) || null,
+      setAttribute: (name, val) => attrs.set(name, String(val)),
+      addEventListener: (type, cb) => {
+        if (!listeners.has(type)) listeners.set(type, []);
+        listeners.get(type).push(cb);
+      },
+      dispatchEvent: (e) => {
+        const cbs = listeners.get(e.type) || [];
+        cbs.forEach(cb => cb(e));
+      },
+      closest: (sel) => null,
+      scrollIntoView: () => {}
+    };
+    elements.set(id, el);
+    return el;
+  }
+
+  const gateOverlay = createMockEl('location-gate-overlay', 'div');
+  const gateCloseBtn = createMockEl('gate-close-btn', 'button');
+  const locationSwitcherBtn = createMockEl('location-switcher-btn', 'button');
+  const currentLocationLabel = createMockEl('current-location-label', 'span');
+  const suburbInput = createMockEl('suburb-search-input', 'input');
+  const suggestionsList = createMockEl('suburb-suggestions-list', 'div');
+  const feedContainer = createMockEl('feed-container', 'section');
+  const resultCountLabel = createMockEl('result-count-label', 'span');
+  const filterHeaderBtn = createMockEl('filter-header-btn', 'button');
+  const filterCountBadge = createMockEl('filter-count-badge', 'span', ['hidden']);
+  const filterOverlay = createMockEl('filter-view-overlay', 'div', ['hidden']);
+
+  // Create radius pills
+  const pill5 = createMockEl('pill-5', 'button');
+  pill5.setAttribute('data-radius', '5');
+  const pill10 = createMockEl('pill-10', 'button');
+  pill10.setAttribute('data-radius', '10');
+  const pill25 = createMockEl('pill-25', 'button');
+  pill25.setAttribute('data-radius', '25');
+  const pillAll = createMockEl('pill-all', 'button');
+  pillAll.setAttribute('data-radius', 'all');
+
+  const radiusPills = [pill5, pill10, pill25, pillAll];
+
+  let replaceStateCalls = [];
+
+  globalThis.window = {
+    location: {
+      hash: '',
+      pathname: '/',
+      search: '?suburb=cottesloe&radius=25'
+    },
+    history: {
+      replaceState: (state, title, url) => {
+        replaceStateCalls.push(url);
+        const [pathAndSearch, hash] = url.split('#');
+        const [path, search] = pathAndSearch.split('?');
+        globalThis.window.location.search = search ? `?${search}` : '';
+        globalThis.window.location.hash = hash ? `#${hash}` : '';
+      },
+      pushState: () => {},
+      back: () => {}
+    },
+    addEventListener: (evt, cb) => {
+      if (!domListeners.has(evt)) domListeners.set(evt, []);
+      domListeners.get(evt).push(cb);
+    }
+  };
+
+  globalThis.document = {
+    getElementById: (id) => elements.get(id) || null,
+    querySelector: (sel) => null,
+    querySelectorAll: (sel) => {
+      if (sel === '.radius-pill') return radiusPills;
+      return [];
+    },
+    addEventListener: (evt, cb) => {
+      if (!domListeners.has(evt)) domListeners.set(evt, []);
+      domListeners.get(evt).push(cb);
+    }
+  };
+
+  const app = initApp({
+    activities: [
+      {
+        id: 'act_cottesloe',
+        title: 'Cottesloe Tennis',
+        subcategory: 'tennis',
+        venue: { name: 'Cottesloe Tennis Club', coordinates: { lat: -31.9934, lng: 115.7578 } },
+        cost: { is_free: true }
+      }
+    ]
+  });
+
+  // Verify store initialized to Cottesloe and radius 25 from query parameters
+  const state = app.store.getState();
+  assert.ok(state.location, 'Location should be hydrated from ?suburb=cottesloe');
+  assert.equal(state.location.name, 'Cottesloe');
+  assert.equal(state.radiusKm, 25, 'Radius should be hydrated to 25 from ?radius=25');
+
+  // Verify radius pill UI is updated
+  assert.ok(pill25.classList.contains('active'), '25km pill should be active');
+  assert.ok(!pill10.classList.contains('active'), '10km pill should not be active');
+
+  // Verify changing radius triggers history.replaceState
+  replaceStateCalls = [];
+  app.store.setRadius(5);
+  assert.ok(replaceStateCalls.length > 0, 'setRadius should invoke history.replaceState');
+  const latestUrl = replaceStateCalls[replaceStateCalls.length - 1];
+  assert.ok(latestUrl.includes('radius=5'), `URL should contain radius=5, got: ${latestUrl}`);
+  assert.ok(latestUrl.includes('suburb=cottesloe'), `URL should preserve suburb=cottesloe, got: ${latestUrl}`);
+
+  // Verify setting location triggers history.replaceState with new suburb slug
+  replaceStateCalls = [];
+  app.store.setLocation({ name: 'Scarborough', postcode: '6019', lat: -31.8942, lng: 115.7571 });
+  assert.ok(replaceStateCalls.length > 0, 'setLocation should invoke history.replaceState');
+  const scarbUrl = replaceStateCalls[replaceStateCalls.length - 1];
+  assert.ok(scarbUrl.includes('suburb=scarborough'), `URL should contain suburb=scarborough, got: ${scarbUrl}`);
+  assert.ok(scarbUrl.includes('radius=5'), `URL should preserve radius=5, got: ${scarbUrl}`);
+
+  storage.clear();
+});
+
+test('Seam 3: Activity deep-linking (?activity=...), cold-start gate bypass, feed rendering, and highlight state', () => {
+  const storage = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => storage.get(key) || null,
+    setItem: (key, val) => storage.set(key, String(val)),
+    removeItem: (key) => storage.delete(key),
+    clear: () => storage.clear()
+  };
+
+  const domListeners = new Map();
+  const elements = new Map();
+  const scrolledElements = [];
+
+  function createMockEl(id, tag = 'div', classes = []) {
+    const classSet = new Set(classes);
+    const listeners = new Map();
+    let innerHTML = '';
+    let textContent = '';
+    const attrs = new Map();
+
+    const el = {
+      id,
+      tagName: tag.toUpperCase(),
+      style: {},
+      get innerHTML() { return innerHTML; },
+      set innerHTML(val) { innerHTML = val; },
+      get textContent() { return textContent; },
+      set textContent(val) { textContent = val; },
+      classList: {
+        add: (...c) => c.forEach(name => classSet.add(name)),
+        remove: (...c) => c.forEach(name => classSet.delete(name)),
+        toggle: (name, force) => {
+          if (force === undefined) {
+            classSet.has(name) ? classSet.delete(name) : classSet.add(name);
+          } else if (force) {
+            classSet.add(name);
+          } else {
+            classSet.delete(name);
+          }
+        },
+        contains: (name) => classSet.has(name)
+      },
+      getAttribute: (name) => attrs.get(name) || null,
+      setAttribute: (name, val) => attrs.set(name, String(val)),
+      addEventListener: (type, cb) => {
+        if (!listeners.has(type)) listeners.set(type, []);
+        listeners.get(type).push(cb);
+      },
+      dispatchEvent: (e) => {
+        const cbs = listeners.get(e.type) || [];
+        cbs.forEach(cb => cb(e));
+      },
+      scrollIntoView: (options) => {
+        scrolledElements.push({ el, options });
+      }
+    };
+    elements.set(id, el);
+    return el;
+  }
+
+  const gateOverlay = createMockEl('location-gate-overlay', 'div');
+  const gateCloseBtn = createMockEl('gate-close-btn', 'button');
+  const locationSwitcherBtn = createMockEl('location-switcher-btn', 'button');
+  const currentLocationLabel = createMockEl('current-location-label', 'span');
+  const feedContainer = createMockEl('feed-container', 'section');
+  const resultCountLabel = createMockEl('result-count-label', 'span');
+  const filterHeaderBtn = createMockEl('filter-header-btn', 'button');
+  const filterCountBadge = createMockEl('filter-count-badge', 'span', ['hidden']);
+  const filterOverlay = createMockEl('filter-view-overlay', 'div', ['hidden']);
+
+  const targetCard = createMockEl('card-act_deep_target', 'article', ['activity-card']);
+  targetCard.setAttribute('data-id', 'act_deep_target');
+
+  globalThis.window = {
+    location: {
+      hash: '',
+      pathname: '/',
+      search: '?activity=act_deep_target'
+    },
+    history: {
+      replaceState: () => {},
+      pushState: () => {},
+      back: () => {}
+    },
+    addEventListener: (evt, cb) => {
+      if (!domListeners.has(evt)) domListeners.set(evt, []);
+      domListeners.get(evt).push(cb);
+    }
+  };
+
+  globalThis.document = {
+    getElementById: (id) => elements.get(id) || null,
+    querySelector: (sel) => {
+      if (sel && sel.includes('act_deep_target')) return targetCard;
+      return null;
+    },
+    querySelectorAll: (sel) => [],
+    addEventListener: (evt, cb) => {
+      if (!domListeners.has(evt)) domListeners.set(evt, []);
+      domListeners.get(evt).push(cb);
+    }
+  };
+
+  const activities = [
+    {
+      id: 'act_deep_target',
+      title: 'Target Volleyball Match',
+      subcategory: 'volleyball',
+      venue: {
+        name: 'Wembley Sports Park',
+        address: 'Selby St, Jolimont WA 6014',
+        coordinates: { lat: -31.9450, lng: 115.8050 }
+      },
+      cost: { is_free: true }
+    },
+    {
+      id: 'act_other',
+      title: 'Other Game',
+      subcategory: 'soccer',
+      venue: {
+        name: 'Perth City Field',
+        coordinates: { lat: -31.9500, lng: 115.8600 }
+      },
+      cost: { is_free: true }
+    }
+  ];
+
+  // Initialize app without any saved location (pure cold start with deep link)
+  const app = initApp({
+    activities
+  });
+
+  const state = app.store.getState();
+
+  // 1. Location gate should be bypassed and closed
+  assert.ok(gateOverlay.classList.contains('hidden'), 'Location gate should be hidden/bypassed on deep link');
+
+  // 2. Store location initialized using target activity's venue coordinates
+  assert.ok(state.location, 'Store location should be set from venue coordinates');
+  assert.equal(state.location.lat, -31.9450);
+  assert.equal(state.location.lng, 115.8050);
+
+  // 3. Target activity is rendered in the feed
+  assert.ok(feedContainer.innerHTML.includes('act_deep_target'), 'Feed HTML should contain the target activity');
+
+  // 4. Target activity element received highlight pulse class
+  assert.ok(
+    targetCard.classList.contains('highlight-pulse'),
+    'Target activity card must receive highlight-pulse class'
+  );
+
+  // 5. Target activity was scrolled into view
+  assert.ok(scrolledElements.length > 0, 'Target card should have scrollIntoView called');
+  assert.equal(scrolledElements[0].el, targetCard);
+
+  storage.clear();
+});
+

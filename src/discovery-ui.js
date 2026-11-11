@@ -116,6 +116,71 @@ export function formatScheduleText(schedule = {}) {
   return timeStr || 'Check schedule details';
 }
 
+export const CURATION_CONTACT_EMAIL = 'azhidkov@gmail.com';
+
+/**
+ * Generates a pre-filled mailto URL for suggesting a new sports activity or club.
+ *
+ * @returns {string} mailto: URL
+ */
+export function createSuggestActivityMailtoUrl() {
+  const subject = '[MyPlaydex] Suggest an Activity / Club';
+  const body = [
+    'Hi Alex,',
+    '',
+    'I would like to suggest a new sports activity or club for MyPlaydex:',
+    '',
+    'Club / Organizer Name: ',
+    'Sport / Activity: ',
+    'Venue Name & Address / Suburb: ',
+    'Schedule / Day & Time: ',
+    'Cost / Free: ',
+    'Website or Referral Link: ',
+    'Additional Notes: ',
+    ''
+  ].join('\n');
+
+  return `mailto:${CURATION_CONTACT_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+}
+
+/**
+ * Generates a pre-filled mailto URL for suggesting an edit to an existing activity.
+ *
+ * @param {object} activity
+ * @returns {string} mailto: URL
+ */
+export function createSuggestEditMailtoUrl(activity = {}) {
+  const activityId = activity.id || 'N/A';
+  const title = activity.title || 'Untitled Activity';
+  const sport = activity.subcategory || activity.sport || 'other';
+  const organizerName = activity.organizer?.name || activity.club?.name || 'N/A';
+  const venueName = activity.venue?.name || 'N/A';
+  const venueAddress = activity.venue?.address || 'N/A';
+  const scheduleText = formatScheduleText(activity.schedule);
+  const sourceUrl = activity.source_url || 'N/A';
+
+  const subject = `[MyPlaydex] Suggest an edit: ${title} (${activityId})`;
+  const body = [
+    'Hi Alex,',
+    '',
+    'I would like to suggest an edit for the following activity on MyPlaydex:',
+    '',
+    `Activity ID: ${activityId}`,
+    `Title: ${title}`,
+    `Sport: ${sport}`,
+    `Organizer: ${organizerName}`,
+    `Venue: ${venueName} (${venueAddress})`,
+    `Current Schedule: ${scheduleText}`,
+    `Source URL: ${sourceUrl}`,
+    '',
+    'Suggested Changes / Notes:',
+    '',
+    ''
+  ].join('\n');
+
+  return `mailto:${CURATION_CONTACT_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+}
+
 /**
  * Renders a 4-Tier Activity card HTML string.
  *
@@ -135,6 +200,7 @@ export function renderActivityCard(activity = {}) {
   const organizer = activity.organizer || activity.club || {};
   const directionsUrl = createOutboundDirectionsUrl(venue);
   const sourceUrl = activity.source_url || '#';
+  const editMailtoUrl = createSuggestEditMailtoUrl(activity);
 
   return `
     <article class="activity-card" data-id="${escapeHtml(activity.id)}">
@@ -161,10 +227,13 @@ export function renderActivityCard(activity = {}) {
         ${organizer.name ? `<div class="card-organizer-row"><span class="organizer-icon" aria-hidden="true">👥</span> <span class="organizer-name">${escapeHtml(organizer.name)}</span></div>` : ''}
       </div>
 
-      <!-- Tier 4: Primary external referral action -->
+      <!-- Tier 4: Primary external referral action & suggest edit link -->
       <div class="card-tier card-tier-4">
         <a href="${escapeHtml(sourceUrl)}" class="btn btn-primary btn-referral" target="_blank" rel="noopener noreferrer">
           View Club / Details ↗
+        </a>
+        <a href="${escapeHtml(editMailtoUrl)}" class="suggest-edit-link" target="_blank" rel="noopener noreferrer" title="Suggest an edit for this activity">
+          Suggest an edit
         </a>
       </div>
     </article>

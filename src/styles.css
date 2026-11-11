@@ -115,6 +115,33 @@ body {
   max-width: 190px;
 }
 
+.suggest-header-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 0.4rem 0.75rem;
+  border-radius: var(--radius-full);
+  text-decoration: none;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.suggest-header-link:hover {
+  background: var(--primary-light);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.suggest-header-icon {
+  font-size: 0.85rem;
+}
+
 .filter-header-btn {
   display: inline-flex;
   align-items: center;
@@ -268,6 +295,28 @@ body {
   box-shadow: var(--card-shadow-hover);
 }
 
+/* Deep-link Activity Highlight Pulse */
+.activity-card.highlight-pulse {
+  animation: card-pulse 2s cubic-bezier(0.2, 0.8, 0.2, 1);
+  border-color: var(--primary) !important;
+  box-shadow: 0 0 0 4px rgba(2, 132, 199, 0.35), 0 8px 16px -2px rgba(0, 0, 0, 0.1);
+}
+
+@keyframes card-pulse {
+  0% {
+    transform: scale(1.02);
+    box-shadow: 0 0 0 8px rgba(2, 132, 199, 0.5), 0 12px 20px -2px rgba(0, 0, 0, 0.15);
+  }
+  50% {
+    transform: scale(1.01);
+    box-shadow: 0 0 0 4px rgba(2, 132, 199, 0.35), 0 8px 16px -2px rgba(0, 0, 0, 0.1);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(2, 132, 199, 0), var(--card-shadow);
+  }
+}
+
 /* Tier 1 */
 .card-tier-1 {
   display: flex;
@@ -385,6 +434,25 @@ body {
 /* Tier 4 */
 .card-tier-4 {
   margin-top: 0.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.suggest-edit-link {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-decoration: underline;
+  text-decoration-color: #cbd5e1;
+  text-underline-offset: 3px;
+  cursor: pointer;
+  align-self: center;
+  transition: color 0.15s ease;
+}
+
+.suggest-edit-link:hover {
+  color: var(--primary);
+  text-decoration-color: var(--primary);
 }
 
 .btn {
