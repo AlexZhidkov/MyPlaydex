@@ -287,7 +287,8 @@ export function getCanonicalRegion(regionId = 'perth', updatedAt = new Date().to
  */
 export function extractCanonicalEntities(activity, raw = {}) {
   const venueAddress = raw.address || raw.venue?.address || activity.venue?.address || activity.venue?.name;
-  const organizerWebsite = raw.website || raw.organizer?.website || raw.club_website || raw.external_url || activity.source_url || null;
+  const verifiedReferralUrl = activity.verified !== false ? (activity.source_url || raw.external_url || null) : null;
+  const organizerWebsite = raw.website || raw.organizer?.website || raw.club_website || verifiedReferralUrl || null;
   const organizerContact = raw.contact || raw.organizer?.contact || {
     email: raw.email || raw.organizer?.email || null,
     phone: raw.phone || raw.organizer?.phone || null
@@ -351,7 +352,14 @@ export function sanitizeActivity(raw = {}, options = {}) {
   const id = `${cleanSource}_${cleanSourceId}`;
 
   const regionId = raw.region_id || options.regionId || 'perth';
-  const sourceUrl = raw.source_url || raw.external_url || raw.url || '';
+  const candidateUrl = raw.source_url || raw.external_url || raw.url || '';
+  const trimmedUrl = typeof candidateUrl === 'string' ? candidateUrl.trim() : '';
+  const rawSourceUrl = typeof raw.raw_source_url === 'string' && raw.raw_source_url.trim()
+    ? raw.raw_source_url.trim()
+    : (trimmedUrl || null);
+  const hasValidUrl = Boolean(trimmedUrl);
+  const verified = raw.verified !== undefined ? (Boolean(raw.verified) && hasValidUrl) : hasValidUrl;
+  const sourceUrl = verified ? trimmedUrl : null;
   const description = typeof raw.description === 'string' ? raw.description.trim() : '';
 
   const category = 'sports';
@@ -383,7 +391,6 @@ export function sanitizeActivity(raw = {}, options = {}) {
   const nowIso = new Date().toISOString();
   const schedule = parseSchedule(raw, nowIso);
 
-  const verified = raw.verified !== undefined ? Boolean(raw.verified) : true;
   const createdAt = raw.created_at || nowIso;
   const updatedAt = raw.updated_at || nowIso;
 
@@ -393,6 +400,7 @@ export function sanitizeActivity(raw = {}, options = {}) {
     source: cleanSource,
     source_id: cleanSourceId,
     source_url: sourceUrl,
+    raw_source_url: rawSourceUrl,
     title,
     description,
     category,

@@ -198,3 +198,78 @@ test('Seam 1: createSuggestActivityMailtoUrl and createSuggestEditMailtoUrl gene
   assert.ok(cardHtml.includes('suggest-edit-link'), 'Card edit link must have suggest-edit-link class');
 });
 
+test('Seam 2: renderActivityCard and createSuggestEditMailtoUrl handle Unverified Listings and non-clickable styles', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+
+  const unverifiedActivity = {
+    id: 'act_unverified_1',
+    title: 'Subiaco Social Basketball',
+    subcategory: 'basketball',
+    distanceKm: 3.2,
+    cost: { is_free: false, display_price: '$10' },
+    verified: false,
+    source_url: null,
+    raw_source_url: 'https://dead-link.example.com/subiaco-hoops',
+    venue: {
+      id: 'venue_lords_recreation_centre_qd66fd',
+      name: 'Lords Recreation Centre',
+      coordinates: { lat: -31.9445, lng: 115.8241 },
+      geohash: 'qd66fd123'
+    },
+    organizer: {
+      name: 'Subiaco Hoops Club'
+    },
+    schedule: {
+      start_date: '2026-11-18',
+      start_time: '19:00',
+      recurrence: 'weekly',
+      day_of_week: 3
+    }
+  };
+
+  const html = renderActivityCard(unverifiedActivity);
+
+  // 1. Unverified card applies .activity-card-unverified and omits data-url and tabindex="0"
+  assert.ok(html.includes('activity-card-unverified'), 'Unverified card must have activity-card-unverified class');
+  assert.ok(!html.includes('data-url='), 'Unverified card must omit data-url attribute');
+  assert.ok(!html.includes('tabindex="0"'), 'Unverified card must omit tabindex="0"');
+
+  // 2. Renders Unverified badge in Tier 1 alongside sport, cost, and distance badges
+  assert.ok(html.includes('badge-unverified'), 'Tier 1 must include badge-unverified');
+  assert.ok(html.includes('Unverified'), 'Tier 1 must render Unverified badge text');
+  assert.ok(html.includes('basketball'), 'Tier 1 must still include sport badge');
+  assert.ok(html.includes('$10'), 'Tier 1 must still include cost badge');
+  assert.ok(html.includes('3.2 km away'), 'Tier 1 must still include distance badge');
+
+  // 3. Venue Google Maps outbound row and Suggest an edit link remain intact
+  assert.ok(html.includes('card-venue-row'), 'Unverified card must keep card-venue-row');
+  assert.ok(html.includes('data-directions-url="https://www.google.com/maps/search/?api=1'), 'Unverified card must keep Google Maps directions URL');
+  assert.ok(html.includes('Suggest an edit'), 'Unverified card must keep Suggest an edit link');
+
+  // 4. Suggest an edit mailto includes raw_source_url when source_url is null
+  const editMailto = createSuggestEditMailtoUrl(unverifiedActivity);
+  const decodedEdit = decodeURIComponent(editMailto);
+  assert.ok(
+    decodedEdit.includes('https://dead-link.example.com/subiaco-hoops'),
+    'Edit mailto must include raw_source_url so curators can inspect/repair it'
+  );
+
+  // 5. Verified card does NOT include Unverified badge or activity-card-unverified
+  const verifiedHtml = renderActivityCard({
+    ...unverifiedActivity,
+    id: 'act_verified_1',
+    verified: true,
+    source_url: 'https://valid.example.com/subiaco-hoops'
+  });
+  assert.ok(!verifiedHtml.includes('activity-card-unverified'), 'Verified card must not have activity-card-unverified');
+  assert.ok(!verifiedHtml.includes('badge-unverified'), 'Verified card must not render Unverified badge');
+  assert.ok(verifiedHtml.includes('data-url="https://valid.example.com/subiaco-hoops"'), 'Verified card must have data-url');
+  assert.ok(verifiedHtml.includes('tabindex="0"'), 'Verified card must have tabindex="0"');
+
+  // 6. styles.css defines non-clickable styling for .activity-card-unverified
+  const css = fs.readFileSync(path.resolve('src/styles.css'), 'utf8');
+  assert.match(css, /\.activity-card-unverified\s*\{[^}]*cursor:\s*default/s, 'styles.css must set cursor: default on .activity-card-unverified');
+  assert.match(css, /\.activity-card-unverified:hover\s*\{[^}]*transform:\s*none/s, 'styles.css must disable hover lift on .activity-card-unverified:hover');
+});
+

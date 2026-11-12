@@ -157,7 +157,7 @@ export function createSuggestEditMailtoUrl(activity = {}) {
   const venueName = activity.venue?.name || 'N/A';
   const venueAddress = activity.venue?.address || 'N/A';
   const scheduleText = formatScheduleText(activity.schedule);
-  const sourceUrl = activity.source_url || 'N/A';
+  const sourceUrl = activity.source_url || activity.raw_source_url || 'N/A';
 
   const subject = `[MyPlaydex] Suggest an edit: ${title} (${activityId})`;
   const body = [
@@ -199,15 +199,22 @@ export function renderActivityCard(activity = {}) {
   const venue = activity.venue || {};
   const organizer = activity.organizer || activity.club || {};
   const directionsUrl = createOutboundDirectionsUrl(venue);
-  const sourceUrl = activity.source_url || '#';
+  const trimmedSourceUrl = typeof activity.source_url === 'string' ? activity.source_url.trim() : '';
+  const isVerified = activity.verified !== false && Boolean(trimmedSourceUrl) && trimmedSourceUrl !== '#';
+  const unverifiedBadge = !isVerified ? `<span class="badge badge-unverified">Unverified</span>` : '';
+  const cardClasses = isVerified ? 'activity-card' : 'activity-card activity-card-unverified';
+  const cardInteractiveAttrs = isVerified
+    ? ` data-url="${escapeHtml(trimmedSourceUrl)}" tabindex="0"`
+    : '';
   const editMailtoUrl = createSuggestEditMailtoUrl(activity);
 
   return `
-    <article class="activity-card" data-id="${escapeHtml(activity.id)}" data-url="${escapeHtml(sourceUrl)}" tabindex="0">
+    <article class="${cardClasses}" data-id="${escapeHtml(activity.id)}"${cardInteractiveAttrs}>
       <!-- Tier 1: Metadata line -->
       <div class="card-tier card-tier-1">
         <span class="badge badge-sport">${sportIcon} ${escapeHtml(sportSlug)}</span>
         <span class="badge badge-cost ${isFree ? 'badge-free' : ''}">${escapeHtml(costLabel)}</span>
+        ${unverifiedBadge}
         ${distanceBadge}
       </div>
 

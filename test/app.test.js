@@ -939,6 +939,59 @@ test('Seam 3: Activity card click delegates to source_url in new tab, and card-v
   assert.equal(openedWindows.length, 1, 'Pressing Enter on focused card should trigger window.open');
   assert.equal(openedWindows[0].url, 'https://example.com/tennis-perth');
 
+  // Case 6: Unverified Listing card does NOT trigger window.open on whole-card click or Enter key,
+  //even if a stale data-url attribute is present on an .activity-card-unverified element,
+  // while Venue directions row and Suggest an edit link remain interactive.
+  const unverifiedCardEl = createMockEl('card-act_unverified_1', 'article', ['activity-card', 'activity-card-unverified']);
+  unverifiedCardEl.setAttribute('data-id', 'act_unverified_1');
+  unverifiedCardEl.setAttribute('data-url', 'https://broken.example.com/should-not-open');
+
+  openedWindows.length = 0;
+  const unverifiedBodyTarget = {
+    closest: (sel) => {
+      if (sel.includes('card-venue-row')) return null;
+      if (sel.includes('a, button')) return null;
+      if (sel.includes('activity-card')) return unverifiedCardEl;
+      return null;
+    }
+  };
+  feedContainer.dispatchEvent({ type: 'click', target: unverifiedBodyTarget });
+  assert.equal(openedWindows.length, 0, 'Clicking an Unverified Listing card body must not call window.open');
+
+  unverifiedCardEl.closest = (sel) => (sel.includes('activity-card') ? unverifiedCardEl : null);
+  feedContainer.dispatchEvent({
+    type: 'keydown',
+    key: 'Enter',
+    target: unverifiedCardEl
+  });
+  assert.equal(openedWindows.length, 0, 'Pressing Enter on an Unverified Listing card must not call window.open');
+
+  // Venue row inside an Unverified Listing card still opens Google Maps directions
+  const unverifiedVenueTarget = {
+    closest: (sel) => {
+      if (sel.includes('card-venue-row')) return venueRowEl;
+      if (sel === 'a') return null;
+      if (sel.includes('activity-card')) return unverifiedCardEl;
+      return null;
+    }
+  };
+  feedContainer.dispatchEvent({ type: 'click', target: unverifiedVenueTarget });
+  assert.equal(openedWindows.length, 1, 'Clicking Venue row on an Unverified Listing card must open Google Maps');
+  assert.equal(openedWindows[0].url, mapsUrl);
+
+  // Suggest an edit link inside an Unverified Listing card still allows native mailto navigation
+  openedWindows.length = 0;
+  const unverifiedEditTarget = {
+    closest: (sel) => {
+      if (sel.includes('card-venue-row')) return null;
+      if (sel.includes('a, button')) return suggestEditEl;
+      if (sel.includes('activity-card')) return unverifiedCardEl;
+      return null;
+    }
+  };
+  feedContainer.dispatchEvent({ type: 'click', target: unverifiedEditTarget });
+  assert.equal(openedWindows.length, 0, 'Clicking Suggest an edit on an Unverified Listing card must not trigger window.open');
+
   storage.clear();
 });
 

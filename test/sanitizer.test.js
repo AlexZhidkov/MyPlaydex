@@ -173,3 +173,56 @@ test('Seam 1: sanitizeActivity throws SanitizationError on invalid or missing re
     coordinates: { lat: -31.9, lng: 115.8 }
   }), /Missing required source identity/);
 });
+
+test('Seam 1: sanitizeActivity and extractCanonicalEntities handle Unverified Listings and preserve raw_source_url', () => {
+  // 1. Explicitly unverified listing with a broken external_url
+  const unverifiedRaw = {
+    source: 'meetup',
+    source_id: 'broken-99',
+    title: 'Subiaco Social Basketball',
+    sport: 'basketball',
+    venue_name: 'Lords Recreation Centre',
+    coordinates: { lat: -31.9445, lng: 115.8241 },
+    external_url: 'https://www.meetup.com/perth-hoops/events/broken-99/',
+    verified: false
+  };
+
+  const unverifiedActivity = sanitizeActivity(unverifiedRaw);
+  assert.equal(unverifiedActivity.verified, false);
+  assert.equal(unverifiedActivity.source_url, null);
+  assert.equal(unverifiedActivity.raw_source_url, 'https://www.meetup.com/perth-hoops/events/broken-99/');
+
+  const unverifiedEntities = extractCanonicalEntities(unverifiedActivity, unverifiedRaw);
+  assert.equal(unverifiedEntities.organizer.website, null, 'Should not use broken external_url as organizer website fallback');
+
+  // 2. Listing with missing/empty referral link degrades to unverified
+  const missingUrlRaw = {
+    source: 'dlgsc',
+    source_id: 'no-url-10',
+    title: 'Fremantle Community Walkers',
+    sport: 'walking',
+    venue_name: 'Esplanade Reserve',
+    coordinates: { lat: -32.0569, lng: 115.7439 }
+  };
+
+  const missingUrlActivity = sanitizeActivity(missingUrlRaw);
+  assert.equal(missingUrlActivity.verified, false);
+  assert.equal(missingUrlActivity.source_url, null);
+  assert.equal(missingUrlActivity.raw_source_url, null);
+
+  // 3. Verified listing preserves both source_url and raw_source_url
+  const verifiedRaw = {
+    source: 'stirling',
+    source_id: 'ok-200',
+    title: 'Stirling Social Tennis',
+    sport: 'tennis',
+    coordinates: { lat: -31.88, lng: 115.80 },
+    source_url: 'https://stirling.wa.gov.au/tennis',
+    raw_source_url: 'http://stirling.wa.gov.au/tennis'
+  };
+
+  const verifiedActivity = sanitizeActivity(verifiedRaw);
+  assert.equal(verifiedActivity.verified, true);
+  assert.equal(verifiedActivity.source_url, 'https://stirling.wa.gov.au/tennis');
+  assert.equal(verifiedActivity.raw_source_url, 'http://stirling.wa.gov.au/tennis');
+});

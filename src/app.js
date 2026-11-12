@@ -593,6 +593,16 @@ export function initApp(options = {}) {
     window.addEventListener('hashchange', handleHashRouting);
   }
 
+  function openVerifiedCardUrl(card) {
+    if (!card || card.classList?.contains('activity-card-unverified')) {
+      return;
+    }
+    const url = card.dataset?.url || (card.getAttribute && card.getAttribute('data-url'));
+    if (url && url !== '#' && typeof window !== 'undefined' && typeof window.open === 'function') {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    }
+  }
+
   // Activity Feed Interaction Delegation (Empty State Recovery, Venue Map Directions, Card Navigation)
   if (feedContainer) {
     feedContainer.addEventListener('click', (e) => {
@@ -636,10 +646,7 @@ export function initApp(options = {}) {
       // 4. Activity card: whole-card click opens club/activity source_url in a new tab
       const card = e.target.closest && e.target.closest('.activity-card');
       if (card) {
-        const url = card.dataset?.url || (card.getAttribute && card.getAttribute('data-url'));
-        if (url && url !== '#' && typeof window !== 'undefined' && typeof window.open === 'function') {
-          window.open(url, '_blank', 'noopener,noreferrer');
-        }
+        openVerifiedCardUrl(card);
         return;
       }
     });
@@ -649,10 +656,7 @@ export function initApp(options = {}) {
       if (e.key === 'Enter') {
         const card = e.target.closest && e.target.closest('.activity-card');
         if (card && e.target === card) {
-          const url = card.dataset?.url || (card.getAttribute && card.getAttribute('data-url'));
-          if (url && url !== '#' && typeof window !== 'undefined' && typeof window.open === 'function') {
-            window.open(url, '_blank', 'noopener,noreferrer');
-          }
+          openVerifiedCardUrl(card);
         }
       }
     });

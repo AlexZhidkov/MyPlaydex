@@ -21,5 +21,9 @@ A distinct geographical metropolitan area or administrative territory used to pa
 _Avoid_: City, Area, Market
 
 **Listing**:
-The published record on the platform representing an Activity, with dates, skill level, and external referral link.
+The published record on the platform representing an Activity, with schedule, venue, and optional external referral link.
 _Avoid_: Post, Entry, Ad, Submission
+
+**Unverified Listing**:
+A published Listing whose external referral link is missing or unreachable, surfaced for location discovery without an outbound referral action.
+_Avoid_: Broken Listing, Dead Listing, Draft
