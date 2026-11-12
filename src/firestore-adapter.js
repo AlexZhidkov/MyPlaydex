@@ -100,6 +100,114 @@ export function createFirestoreAdapter(options = {}) {
     },
 
     /**
+     * Scans existing activity documents from Firestore.
+     *
+     * @param {object} [options]
+     * @param {boolean} [options.onlyUnverified=false]
+     * @returns {Promise<Array<object>>}
+     */
+    async scanActivities(options = {}) {
+      if (!db) {
+        return [];
+      }
+
+      const { onlyUnverified = false } = options;
+      const colRef = db.collection(collectionName);
+      const snapshot = await colRef.get();
+
+      const activities = [];
+      const docs = snapshot && snapshot.docs ? snapshot.docs : [];
+      for (const doc of docs) {
+        const data = typeof doc.data === 'function' ? doc.data() : doc;
+        const activity = { id: doc.id, ...data };
+        if (onlyUnverified) {
+          if (activity.verified !== true) {
+            activities.push(activity);
+          }
+        } else {
+          activities.push(activity);
+        }
+      }
+
+      return activities;
+    },
+
+    /**
+     * Batch-updates URL verification state for an array of activities.
+     * Updates verified, source_url, raw_source_url, and updated_at with { merge: true }.
+     *
+     * @param {Array<{ id: string, verified: boolean, source_url: string|null, raw_source_url?: string|null, updated_at?: string }>} updates
+     * @returns {Promise<{ total: number, updated: number, failed: number, batches: number, errors: Array<Error>, dryRun: boolean }>}
+     */
+    async batchUpdateActivityUrls(updates = []) {
+      const total = updates.length;
+      if (total === 0) {
+        return {
+          total: 0,
+          updated: 0,
+          failed: 0,
+          batches: 0,
+          errors: [],
+          dryRun
+        };
+      }
+
+      const updateBatchSize = Math.min(Math.max(1, batchSize), FIRESTORE_MAX_BATCH_SIZE);
+      const chunks = [];
+      for (let i = 0; i < total; i += updateBatchSize) {
+        chunks.push(updates.slice(i, i + updateBatchSize));
+      }
+
+      if (dryRun || !db) {
+        return {
+          total,
+          updated: total,
+          failed: 0,
+          batches: chunks.length,
+          errors: [],
+          dryRun
+        };
+      }
+
+      let updated = 0;
+      let failed = 0;
+      const errors = [];
+      const nowIso = new Date().toISOString();
+
+      for (const chunk of chunks) {
+        try {
+          const batch = db.batch();
+          for (const item of chunk) {
+            const docRef = db.collection(collectionName).doc(item.id);
+            const updatePayload = {
+              verified: Boolean(item.verified),
+              source_url: item.verified ? (item.source_url || null) : null,
+              raw_source_url: item.raw_source_url !== undefined ? item.raw_source_url : (item.source_url || null),
+              updated_at: item.updated_at || nowIso
+            };
+            batch.set(docRef, updatePayload, { merge: true });
+          }
+
+          await batch.commit();
+          updated += chunk.length;
+        } catch (err) {
+          failed += chunk.length;
+          errors.push(err);
+        }
+      }
+
+      return {
+        total,
+        updated,
+        failed,
+        batches: chunks.length,
+        errors,
+        dryRun
+      };
+    },
+
+
+    /**
      * Upserts an array of activity documents and their canonical entities in batches.
      * Atomically updates /activities, /venues, /organizers, and /regions collections.
      *

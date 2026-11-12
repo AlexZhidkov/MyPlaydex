@@ -220,6 +220,7 @@ export function createUrlVerifier(options = {}) {
   const db = options.db;
   const prober = options.prober || createUrlProber(options);
   const runCache = options.runCache || new Map();
+  const force = Boolean(options.force);
 
   return {
     runCache,
@@ -237,25 +238,27 @@ export function createUrlVerifier(options = {}) {
 
       // 1. Fetch existing Firestore records for candidate listing IDs
       const listingIds = listings.map(l => l.id).filter(Boolean);
-      let existingDocsMap = new Map();
+      let existingDocsMap = options.existingDocsMap || new Map();
 
-      if (adapter && typeof adapter.getActivities === 'function') {
-        try {
-          existingDocsMap = await adapter.getActivities(listingIds);
-        } catch {
-          existingDocsMap = new Map();
-        }
-      } else if (db && typeof db.getAll === 'function') {
-        try {
-          const docRefs = listingIds.map(id => db.collection('activities').doc(id));
-          const snapshots = await db.getAll(...docRefs);
-          for (const snap of snapshots) {
-            if (snap && snap.exists) {
-              existingDocsMap.set(snap.id, snap.data());
-            }
+      if (existingDocsMap.size === 0) {
+        if (adapter && typeof adapter.getActivities === 'function') {
+          try {
+            existingDocsMap = await adapter.getActivities(listingIds);
+          } catch {
+            existingDocsMap = new Map();
           }
-        } catch {
-          existingDocsMap = new Map();
+        } else if (db && typeof db.getAll === 'function') {
+          try {
+            const docRefs = listingIds.map(id => db.collection('activities').doc(id));
+            const snapshots = await db.getAll(...docRefs);
+            for (const snap of snapshots) {
+              if (snap && snap.exists) {
+                existingDocsMap.set(snap.id, snap.data());
+              }
+            }
+          } catch {
+            existingDocsMap = new Map();
+          }
         }
       }
 
@@ -268,23 +271,23 @@ export function createUrlVerifier(options = {}) {
         const rawCandidate = item.source_url || item.raw_source_url;
         const candidateUrl = typeof rawCandidate === 'string' ? rawCandidate.trim() : '';
 
+        // Strict preservation of raw_source_url
+        const preservedRawUrl = (typeof item.raw_source_url === 'string' && item.raw_source_url.trim())
+          ? item.raw_source_url.trim()
+          : (candidateUrl || null);
+        item.raw_source_url = preservedRawUrl;
+
         // If no candidate URL at all, degrade to Unverified
         if (!candidateUrl) {
           item.verified = false;
           item.source_url = null;
-          item.raw_source_url = null;
           continue;
         }
 
-        // Preserve raw_source_url
-        if (!item.raw_source_url) {
-          item.raw_source_url = candidateUrl;
-        }
-
         // Check existing Firestore record:
-        // If already verified: true and matching URL, skip probing
+        // If already verified: true and matching URL, skip probing (unless force is true)
         const existing = existingDocsMap.get(item.id);
-        if (existing && existing.verified === true) {
+        if (!force && existing && existing.verified === true) {
           const existingUrl = existing.source_url || existing.raw_source_url;
           if (existingUrl === candidateUrl || existing.source_url === candidateUrl) {
             item.verified = true;
@@ -293,17 +296,19 @@ export function createUrlVerifier(options = {}) {
           }
         }
 
-        // Check in-memory run cache
-        const cached = runCache.get(candidateUrl);
-        if (cached) {
-          if (cached.reachable) {
-            item.verified = true;
-            item.source_url = cached.url;
-          } else {
-            item.verified = false;
-            item.source_url = null;
+        // Check in-memory run cache (unless force is true)
+        if (!force) {
+          const cached = runCache.get(candidateUrl);
+          if (cached) {
+            if (cached.reachable) {
+              item.verified = true;
+              item.source_url = cached.url;
+            } else {
+              item.verified = false;
+              item.source_url = null;
+            }
+            continue;
           }
-          continue;
         }
 
         // Attempt automated link recovery
@@ -315,18 +320,20 @@ export function createUrlVerifier(options = {}) {
           continue;
         }
 
-        // Check run cache with recovered URL
-        const cachedRecovered = runCache.get(recovered);
-        if (cachedRecovered) {
-          if (cachedRecovered.reachable) {
-            item.verified = true;
-            item.source_url = cachedRecovered.url;
-          } else {
-            item.verified = false;
-            item.source_url = null;
+        // Check run cache with recovered URL (unless force is true)
+        if (!force) {
+          const cachedRecovered = runCache.get(recovered);
+          if (cachedRecovered) {
+            if (cachedRecovered.reachable) {
+              item.verified = true;
+              item.source_url = cachedRecovered.url;
+            } else {
+              item.verified = false;
+              item.source_url = null;
+            }
+            runCache.set(candidateUrl, cachedRecovered);
+            continue;
           }
-          runCache.set(candidateUrl, cachedRecovered);
-          continue;
         }
 
         itemsToProbe.push({

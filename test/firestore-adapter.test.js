@@ -278,3 +278,101 @@ test('Seam 2: initFirestoreFromEnv correctly parses JSON and base64 service acco
   );
 });
 
+test('Seam 1: scanActivities retrieves records and supports onlyUnverified filtering', async () => {
+  // 1. Dry run without db returns empty array
+  const dryAdapter = createFirestoreAdapter({ dryRun: true });
+  const dryResults = await dryAdapter.scanActivities();
+  assert.deepEqual(dryResults, []);
+
+  // 2. Mock db with activities
+  const mockDocs = [
+    { id: 'act_1', data: () => ({ id: 'act_1', title: 'Tennis', verified: true, source_url: 'https://tennis.org' }) },
+    { id: 'act_2', data: () => ({ id: 'act_2', title: 'Soccer', verified: false, source_url: null, raw_source_url: 'http://broken.soccer' }) },
+    { id: 'act_3', data: () => ({ id: 'act_3', title: 'Running', source_url: 'http://run.org' }) } // verified field missing
+  ];
+
+  const mockDb = {
+    collection(name) {
+      assert.equal(name, 'activities');
+      return {
+        async get() {
+          return { docs: mockDocs };
+        }
+      };
+    }
+  };
+
+  const adapter = createFirestoreAdapter({ db: mockDb, dryRun: false });
+
+  // Scan all
+  const allActivities = await adapter.scanActivities();
+  assert.equal(allActivities.length, 3);
+  assert.equal(allActivities[0].id, 'act_1');
+
+  // Scan with onlyUnverified
+  const unverifiedActivities = await adapter.scanActivities({ onlyUnverified: true });
+  assert.equal(unverifiedActivities.length, 2);
+  assert.deepEqual(unverifiedActivities.map(a => a.id), ['act_2', 'act_3']);
+});
+
+test('Seam 1: batchUpdateActivityUrls updates verified status, source_url, raw_source_url with chunking and merge: true', async () => {
+  // 1. Dry run returns counts without writing
+  const dryAdapter = createFirestoreAdapter({ dryRun: true });
+  const updates = [
+    { id: 'act_1', verified: true, source_url: 'https://repaired.org', raw_source_url: 'http://repaired.org' }
+  ];
+  const dryResult = await dryAdapter.batchUpdateActivityUrls(updates);
+  assert.equal(dryResult.total, 1);
+  assert.equal(dryResult.updated, 1);
+  assert.equal(dryResult.failed, 0);
+  assert.equal(dryResult.dryRun, true);
+
+  // 2. Live adapter with mock db
+  const committedBatches = [];
+  const mockDb = {
+    collection(name) {
+      assert.equal(name, 'activities');
+      return {
+        doc(id) {
+          return { id, path: `activities/${id}` };
+        }
+      };
+    },
+    batch() {
+      const ops = [];
+      return {
+        set(docRef, data, options) {
+          ops.push({ docRef, data, options });
+        },
+        async commit() {
+          committedBatches.push(ops);
+        }
+      };
+    }
+  };
+
+  const adapter = createFirestoreAdapter({ db: mockDb, dryRun: false, batchSize: 2 });
+  const multiUpdates = [
+    { id: 'act_1', verified: true, source_url: 'https://canonical.com/1', raw_source_url: 'http://raw.com/1' },
+    { id: 'act_2', verified: false, source_url: null, raw_source_url: 'http://broken.com/2' },
+    { id: 'act_3', verified: true, source_url: 'https://canonical.com/3', raw_source_url: 'http://raw.com/3' }
+  ];
+
+  const result = await adapter.batchUpdateActivityUrls(multiUpdates);
+  assert.equal(result.total, 3);
+  assert.equal(result.updated, 3);
+  assert.equal(result.failed, 0);
+  assert.equal(result.batches, 2); // 3 items with batchSize 2 -> 2 batches
+  assert.equal(committedBatches.length, 2);
+
+  // Check first operation
+  const firstOp = committedBatches[0][0];
+  assert.equal(firstOp.docRef.id, 'act_1');
+  assert.equal(firstOp.options.merge, true);
+  assert.equal(firstOp.data.verified, true);
+  assert.equal(firstOp.data.source_url, 'https://canonical.com/1');
+  assert.equal(firstOp.data.raw_source_url, 'http://raw.com/1');
+  assert.equal(typeof firstOp.data.updated_at, 'string');
+});
+
+
