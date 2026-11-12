@@ -6,12 +6,151 @@
  */
 
 import { createDiscoveryStore } from './discovery-engine.js';
-import { MOCK_PERTH_ACTIVITIES } from './mock-perth-activities.js';
 import { searchSuburbs, getSuburbByPostcodeOrName, getSuburbBySlugOrName, suburbNameToSlug, findNearestSuburb } from './perth-centroids.js';
 import { renderActivityCard, renderEmptyState, renderFilterView, createSuggestActivityMailtoUrl } from './discovery-ui.js';
 
 const STORAGE_KEY_LOCATION = 'myplaydex_location';
 const STORAGE_KEY_SPORTS = 'myplaydex_sports_filters';
+
+export const DEFAULT_FIREBASE_PROJECT_ID = 'myplaydex';
+export const DEFAULT_FIRESTORE_COLLECTION = 'activities';
+
+/**
+ * Unwraps a single Cloud Firestore REST API typed value into a plain JavaScript primitive/object.
+ *
+ * @param {object} valObj
+ * @returns {*}
+ */
+export function unwrapFirestoreValue(valObj) {
+  if (!valObj || typeof valObj !== 'object') {
+    return valObj;
+  }
+  if ('nullValue' in valObj) return null;
+  if ('booleanValue' in valObj) return Boolean(valObj.booleanValue);
+  if ('stringValue' in valObj) return String(valObj.stringValue);
+  if ('integerValue' in valObj) return Number(valObj.integerValue);
+  if ('doubleValue' in valObj) return Number(valObj.doubleValue);
+  if ('timestampValue' in valObj) return String(valObj.timestampValue);
+  if ('referenceValue' in valObj) return String(valObj.referenceValue);
+  if ('geoPointValue' in valObj) {
+    const geo = valObj.geoPointValue || {};
+    return {
+      lat: Number(geo.latitude ?? geo.lat ?? 0),
+      lng: Number(geo.longitude ?? geo.lng ?? 0)
+    };
+  }
+  if ('arrayValue' in valObj) {
+    const values = valObj.arrayValue?.values;
+    return Array.isArray(values) ? values.map(unwrapFirestoreValue) : [];
+  }
+  if ('mapValue' in valObj) {
+    const fields = valObj.mapValue?.fields || {};
+    const result = {};
+    for (const [k, v] of Object.entries(fields)) {
+      result[k] = unwrapFirestoreValue(v);
+    }
+    return result;
+  }
+  return valObj;
+}
+
+/**
+ * Parses a Firestore REST document object into a canonical Activity object.
+ *
+ * @param {object} doc
+ * @returns {object | null}
+ */
+export function parseFirestoreDocument(doc) {
+  if (!doc || typeof doc !== 'object') return null;
+
+  // If already a plain activity object (e.g., from SDK or pre-parsed JSON)
+  if (!doc.fields && (doc.id || doc.title)) {
+    return { ...doc };
+  }
+
+  const fields = doc.fields || {};
+  const parsed = {};
+  for (const [key, valObj] of Object.entries(fields)) {
+    parsed[key] = unwrapFirestoreValue(valObj);
+  }
+
+  if (!parsed.id && typeof doc.name === 'string') {
+    const segments = doc.name.split('/');
+    parsed.id = segments[segments.length - 1];
+  }
+
+  return parsed;
+}
+
+/**
+ * Fetches all activity documents from the Cloud Firestore `/activities` collection.
+ * Supports injected `db` instance (SDK/mock) or public Firestore REST v1 endpoint with pagination.
+ *
+ * @param {object} [options={}]
+ * @param {object} [options.db] - Optional Firestore instance with collection('activities').get()
+ * @param {Function} [options.fetchImpl] - Fetch implementation (defaults to globalThis.fetch)
+ * @param {string} [options.projectId=DEFAULT_FIREBASE_PROJECT_ID] - Firebase project ID
+ * @param {string} [options.collectionName=DEFAULT_FIRESTORE_COLLECTION] - Collection name
+ * @param {number} [options.pageSize=300] - Page size per REST request
+ * @returns {Promise<Array<object>>}
+ */
+export async function fetchActivitiesFromFirestore(options = {}) {
+  const {
+    db = null,
+    fetchImpl = typeof globalThis !== 'undefined' && typeof globalThis.fetch === 'function'
+      ? globalThis.fetch.bind(globalThis)
+      : null,
+    projectId = DEFAULT_FIREBASE_PROJECT_ID,
+    collectionName = DEFAULT_FIRESTORE_COLLECTION,
+    pageSize = 300
+  } = options;
+
+  // 1. If a Firestore DB instance is provided (e.g. Firebase SDK or test double)
+  if (db && typeof db.collection === 'function') {
+    const snapshot = await db.collection(collectionName).get();
+    const docs = snapshot?.docs || [];
+    return docs.map((doc) => {
+      const data = typeof doc.data === 'function' ? doc.data() : doc;
+      return { id: doc.id, ...data };
+    });
+  }
+
+  // 2. Otherwise query the Cloud Firestore v1 REST API directly
+  if (typeof fetchImpl !== 'function') {
+    return [];
+  }
+
+  const baseUrl = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/${encodeURIComponent(collectionName)}`;
+  const activities = [];
+  let pageToken = null;
+
+  do {
+    const url = new URL(baseUrl);
+    url.searchParams.set('pageSize', String(pageSize));
+    if (pageToken) {
+      url.searchParams.set('pageToken', pageToken);
+    }
+
+    const response = await fetchImpl(url.toString());
+    if (!response || !response.ok) {
+      const status = response ? response.status : 'unknown';
+      throw new Error(`Failed to fetch /${collectionName} from Firestore (HTTP ${status})`);
+    }
+
+    const payload = await response.json();
+    const documents = Array.isArray(payload?.documents) ? payload.documents : [];
+    for (const doc of documents) {
+      const activity = parseFirestoreDocument(doc);
+      if (activity) {
+        activities.push(activity);
+      }
+    }
+
+    pageToken = payload?.nextPageToken || null;
+  } while (pageToken);
+
+  return activities;
+}
 
 /**
  * Parses query parameters from window.location.search or given search string.
@@ -178,7 +317,8 @@ export function saveLocation(location) {
  */
 export function initApp(options = {}) {
   const urlParams = parseDiscoveryUrlParams();
-  const initialActivities = options.activities || MOCK_PERTH_ACTIVITIES;
+  const hasExplicitActivities = Array.isArray(options.activities);
+  const initialActivities = hasExplicitActivities ? options.activities : [];
 
   let initialLocation = options.location !== undefined ? options.location : null;
   if (!initialLocation && urlParams.suburb) {
@@ -189,22 +329,27 @@ export function initApp(options = {}) {
   }
 
   const targetActivityId = options.activityId || urlParams.activity;
-  let deepLinkedActivity = null;
-  if (targetActivityId) {
-    deepLinkedActivity = initialActivities.find((a) => a.id === targetActivityId) || null;
-    if (!initialLocation && deepLinkedActivity) {
-      const venue = deepLinkedActivity.venue || {};
-      const coords = venue.coordinates || (venue.lat !== undefined && venue.lng !== undefined ? venue : null);
-      if (coords && typeof coords.lat === 'number' && typeof coords.lng === 'number') {
-        const nearestSuburb = findNearestSuburb(coords);
-        initialLocation = {
-          name: nearestSuburb ? nearestSuburb.name : (venue.name || 'Perth'),
-          postcode: nearestSuburb ? nearestSuburb.postcode : undefined,
-          lat: coords.lat,
-          lng: coords.lng
-        };
-      }
+
+  function resolveDeepLinkLocation(activitiesList) {
+    if (!targetActivityId) return null;
+    const deepLinkedActivity = activitiesList.find((a) => a.id === targetActivityId) || null;
+    if (!deepLinkedActivity) return null;
+    const venue = deepLinkedActivity.venue || {};
+    const coords = venue.coordinates || (venue.lat !== undefined && venue.lng !== undefined ? venue : null);
+    if (coords && typeof coords.lat === 'number' && typeof coords.lng === 'number') {
+      const nearestSuburb = findNearestSuburb(coords);
+      return {
+        name: nearestSuburb ? nearestSuburb.name : (venue.name || 'Perth'),
+        postcode: nearestSuburb ? nearestSuburb.postcode : undefined,
+        lat: coords.lat,
+        lng: coords.lng
+      };
     }
+    return null;
+  }
+
+  if (targetActivityId && !initialLocation) {
+    initialLocation = resolveDeepLinkLocation(initialActivities);
   }
 
   let initialRadius = options.radiusKm !== undefined ? options.radiusKm : 10;
@@ -695,12 +840,46 @@ export function initApp(options = {}) {
   // Initial render & state hydration
   const initialState = store.getState();
   updateFilterHeaderUI(initialState.filters);
-  if (!initialState.location) {
-    openLocationGate(false);
+
+  let ready = Promise.resolve(initialActivities);
+
+  if (hasExplicitActivities) {
+    if (!initialState.location) {
+      openLocationGate(false);
+    } else {
+      renderFeed(initialState);
+    }
+    hideLoading();
   } else {
-    renderFeed(initialState);
+    if (!initialState.location && !targetActivityId) {
+      openLocationGate(false);
+    } else {
+      showLoading('Loading activities...');
+    }
+
+    ready = fetchActivitiesFromFirestore({
+      db: options.db,
+      fetchImpl: options.fetchImpl,
+      projectId: options.projectId,
+      collectionName: options.collectionName
+    })
+      .then((fetchedActivities) => {
+        const currentLoc = store.getState().location;
+        if (!currentLoc && targetActivityId) {
+          const deepLinkLoc = resolveDeepLinkLocation(fetchedActivities);
+          if (deepLinkLoc) {
+            store.setLocation(deepLinkLoc);
+          }
+        }
+        store.setActivities(fetchedActivities);
+        return fetchedActivities;
+      })
+      .catch((err) => {
+        console.warn('Failed to load activities from Firestore:', err);
+        store.setActivities([]);
+        return [];
+      });
   }
-  hideLoading();
 
   if (typeof window !== 'undefined' && window.location && window.location.hash === '#filters') {
     openFilterView();
@@ -708,6 +887,7 @@ export function initApp(options = {}) {
 
   return {
     store,
+    ready,
     openLocationGate,
     closeLocationGate,
     openFilterView,

@@ -11,6 +11,7 @@
     "seed": "node src/crawler-runner.js --seed",
     "prototype": "python3 -m http.server 3000",
     "deploy:hosting": "npx -y firebase-tools@latest deploy --only hosting",
+    "deploy:rules": "npx -y firebase-tools@latest deploy --only firestore:rules",
     "serve:hosting": "npx -y firebase-tools@latest emulators:start --only hosting"
   },
   "dependencies": {

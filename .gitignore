@@ -7,3 +7,4 @@ firebase-adminsdk-*.json
 *credentials*.json
 
 .firebase/
+firebase-debug.log

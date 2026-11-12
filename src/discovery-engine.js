@@ -289,6 +289,13 @@ export function createDiscoveryStore(activitiesOrConfig = [], optionalConfig = {
 
   return {
     getState,
+    setActivities(newActivities = []) {
+      activities.length = 0;
+      if (Array.isArray(newActivities)) {
+        activities.push(...newActivities);
+      }
+      notify('activities');
+    },
     setLocation(newLocation) {
       location = newLocation ? { ...newLocation } : null;
       notify('location');

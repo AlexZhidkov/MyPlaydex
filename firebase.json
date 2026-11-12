@@ -1,9 +1,13 @@
 {
+  "firestore": {
+    "rules": "firestore.rules"
+  },
   "hosting": {
     "site": "myplaydex",
     "public": ".",
     "ignore": [
       "firebase.json",
+      "firestore.rules",
       "**/.*",
       "**/node_modules/**",
       "test/**",
@@ -16,7 +20,10 @@
       "LICENSE",
       "src/crawler-*.js",
       "src/crawlers/**",
-      "src/firestore-adapter.js"
+      "src/firestore-adapter.js",
+      "src/mock-perth-activities.js",
+      "src/url-verifier.js",
+      "src/verifier-cli.js"
     ],
     "rewrites": [
       {

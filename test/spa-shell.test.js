@@ -16,6 +16,10 @@ test('Seam 4: firebase.json exists and cleanly configures static hosting SPA rew
 
   const spaRewrite = content.hosting.rewrites.find(r => r.source === '**' && r.destination === '/index.html');
   assert.ok(spaRewrite, 'Must have wildcard rewrite to /index.html');
+
+  assert.equal(content.firestore?.rules, 'firestore.rules', 'firebase.json must register firestore.rules');
+  assert.ok(content.hosting.ignore.includes('firestore.rules'), 'hosting ignore list must exclude firestore.rules');
+  assert.ok(fs.existsSync(path.join(REPO_ROOT, 'firestore.rules')), 'firestore.rules must exist at repo root');
 });
 
 test('Seam 4: index.html exists, contains no Leaflet or map tile references, and defines mobile viewport', () => {

@@ -1,11 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   getSavedLocation,
   saveLocation,
   getSavedSportsFilters,
   saveSportsFilters,
   clearSavedSportsFilters,
+  unwrapFirestoreValue,
+  parseFirestoreDocument,
+  fetchActivitiesFromFirestore,
   initApp
 } from '../src/app.js';
 
@@ -991,6 +996,423 @@ test('Seam 3: Activity card click delegates to source_url in new tab, and card-v
   };
   feedContainer.dispatchEvent({ type: 'click', target: unverifiedEditTarget });
   assert.equal(openedWindows.length, 0, 'Clicking Suggest an edit on an Unverified Listing card must not trigger window.open');
+
+  storage.clear();
+});
+
+test('Firestore Client: unwrapFirestoreValue and parseFirestoreDocument parse REST documents into canonical Activities', () => {
+  const restDoc = {
+    name: 'projects/myplaydex/databases/(default)/documents/activities/stirling_101',
+    fields: {
+      id: { stringValue: 'stirling_101' },
+      region_id: { stringValue: 'perth' },
+      title: { stringValue: 'Scarborough Beach Volleyball' },
+      subcategory: { stringValue: 'volleyball' },
+      verified: { booleanValue: true },
+      source_url: { stringValue: 'https://example.com/vb' },
+      raw_source_url: { nullValue: null },
+      venue: {
+        mapValue: {
+          fields: {
+            id: { stringValue: 'venue_scarborough_qd66s4' },
+            name: { stringValue: 'Scarborough Beach' },
+            coordinates: {
+              mapValue: {
+                fields: {
+                  lat: { doubleValue: -31.8942 },
+                  lng: { doubleValue: 115.7571 }
+                }
+              }
+            }
+          }
+        }
+      },
+      schedule: {
+        mapValue: {
+          fields: {
+            start_date: { stringValue: '2026-11-12' },
+            end_date: { nullValue: null },
+            recurrence: { stringValue: 'weekly' },
+            day_of_week: { integerValue: '4' }
+          }
+        }
+      },
+      cost: {
+        mapValue: {
+          fields: {
+            is_free: { booleanValue: true },
+            display_price: { stringValue: 'Free' }
+          }
+        }
+      },
+      tags: {
+        arrayValue: {
+          values: [{ stringValue: 'beach' }, { stringValue: 'social' }]
+        }
+      }
+    }
+  };
+
+  const parsed = parseFirestoreDocument(restDoc);
+  assert.equal(parsed.id, 'stirling_101');
+  assert.equal(parsed.title, 'Scarborough Beach Volleyball');
+  assert.equal(parsed.subcategory, 'volleyball');
+  assert.equal(parsed.verified, true);
+  assert.equal(parsed.raw_source_url, null);
+  assert.deepEqual(parsed.venue.coordinates, { lat: -31.8942, lng: 115.7571 });
+  assert.equal(parsed.schedule.day_of_week, 4);
+  assert.equal(parsed.cost.is_free, true);
+  assert.deepEqual(parsed.tags, ['beach', 'social']);
+
+  // Fallback id from document name when id field is absent
+  const docWithoutIdField = {
+    name: 'projects/myplaydex/databases/(default)/documents/activities/dlgsc_999',
+    fields: {
+      title: { stringValue: 'Subiaco Tennis' }
+    }
+  };
+  const parsedFallbackId = parseFirestoreDocument(docWithoutIdField);
+  assert.equal(parsedFallbackId.id, 'dlgsc_999');
+  assert.equal(parsedFallbackId.title, 'Subiaco Tennis');
+});
+
+test('Firestore Client: fetchActivitiesFromFirestore paginates REST API and supports injected db', async () => {
+  const requestedUrls = [];
+  const mockFetch = async (url) => {
+    requestedUrls.push(url);
+    if (!url.includes('pageToken=')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            documents: [
+              {
+                name: 'projects/myplaydex/databases/(default)/documents/activities/act_page_1',
+                fields: {
+                  id: { stringValue: 'act_page_1' },
+                  title: { stringValue: 'Page 1 Activity' }
+                }
+              }
+            ],
+            nextPageToken: 'token_page_2'
+          };
+        }
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          documents: [
+            {
+              name: 'projects/myplaydex/databases/(default)/documents/activities/act_page_2',
+              fields: {
+                id: { stringValue: 'act_page_2' },
+                title: { stringValue: 'Page 2 Activity' }
+              }
+            }
+          ]
+        };
+      }
+    };
+  };
+
+  const results = await fetchActivitiesFromFirestore({
+    fetchImpl: mockFetch,
+    projectId: 'myplaydex',
+    collectionName: 'activities',
+    pageSize: 1
+  });
+
+  assert.equal(requestedUrls.length, 2);
+  assert.ok(requestedUrls[0].includes('https://firestore.googleapis.com/v1/projects/myplaydex/databases/(default)/documents/activities'));
+  assert.ok(requestedUrls[1].includes('pageToken=token_page_2'));
+  assert.equal(results.length, 2);
+  assert.deepEqual(results.map((r) => r.id), ['act_page_1', 'act_page_2']);
+
+  // Also supports injected db instance
+  const mockDb = {
+    collection(colName) {
+      assert.equal(colName, 'activities');
+      return {
+        async get() {
+          return {
+            docs: [
+              { id: 'db_1', data: () => ({ title: 'From DB Instance' }) }
+            ]
+          };
+        }
+      };
+    }
+  };
+
+  const dbResults = await fetchActivitiesFromFirestore({ db: mockDb });
+  assert.equal(dbResults.length, 1);
+  assert.equal(dbResults[0].id, 'db_1');
+  assert.equal(dbResults[0].title, 'From DB Instance');
+});
+
+test('Firestore Client: src/app.js has no MOCK_PERTH_ACTIVITIES fallback and loads /activities asynchronously from Firestore', async () => {
+  const appJsSource = fs.readFileSync(path.resolve('src/app.js'), 'utf8');
+  assert.ok(!appJsSource.includes('MOCK_PERTH_ACTIVITIES'), 'src/app.js must not reference MOCK_PERTH_ACTIVITIES');
+  assert.ok(!appJsSource.includes('mock-perth-activities.js'), 'src/app.js must not import mock-perth-activities.js');
+
+  const storage = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => storage.get(key) || null,
+    setItem: (key, val) => storage.set(key, String(val)),
+    removeItem: (key) => storage.delete(key),
+    clear: () => storage.clear()
+  };
+
+  const elements = new Map();
+  function createMockEl(id, tag = 'div', classes = []) {
+    const classSet = new Set(classes);
+    let innerHTML = '';
+    let textContent = '';
+    const attrs = new Map();
+
+    const el = {
+      id,
+      tagName: tag.toUpperCase(),
+      style: {},
+      get innerHTML() { return innerHTML; },
+      set innerHTML(val) { innerHTML = val; },
+      get textContent() { return textContent; },
+      set textContent(val) { textContent = val; },
+      classList: {
+        add: (...c) => c.forEach((n) => classSet.add(n)),
+        remove: (...c) => c.forEach((n) => classSet.delete(n)),
+        toggle: (n, force) => {
+          if (force === undefined) classSet.has(n) ? classSet.delete(n) : classSet.add(n);
+          else if (force) classSet.add(n);
+          else classSet.delete(n);
+        },
+        contains: (n) => classSet.has(n)
+      },
+      getAttribute: (n) => attrs.get(n) || null,
+      setAttribute: (n, v) => attrs.set(n, String(v)),
+      addEventListener: () => {},
+      dispatchEvent: () => {},
+      closest: () => null,
+      scrollIntoView: () => {}
+    };
+    elements.set(id, el);
+    return el;
+  }
+
+  createMockEl('location-gate-overlay', 'div');
+  createMockEl('gate-close-btn', 'button');
+  createMockEl('location-switcher-btn', 'button');
+  createMockEl('current-location-label', 'span');
+  const feedContainer = createMockEl('feed-container', 'section');
+  const loadingLabel = createMockEl('loading-label', 'span');
+  createMockEl('filter-header-btn', 'button');
+  createMockEl('filter-count-badge', 'span', ['hidden']);
+  createMockEl('filter-view-overlay', 'div', ['hidden']);
+
+  globalThis.window = {
+    location: { hash: '', pathname: '/', search: '?suburb=perth' },
+    history: { replaceState: () => {}, pushState: () => {}, back: () => {} },
+    addEventListener: () => {}
+  };
+  globalThis.document = {
+    getElementById: (id) => elements.get(id) || null,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    addEventListener: () => {}
+  };
+
+  const mockFetch = async () => ({
+    ok: true,
+    status: 200,
+    async json() {
+      return {
+        documents: [
+          {
+            name: 'projects/myplaydex/databases/(default)/documents/activities/firestore_live_1',
+            fields: {
+              id: { stringValue: 'firestore_live_1' },
+              title: { stringValue: 'Live Firestore Basketball' },
+              subcategory: { stringValue: 'basketball' },
+              verified: { booleanValue: true },
+              source_url: { stringValue: 'https://example.com/bball' },
+              venue: {
+                mapValue: {
+                  fields: {
+                    name: { stringValue: 'Perth Arena' },
+                    coordinates: {
+                      mapValue: {
+                        fields: {
+                          lat: { doubleValue: -31.9485 },
+                          lng: { doubleValue: 115.8523 }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              cost: {
+                mapValue: {
+                  fields: {
+                    is_free: { booleanValue: true },
+                    display_price: { stringValue: 'Free' }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      };
+    }
+  });
+
+  const app = initApp({ fetchImpl: mockFetch });
+
+  // Before async resolution, store starts empty (never MOCK_PERTH_ACTIVITIES)
+  assert.deepEqual(app.store.getState().activities, []);
+  assert.equal(loadingLabel.classList.contains('hidden'), false, 'Loading label should be visible while fetching Firestore');
+
+  await app.ready;
+
+  // After Firestore resolution, store is populated with live Firestore activity and feed renders it
+  const stateAfter = app.store.getState();
+  assert.equal(stateAfter.activities.length, 1);
+  assert.equal(stateAfter.activities[0].id, 'firestore_live_1');
+  assert.ok(feedContainer.innerHTML.includes('Live Firestore Basketball'));
+  assert.equal(loadingLabel.classList.contains('hidden'), true, 'Loading label should hide after Firestore load');
+
+  storage.clear();
+});
+
+test('Firestore Client: deep-linked ?activity=<id> resolves location from fetched Firestore document and highlights card', async () => {
+  const storage = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => storage.get(key) || null,
+    setItem: (key, val) => storage.set(key, String(val)),
+    removeItem: (key) => storage.delete(key),
+    clear: () => storage.clear()
+  };
+
+  const elements = new Map();
+  const scrolledElements = [];
+  function createMockEl(id, tag = 'div', classes = []) {
+    const classSet = new Set(classes);
+    let innerHTML = '';
+    let textContent = '';
+    const attrs = new Map();
+
+    const el = {
+      id,
+      tagName: tag.toUpperCase(),
+      style: {},
+      get innerHTML() { return innerHTML; },
+      set innerHTML(val) { innerHTML = val; },
+      get textContent() { return textContent; },
+      set textContent(val) { textContent = val; },
+      classList: {
+        add: (...c) => c.forEach((n) => classSet.add(n)),
+        remove: (...c) => c.forEach((n) => classSet.delete(n)),
+        toggle: (n, force) => {
+          if (force === undefined) classSet.has(n) ? classSet.delete(n) : classSet.add(n);
+          else if (force) classSet.add(n);
+          else classSet.delete(n);
+        },
+        contains: (n) => classSet.has(n)
+      },
+      getAttribute: (n) => attrs.get(n) || null,
+      setAttribute: (n, v) => attrs.set(n, String(v)),
+      addEventListener: () => {},
+      dispatchEvent: () => {},
+      closest: () => null,
+      scrollIntoView: (opts) => { scrolledElements.push({ el, opts }); }
+    };
+    elements.set(id, el);
+    return el;
+  }
+
+  const gateOverlay = createMockEl('location-gate-overlay', 'div', ['hidden']);
+  createMockEl('gate-close-btn', 'button');
+  createMockEl('location-switcher-btn', 'button');
+  createMockEl('current-location-label', 'span');
+  const feedContainer = createMockEl('feed-container', 'section');
+  createMockEl('loading-label', 'span');
+  createMockEl('filter-header-btn', 'button');
+  createMockEl('filter-count-badge', 'span', ['hidden']);
+  createMockEl('filter-view-overlay', 'div', ['hidden']);
+
+  const targetCard = createMockEl('card-firestore_deep_1', 'article', ['activity-card']);
+  targetCard.setAttribute('data-id', 'firestore_deep_1');
+
+  globalThis.window = {
+    location: { hash: '', pathname: '/', search: '?activity=firestore_deep_1' },
+    history: { replaceState: () => {}, pushState: () => {}, back: () => {} },
+    addEventListener: () => {}
+  };
+  globalThis.document = {
+    getElementById: (id) => elements.get(id) || null,
+    querySelector: (sel) => (sel && sel.includes('firestore_deep_1') ? targetCard : null),
+    querySelectorAll: () => [],
+    addEventListener: () => {}
+  };
+
+  const mockFetch = async () => ({
+    ok: true,
+    status: 200,
+    async json() {
+      return {
+        documents: [
+          {
+            name: 'projects/myplaydex/databases/(default)/documents/activities/firestore_deep_1',
+            fields: {
+              id: { stringValue: 'firestore_deep_1' },
+              title: { stringValue: 'Deep Linked Firestore Tennis' },
+              subcategory: { stringValue: 'tennis' },
+              verified: { booleanValue: true },
+              source_url: { stringValue: 'https://example.com/tennis' },
+              venue: {
+                mapValue: {
+                  fields: {
+                    name: { stringValue: 'Fremantle Tennis Club' },
+                    coordinates: {
+                      mapValue: {
+                        fields: {
+                          lat: { doubleValue: -32.0569 },
+                          lng: { doubleValue: 115.7439 }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              cost: {
+                mapValue: {
+                  fields: {
+                    is_free: { booleanValue: true },
+                    display_price: { stringValue: 'Free' }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      };
+    }
+  });
+
+  const app = initApp({ fetchImpl: mockFetch });
+  await app.ready;
+
+  const state = app.store.getState();
+  assert.ok(state.location, 'Location should be inferred from deep-linked Firestore activity');
+  assert.equal(state.location.lat, -32.0569);
+  assert.equal(state.location.lng, 115.7439);
+  assert.ok(gateOverlay.classList.contains('hidden'), 'Location gate should remain closed on deep link');
+  assert.ok(feedContainer.innerHTML.includes('Deep Linked Firestore Tennis'));
+  assert.ok(targetCard.classList.contains('highlight-pulse'), 'Target card should be highlighted');
+  assert.equal(scrolledElements.length, 1);
 
   storage.clear();
 });
