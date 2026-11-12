@@ -83,19 +83,53 @@ export function determineIsFree(costDescription = '', explicitIsFree = undefined
 
 const DAY_NAME_TO_INT = {
   sunday: 0,
+  sundays: 0,
   sun: 0,
   monday: 1,
+  mondays: 1,
   mon: 1,
   tuesday: 2,
+  tuesdays: 2,
   tue: 2,
   wednesday: 3,
+  wednesdays: 3,
   wed: 3,
   thursday: 4,
+  thursdays: 4,
   thu: 4,
   friday: 5,
+  fridays: 5,
   fri: 5,
   saturday: 6,
+  saturdays: 6,
   sat: 6
+};
+
+const MONTH_NAME_TO_NUM = {
+  jan: 1,
+  january: 1,
+  feb: 2,
+  february: 2,
+  mar: 3,
+  march: 3,
+  apr: 4,
+  april: 4,
+  may: 5,
+  jun: 6,
+  june: 6,
+  jul: 7,
+  july: 7,
+  aug: 8,
+  august: 8,
+  sep: 9,
+  sept: 9,
+  september: 9,
+  oct: 10,
+  october: 10,
+  nov: 11,
+  november: 11,
+  dec: 12,
+  december: 12
 };
 
 /**
@@ -124,10 +158,86 @@ function formatAwstDateTime(date) {
 }
 
 /**
+ * Extracts YYYY-MM-DD dates from ISO date strings, Australian DD/MM/YYYY strings,
+ * or human-readable date strings (e.g. "08 Nov 2026 - 20 Dec 2026").
+ *
+ * @param {string} text
+ * @returns {string[]} Array of YYYY-MM-DD strings
+ */
+function extractDatesFromText(text) {
+  if (!text || typeof text !== 'string') return [];
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+
+  // 1. Exact YYYY-MM-DD date(s) without time
+  const isoDates = [];
+  for (const m of trimmed.matchAll(/\b(\d{4})-(\d{2})-(\d{2})\b/g)) {
+    isoDates.push(`${m[1]}-${m[2]}-${m[3]}`);
+  }
+  if (isoDates.length > 0) return isoDates;
+
+  // 2. Australian slash date(s) DD/MM/YYYY
+  const slashDates = [];
+  for (const m of trimmed.matchAll(/\b(\d{1,2})\/(\d{1,2})\/(\d{4})\b/g)) {
+    const day = Number(m[1]);
+    const month = Number(m[2]);
+    const year = Number(m[3]);
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      slashDates.push(`${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`);
+    }
+  }
+  if (slashDates.length > 0) return slashDates;
+
+  // 3. Human-readable day + month name + year (e.g. "8 November 2026", "08 Nov - 20 Dec 2026")
+  const fallbackYearMatch = trimmed.match(/\b(20\d{2})\b/);
+  const fallbackYear = fallbackYearMatch ? Number(fallbackYearMatch[1]) : null;
+  const namedMatches = [];
+  const namedRegex = /\b(\d{1,2})\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:[,\s]+(\d{4}))?\b/gi;
+  for (const m of trimmed.matchAll(namedRegex)) {
+    const day = Number(m[1]);
+    const month = MONTH_NAME_TO_NUM[m[2].toLowerCase()];
+    const year = m[3] ? Number(m[3]) : fallbackYear;
+    if (month && day >= 1 && day <= 31 && year) {
+      namedMatches.push(`${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`);
+    }
+  }
+  return namedMatches;
+}
+
+/**
+ * Extracts 24-hour HH:mm time strings from 12-hour am/pm or 24-hour time expressions.
+ *
+ * @param {string} text
+ * @returns {string[]} Array of HH:mm strings
+ */
+function extractTimesFromText(text) {
+  if (!text || typeof text !== 'string') return [];
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+
+  if (/^\d{2}:\d{2}$/.test(trimmed)) {
+    return [trimmed];
+  }
+
+  const amPmTimes = [];
+  for (const m of trimmed.matchAll(/\b(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm)\b/gi)) {
+    let hour = Number(m[1]);
+    const minute = m[2] ? Number(m[2]) : 0;
+    const meridiem = m[3].toLowerCase();
+    if (hour >= 1 && hour <= 12 && minute >= 0 && minute <= 59) {
+      if (meridiem === 'pm' && hour < 12) hour += 12;
+      if (meridiem === 'am' && hour === 12) hour = 0;
+      amPmTimes.push(`${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`);
+    }
+  }
+  return amPmTimes;
+}
+
+/**
  * Parses raw date/time information into structured schedule fields in AWST.
  *
  * @param {object} raw
- * @param {string} nowIso
+ * @param {string} [nowIso]
  * @returns {object} Canonical schedule object
  */
 export function parseSchedule(raw, nowIso) {
@@ -143,13 +253,26 @@ export function parseSchedule(raw, nowIso) {
     recurrence = 'weekly';
   }
 
-  let startDate = scheduleInput.start_date || raw.start_date;
-  let startTime = scheduleInput.start_time || raw.start_time;
+  let startDate = scheduleInput.start_date || raw.start_date || null;
+  let startTime = scheduleInput.start_time || raw.start_time || null;
   let endDate = scheduleInput.end_date || raw.end_date || null;
   let endTime = scheduleInput.end_time || raw.end_time || null;
+  let inferredDayOfWeek = null;
 
-  // Process start time if it contains an ISO timestamp
-  if (startTime && typeof startTime === 'string' && (startTime.includes('T') || (startTime.includes('-') && startTime.includes(':')))) {
+  // Check if startTime or startDate contains human-readable weekly recurrence or weekday names
+  const scheduleTextCandidates = [startTime, startDate, endTime, endDate].filter((v) => typeof v === 'string');
+  for (const text of scheduleTextCandidates) {
+    if (/\b(every|weekly|sundays|mondays|tuesdays|wednesdays|thursdays|fridays|saturdays)\b/i.test(text)) {
+      recurrence = 'weekly';
+    }
+    const dayMatch = text.match(/\b(sundays?|mondays?|tuesdays?|wednesdays?|thursdays?|fridays?|saturdays?)\b/i);
+    if (dayMatch && inferredDayOfWeek === null) {
+      inferredDayOfWeek = DAY_NAME_TO_INT[dayMatch[1].toLowerCase()];
+    }
+  }
+
+  // Process start time if it contains an ISO timestamp (e.g. "2026-11-20T17:00:00+08:00")
+  if (startTime && typeof startTime === 'string' && (startTime.includes('T') || /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(startTime))) {
     const parsedStart = new Date(startTime);
     if (!Number.isNaN(parsedStart.getTime())) {
       const awst = formatAwstDateTime(parsedStart);
@@ -158,10 +281,33 @@ export function parseSchedule(raw, nowIso) {
       }
       startTime = awst.time;
     }
+  } else if (startTime && typeof startTime === 'string' && !/^\d{2}:\d{2}$/.test(startTime.trim())) {
+    // Extract human-readable dates and times (e.g. from EventDisplayDate)
+    const extractedDates = extractDatesFromText(startTime);
+    const extractedTimes = extractTimesFromText(startTime);
+    if (!startDate && extractedDates.length >= 1) {
+      startDate = extractedDates[0];
+    }
+    if (!endDate && extractedDates.length >= 2) {
+      endDate = extractedDates[1];
+    }
+    startTime = extractedTimes[0] || null;
+    if (!endTime && extractedTimes.length >= 2) {
+      endTime = extractedTimes[1];
+    }
+  }
+
+  // Normalize startDate if it is a human-readable date string rather than YYYY-MM-DD
+  if (startDate && typeof startDate === 'string' && !/^\d{4}-\d{2}-\d{2}$/.test(startDate.trim())) {
+    const extractedDates = extractDatesFromText(startDate);
+    startDate = extractedDates[0] || null;
+    if (!endDate && extractedDates.length >= 2) {
+      endDate = extractedDates[1];
+    }
   }
 
   // Process end time if it contains an ISO timestamp
-  if (endTime && typeof endTime === 'string' && (endTime.includes('T') || (endTime.includes('-') && endTime.includes(':')))) {
+  if (endTime && typeof endTime === 'string' && (endTime.includes('T') || /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(endTime))) {
     const parsedEnd = new Date(endTime);
     if (!Number.isNaN(parsedEnd.getTime())) {
       const awst = formatAwstDateTime(parsedEnd);
@@ -170,11 +316,19 @@ export function parseSchedule(raw, nowIso) {
       }
       endTime = awst.time;
     }
+  } else if (endTime && typeof endTime === 'string' && !/^\d{2}:\d{2}$/.test(endTime.trim())) {
+    const extractedDates = extractDatesFromText(endTime);
+    const extractedTimes = extractTimesFromText(endTime);
+    if (!endDate && extractedDates.length >= 1 && recurrence === 'none') {
+      endDate = extractedDates[extractedDates.length - 1];
+    }
+    endTime = extractedTimes[0] || null;
   }
 
-  // Ensure start_date defaults to today in AWST if missing
-  if (!startDate) {
-    startDate = formatAwstDateTime(new Date(nowIso)).date;
+  // Normalize endDate if it is a human-readable date string rather than YYYY-MM-DD
+  if (endDate && typeof endDate === 'string' && !/^\d{4}-\d{2}-\d{2}$/.test(endDate.trim())) {
+    const extractedDates = extractDatesFromText(endDate);
+    endDate = extractedDates[extractedDates.length - 1] || null;
   }
 
   // Weekly recurring activities have null end_date by canonical specification
@@ -201,6 +355,8 @@ export function parseSchedule(raw, nowIso) {
     if (lower in DAY_NAME_TO_INT) {
       dayOfWeek = DAY_NAME_TO_INT[lower];
     }
+  } else if (inferredDayOfWeek !== null) {
+    dayOfWeek = inferredDayOfWeek;
   }
 
   if (dayOfWeek === null && startDate) {
@@ -211,8 +367,8 @@ export function parseSchedule(raw, nowIso) {
   }
 
   return {
-    start_date: startDate,
-    end_date: endDate,
+    start_date: startDate || null,
+    end_date: endDate || null,
     start_time: startTime || null,
     end_time: endTime || null,
     recurrence,

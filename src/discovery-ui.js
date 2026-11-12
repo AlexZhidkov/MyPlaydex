@@ -33,6 +33,7 @@ export const CANONICAL_SPORTS = [
 ].map((sport) => ({ ...sport, icon: SPORT_ICONS[sport.slug] }));
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+export const AUSTRALIAN_LOCALE = 'en-AU';
 
 /**
  * Parses a YYYY-MM-DD date string or ISO 8601 timestamp into a local Date object.
@@ -112,7 +113,7 @@ export function createOutboundDirectionsUrl(venue = {}) {
 }
 
 /**
- * Formats a schedule object into a readable date and time string in the local browser format.
+ * Formats a schedule object into a readable date and time string in Australian format (en-AU).
  *
  * @param {object} schedule
  * @returns {string}
@@ -131,11 +132,11 @@ export function formatScheduleText(schedule = {}) {
   const endDateObj = parsedEndDate?.date || parsedEndTime?.date || null;
 
   const startTimeStr = parsedStartTime
-    ? (parsedStartTime.hasTime ? parsedStartTime.date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '')
+    ? (parsedStartTime.hasTime ? parsedStartTime.date.toLocaleTimeString(AUSTRALIAN_LOCALE, { hour: '2-digit', minute: '2-digit' }) : '')
     : (typeof schedule.start_time === 'string' ? schedule.start_time.trim() : '');
 
   const endTimeStr = parsedEndTime
-    ? (parsedEndTime.hasTime ? parsedEndTime.date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '')
+    ? (parsedEndTime.hasTime ? parsedEndTime.date.toLocaleTimeString(AUSTRALIAN_LOCALE, { hour: '2-digit', minute: '2-digit' }) : '')
     : (typeof schedule.end_time === 'string' ? schedule.end_time.trim() : '');
 
   const timeStr = startTimeStr
@@ -155,8 +156,8 @@ export function formatScheduleText(schedule = {}) {
 
   // One-off activity
   if (startDateObj) {
-    const startDateLabel = startDateObj.toLocaleDateString();
-    const endDateLabel = endDateObj ? endDateObj.toLocaleDateString() : '';
+    const startDateLabel = startDateObj.toLocaleDateString(AUSTRALIAN_LOCALE);
+    const endDateLabel = endDateObj ? endDateObj.toLocaleDateString(AUSTRALIAN_LOCALE) : '';
     const dateLabel = endDateLabel && endDateLabel !== startDateLabel
       ? `${startDateLabel} – ${endDateLabel}`
       : startDateLabel;

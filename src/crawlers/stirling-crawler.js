@@ -70,6 +70,8 @@ export function createStirlingCrawler(options = {}) {
         const lng = typeof item.Longitude === 'number' ? item.Longitude : 115.7571;
         const url = item.PageUrl ? `https://www.stirling.wa.gov.au${item.PageUrl}` : 'https://www.stirling.wa.gov.au';
         const costStr = item.Cost || 'Free';
+        const rawStart = item.EventStartDate || item.StartDate || item.EventDate || item.EventDisplayDate || null;
+        const rawEnd = item.EventEndDate || item.EndDate || null;
 
         return {
           source: 'stirling',
@@ -95,7 +97,8 @@ export function createStirlingCrawler(options = {}) {
           venue_name: item.ArticleAddressTitle || 'City of Stirling Venue',
           address: item.ArticleAddressTitle || 'Scarborough WA',
           coordinates: { lat, lng },
-          start_time: item.EventDisplayDate || new Date().toISOString(),
+          start_time: rawStart,
+          ...(rawEnd ? { end_time: rawEnd } : {}),
           cost_description: costStr,
           display_price: costStr,
           is_free: determineIsFree(costStr),

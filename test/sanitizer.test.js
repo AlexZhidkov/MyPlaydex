@@ -225,4 +225,7 @@ test('Seam 1: sanitizeActivity and extractCanonicalEntities handle Unverified Li
   assert.equal(verifiedActivity.verified, true);
   assert.equal(verifiedActivity.source_url, 'https://stirling.wa.gov.au/tennis');
   assert.equal(verifiedActivity.raw_source_url, 'http://stirling.wa.gov.au/tennis');
+  assert.equal(verifiedActivity.schedule.start_date, null, 'Undated listing must not default start_date to crawl execution date');
+  assert.equal(verifiedActivity.schedule.start_time, null);
+  assert.equal(verifiedActivity.schedule.day_of_week, null);
 });

@@ -60,6 +60,58 @@ test('Seam 3: Stirling Crawler parses Kendo UI event response and formats listin
   assert.equal(sanitized.cost.display_price, 'Free');
 });
 
+test('Seam 3: Stirling Crawler does not fabricate crawl execution timestamp when EventDisplayDate is missing or human-readable', async () => {
+  const mockFetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        Data: [
+          {
+            NodeGUID: 'guid-no-date',
+            ArticleTitle: 'Scarborough Seniors Club',
+            ArticleCategories: 'Other',
+            ArticleAddressTitle: 'Scarborough Community Hub',
+            Latitude: -31.8942,
+            Longitude: 115.7571,
+            Cost: 'Free',
+            PageUrl: '/events/seniors-club'
+          },
+          {
+            NodeGUID: 'guid-human-date',
+            ArticleTitle: 'Stirling Farmers Market',
+            ArticleCategories: 'Other',
+            ArticleAddressTitle: 'Stirling Farmers Market',
+            Latitude: -31.8847,
+            Longitude: 115.8079,
+            Cost: 'Free',
+            EventDisplayDate: 'Sunday 15 November 2026, 7:30am - 11:30am',
+            PageUrl: '/events/farmers-market'
+          }
+        ]
+      };
+    }
+  });
+
+  const crawler = createStirlingCrawler({ fetchFn: mockFetch });
+  const listings = await crawler.fetchListings();
+
+  assert.equal(listings.length, 2);
+
+  // 1. Missing EventDisplayDate must not stamp new Date().toISOString()
+  assert.equal(listings[0].start_time, null);
+  const sanitizedNoDate = sanitizeActivity(listings[0]);
+  assert.equal(sanitizedNoDate.schedule.start_date, null);
+  assert.equal(sanitizedNoDate.schedule.start_time, null);
+  assert.equal(sanitizedNoDate.schedule.day_of_week, null);
+
+  // 2. Human-readable EventDisplayDate parses into structured date and time range
+  const sanitizedHuman = sanitizeActivity(listings[1]);
+  assert.equal(sanitizedHuman.schedule.start_date, '2026-11-15');
+  assert.equal(sanitizedHuman.schedule.start_time, '07:30');
+  assert.equal(sanitizedHuman.schedule.end_time, '11:30');
+  assert.equal(sanitizedHuman.schedule.day_of_week, 0);
+});
+
 test('Seam 3: Stirling Crawler throws descriptive error on HTTP failure', async () => {
   const mockFailingFetch = async () => ({
     ok: false,

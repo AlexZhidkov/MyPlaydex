@@ -24,7 +24,7 @@ test('Seam 3: createOutboundDirectionsUrl generates valid Google Maps query URL 
   assert.ok(url.includes('Loftus') || url.includes('-31.9366'));
 });
 
-test('Seam 3: formatScheduleText formats weekly, one-off, and ISO timestamp dates in local browser format', () => {
+test('Seam 3: formatScheduleText formats weekly, one-off, and ISO timestamp dates in Australian format (en-AU)', () => {
   const weekly = {
     start_date: '2026-11-09',
     start_time: '18:30',
@@ -44,8 +44,9 @@ test('Seam 3: formatScheduleText formats weekly, one-off, and ISO timestamp date
     day_of_week: 6
   };
   const oneOffText = formatScheduleText(oneOff);
-  const expectedLocalDate = new Date(2026, 11, 5).toLocaleDateString();
-  assert.ok(oneOffText.includes(expectedLocalDate), `Expected "${oneOffText}" to include local date "${expectedLocalDate}"`);
+  const expectedAuDate = new Date(2026, 11, 5).toLocaleDateString('en-AU');
+  assert.ok(oneOffText.includes(expectedAuDate), `Expected "${oneOffText}" to include Australian date "${expectedAuDate}"`);
+  assert.ok(oneOffText.includes('05/12/2026'), `Expected DD/MM/YYYY format "05/12/2026" in "${oneOffText}"`);
   assert.ok(oneOffText.includes('09:00'));
 
   const isoSchedule = {
@@ -55,10 +56,10 @@ test('Seam 3: formatScheduleText formats weekly, one-off, and ISO timestamp date
   };
   const isoText = formatScheduleText(isoSchedule);
   const isoDateObj = new Date('2026-11-08T12:12:05.553Z');
-  const expectedIsoLocalDate = isoDateObj.toLocaleDateString();
-  const expectedIsoLocalTime = isoDateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  assert.ok(isoText.includes(expectedIsoLocalDate), `Expected "${isoText}" to include local date "${expectedIsoLocalDate}"`);
-  assert.ok(isoText.includes(expectedIsoLocalTime), `Expected "${isoText}" to include local time "${expectedIsoLocalTime}"`);
+  const expectedIsoAuDate = isoDateObj.toLocaleDateString('en-AU');
+  const expectedIsoAuTime = isoDateObj.toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit' });
+  assert.ok(isoText.includes(expectedIsoAuDate), `Expected "${isoText}" to include Australian date "${expectedIsoAuDate}"`);
+  assert.ok(isoText.includes(expectedIsoAuTime), `Expected "${isoText}" to include Australian time "${expectedIsoAuTime}"`);
   assert.ok(!isoText.includes('2026-11-08T12:12:05.553Z'), 'Should not render raw UTC ISO timestamp');
 });
 
