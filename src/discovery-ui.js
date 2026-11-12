@@ -33,7 +33,47 @@ export const CANONICAL_SPORTS = [
 ].map((sport) => ({ ...sport, icon: SPORT_ICONS[sport.slug] }));
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * Parses a YYYY-MM-DD date string or ISO 8601 timestamp into a local Date object.
+ *
+ * @param {string | Date} value
+ * @returns {{ date: Date, hasTime: boolean } | null}
+ */
+function parseDateInput(value) {
+  if (!value) return null;
+
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : { date: value, hasTime: true };
+  }
+
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  // Date-only string YYYY-MM-DD (interpreted as local calendar date)
+  const dateOnlyMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dateOnlyMatch) {
+    const year = Number(dateOnlyMatch[1]);
+    const monthIdx = Number(dateOnlyMatch[2]) - 1;
+    const day = Number(dateOnlyMatch[3]);
+    const date = new Date(year, monthIdx, day);
+    if (!Number.isNaN(date.getTime())) {
+      return { date, hasTime: false };
+    }
+    return null;
+  }
+
+  // ISO timestamp or full date-time string (e.g. "2026-11-08T12:12:05.553Z")
+  if (trimmed.includes('T') || /^\d{4}-\d{2}-\d{2}[\sT]/.test(trimmed)) {
+    const date = new Date(trimmed);
+    if (!Number.isNaN(date.getTime())) {
+      return { date, hasTime: true };
+    }
+  }
+
+  return null;
+}
 
 /**
  * Escapes HTML characters to prevent XSS.
@@ -72,44 +112,59 @@ export function createOutboundDirectionsUrl(venue = {}) {
 }
 
 /**
- * Formats a schedule object into a readable date and time string in AWST context.
+ * Formats a schedule object into a readable date and time string in the local browser format.
  *
  * @param {object} schedule
  * @returns {string}
  */
 export function formatScheduleText(schedule = {}) {
-  if (!schedule) return 'Schedule details on club page';
+  if (!schedule || typeof schedule !== 'object') return 'Schedule details on club page';
 
   const recurrence = schedule.recurrence || 'none';
-  const startTime = schedule.start_time;
-  const endTime = schedule.end_time;
-  const timeStr = startTime ? (endTime ? `${startTime} – ${endTime}` : startTime) : '';
+
+  const parsedStartTime = parseDateInput(schedule.start_time);
+  const parsedEndTime = parseDateInput(schedule.end_time);
+  const parsedStartDate = parseDateInput(schedule.start_date);
+  const parsedEndDate = parseDateInput(schedule.end_date);
+
+  const startDateObj = parsedStartDate?.date || parsedStartTime?.date || null;
+  const endDateObj = parsedEndDate?.date || parsedEndTime?.date || null;
+
+  const startTimeStr = parsedStartTime
+    ? (parsedStartTime.hasTime ? parsedStartTime.date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '')
+    : (typeof schedule.start_time === 'string' ? schedule.start_time.trim() : '');
+
+  const endTimeStr = parsedEndTime
+    ? (parsedEndTime.hasTime ? parsedEndTime.date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '')
+    : (typeof schedule.end_time === 'string' ? schedule.end_time.trim() : '');
+
+  const timeStr = startTimeStr
+    ? (endTimeStr && endTimeStr !== startTimeStr ? `${startTimeStr} – ${endTimeStr}` : startTimeStr)
+    : '';
 
   if (recurrence === 'weekly') {
     let dayName = '';
     if (typeof schedule.day_of_week === 'number' && schedule.day_of_week >= 0 && schedule.day_of_week <= 6) {
       dayName = DAY_NAMES[schedule.day_of_week];
-    } else if (schedule.start_date) {
-      const d = new Date(`${schedule.start_date}T12:00:00Z`);
-      if (!Number.isNaN(d.getTime())) {
-        dayName = DAY_NAMES[d.getUTCDay()];
-      }
+    } else if (startDateObj) {
+      dayName = DAY_NAMES[startDateObj.getDay()];
     }
     const dayLabel = dayName ? `Weekly on ${dayName}s` : 'Weekly';
     return timeStr ? `${dayLabel} • ${timeStr}` : dayLabel;
   }
 
   // One-off activity
-  if (schedule.start_date) {
-    const parts = schedule.start_date.split('-');
-    let dateLabel = schedule.start_date;
-    if (parts.length === 3) {
-      const year = parts[0];
-      const monthIdx = parseInt(parts[1], 10) - 1;
-      const day = parseInt(parts[2], 10);
-      const monthName = MONTH_NAMES[monthIdx] || '';
-      dateLabel = `${day} ${monthName} ${year}`;
-    }
+  if (startDateObj) {
+    const startDateLabel = startDateObj.toLocaleDateString();
+    const endDateLabel = endDateObj ? endDateObj.toLocaleDateString() : '';
+    const dateLabel = endDateLabel && endDateLabel !== startDateLabel
+      ? `${startDateLabel} – ${endDateLabel}`
+      : startDateLabel;
+    return timeStr ? `${dateLabel} • ${timeStr}` : dateLabel;
+  }
+
+  if (typeof schedule.start_date === 'string' && schedule.start_date.trim()) {
+    const dateLabel = schedule.start_date.trim();
     return timeStr ? `${dateLabel} • ${timeStr}` : dateLabel;
   }
 

@@ -24,7 +24,7 @@ test('Seam 3: createOutboundDirectionsUrl generates valid Google Maps query URL 
   assert.ok(url.includes('Loftus') || url.includes('-31.9366'));
 });
 
-test('Seam 3: formatScheduleText formats weekly and one-off dates cleanly in AWST context', () => {
+test('Seam 3: formatScheduleText formats weekly, one-off, and ISO timestamp dates in local browser format', () => {
   const weekly = {
     start_date: '2026-11-09',
     start_time: '18:30',
@@ -44,8 +44,22 @@ test('Seam 3: formatScheduleText formats weekly and one-off dates cleanly in AWS
     day_of_week: 6
   };
   const oneOffText = formatScheduleText(oneOff);
-  assert.ok(oneOffText.includes('5 Dec') || oneOffText.includes('Dec 5') || oneOffText.includes('2026-12-05'));
+  const expectedLocalDate = new Date(2026, 11, 5).toLocaleDateString();
+  assert.ok(oneOffText.includes(expectedLocalDate), `Expected "${oneOffText}" to include local date "${expectedLocalDate}"`);
   assert.ok(oneOffText.includes('09:00'));
+
+  const isoSchedule = {
+    start_time: '2026-11-08T12:12:05.553Z',
+    end_time: '2026-11-08T12:12:05.553Z',
+    recurrence: null
+  };
+  const isoText = formatScheduleText(isoSchedule);
+  const isoDateObj = new Date('2026-11-08T12:12:05.553Z');
+  const expectedIsoLocalDate = isoDateObj.toLocaleDateString();
+  const expectedIsoLocalTime = isoDateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  assert.ok(isoText.includes(expectedIsoLocalDate), `Expected "${isoText}" to include local date "${expectedIsoLocalDate}"`);
+  assert.ok(isoText.includes(expectedIsoLocalTime), `Expected "${isoText}" to include local time "${expectedIsoLocalTime}"`);
+  assert.ok(!isoText.includes('2026-11-08T12:12:05.553Z'), 'Should not render raw UTC ISO timestamp');
 });
 
 test('Seam 3: renderActivityCard outputs 4-tier semantic card structure with all required badges and outbound links', () => {
