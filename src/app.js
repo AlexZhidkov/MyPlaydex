@@ -235,7 +235,7 @@ export function initApp(options = {}) {
   const gpsBtn = document.querySelector('[data-action="use-gps"]');
   const radiusPills = document.querySelectorAll('.radius-pill');
   const feedContainer = document.getElementById('feed-container');
-  const resultCountLabel = document.getElementById('result-count-label');
+  const loadingLabel = document.getElementById('loading-label') || document.getElementById('result-count-label');
   const filterHeaderBtn = document.getElementById('filter-header-btn');
   const filterCountBadge = document.getElementById('filter-count-badge');
   const filterOverlay = document.getElementById('filter-view-overlay');
@@ -243,6 +243,21 @@ export function initApp(options = {}) {
 
   if (suggestHeaderBtn) {
     suggestHeaderBtn.href = createSuggestActivityMailtoUrl();
+  }
+
+  function hideLoading() {
+    if (loadingLabel) {
+      loadingLabel.classList.add('hidden');
+      loadingLabel.style.display = 'none';
+    }
+  }
+
+  function showLoading(text = 'Loading activities...') {
+    if (loadingLabel) {
+      loadingLabel.textContent = text;
+      loadingLabel.classList.remove('hidden');
+      loadingLabel.style.display = '';
+    }
   }
 
   let stagedSports = new Set(store.getState().filters.sports);
@@ -458,17 +473,15 @@ export function initApp(options = {}) {
     if (!location) {
       openLocationGate(false);
       feedContainer.innerHTML = '';
-      if (resultCountLabel) resultCountLabel.textContent = 'Set your location to find nearby sports';
+      hideLoading();
       return;
     }
 
     closeLocationGate();
+    hideLoading();
 
     const count = filteredActivities.length;
     const radiusLabel = radiusKm === 'all' ? 'All Greater Perth' : `${radiusKm} km`;
-    if (resultCountLabel) {
-      resultCountLabel.textContent = `Showing ${count} ${count === 1 ? 'activity' : 'activities'} within ${radiusLabel}`;
-    }
 
     if (count === 0) {
       const hasSportFilters = Array.isArray(filters.sports) && filters.sports.length > 0;
@@ -628,6 +641,7 @@ export function initApp(options = {}) {
   } else {
     renderFeed(initialState);
   }
+  hideLoading();
 
   if (typeof window !== 'undefined' && window.location && window.location.hash === '#filters') {
     openFilterView();
@@ -640,7 +654,10 @@ export function initApp(options = {}) {
     openFilterView,
     closeFilterView,
     applySportsFilters,
-    highlightAndScrollToActivity
+    highlightAndScrollToActivity,
+    loadingLabel,
+    hideLoading,
+    showLoading
   };
 }
 

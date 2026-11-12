@@ -332,7 +332,7 @@ Once a location is established, the interface transitions to a focused, responsi
 - **Activity Card Hierarchy (4-Tier Scannable Layout):**
   1. *Metadata Line:* Sport tag, Cost badge (e.g. "Free" or "$10"), and Distance badge (e.g. "2.4 km away").
   2. *Title & Schedule:* Activity title followed by start date and time.
-  3. *Venue & Organizer:* Venue name with an inline **"Directions ↗"** Google Maps link (`https://www.google.com/maps/search/?api=1&query=...`), and the hosting Organizer name.
+  3. *Venue & Organizer:* Venue name linked directly to Google Maps (`https://www.google.com/maps/search/?api=1&query=...`), and the hosting Organizer name.
   4. *Primary Action:* Single prominent button linking to the official Club / Registration URL.
 - **Empty State Recovery:** If filters or narrow radius yield zero results, displays clear 1-tap recovery buttons (**"Expand radius to 25 km"** or **"Clear sport filters"**).
 

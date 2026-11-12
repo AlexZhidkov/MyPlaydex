@@ -217,12 +217,11 @@ export function renderActivityCard(activity = {}) {
         <p class="card-schedule"><span class="schedule-icon" aria-hidden="true">📅</span> <span>${escapeHtml(scheduleText)}</span></p>
       </div>
 
-      <!-- Tier 3: Venue, Outbound Directions, Organizer -->
+      <!-- Tier 3: Venue (Outbound Google Maps), Organizer -->
       <div class="card-tier card-tier-3">
         <div class="card-venue-row">
           <span class="venue-icon" aria-hidden="true">📍</span>
-          <span class="venue-name">${escapeHtml(venue.name || 'Venue location')}</span>
-          <a href="${escapeHtml(directionsUrl)}" class="directions-link" target="_blank" rel="noopener noreferrer" aria-label="Directions in Google Maps">Directions ↗</a>
+          <a href="${escapeHtml(directionsUrl)}" class="venue-name" target="_blank" rel="noopener noreferrer" title="Open in Google Maps">${escapeHtml(venue.name || 'Venue location')}</a>
         </div>
         ${organizer.name ? `<div class="card-organizer-row"><span class="organizer-icon" aria-hidden="true">👥</span> <span class="organizer-name">${escapeHtml(organizer.name)}</span></div>` : ''}
       </div>

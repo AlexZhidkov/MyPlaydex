@@ -83,10 +83,12 @@ test('Seam 3: renderActivityCard outputs 4-tier semantic card structure with all
   assert.ok(html.includes('Casual Beach Volleyball'), 'Should include title');
   assert.ok(html.includes('08:30'), 'Should include schedule time');
 
-  // Tier 3: Venue name + outbound Google Maps Directions ↗ link + Organizer name
+  // Tier 3: Venue name linking to Google Maps + Organizer name (no separate directions-link)
   assert.ok(html.includes('Scarborough Beach Amphitheatre'), 'Should include venue name');
-  assert.ok(html.includes('Directions ↗'), 'Should include Directions ↗ link text');
-  assert.ok(html.includes('https://www.google.com/maps/search/?api=1'), 'Directions must be outbound Google Maps');
+  assert.ok(html.includes('class="venue-name"'), 'Should include venue-name link');
+  assert.ok(html.includes('href="https://www.google.com/maps/search/?api=1'), 'Venue name must link to outbound Google Maps');
+  assert.ok(!html.includes('directions-link'), 'directions-link button must be removed');
+  assert.ok(!html.includes('Directions ↗'), 'Directions ↗ text must be removed');
   assert.ok(html.includes('Scarborough Beach Sports Club'), 'Should include organizer name');
 
   // Tier 4: primary external referral button

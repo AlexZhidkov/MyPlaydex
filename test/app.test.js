@@ -132,7 +132,8 @@ test('Seam C: Hash Router & Application Controller Integration (/#filters, persi
   const filterOverlay = createMockEl('filter-view-overlay', 'div', ['hidden']);
   const locationGateOverlay = createMockEl('location-gate-overlay', 'div', ['hidden']);
   const feedContainer = createMockEl('feed-container', 'section');
-  const resultCountLabel = createMockEl('result-count-label', 'span');
+  const loadingLabel = createMockEl('loading-label', 'span');
+  elements.set('result-count-label', loadingLabel);
   const currentLocationLabel = createMockEl('current-location-label', 'span');
 
   let currentHash = '';
@@ -327,7 +328,8 @@ test('Seam 2: URL query state synchronization (?suburb=...&radius=...) via histo
   const suburbInput = createMockEl('suburb-search-input', 'input');
   const suggestionsList = createMockEl('suburb-suggestions-list', 'div');
   const feedContainer = createMockEl('feed-container', 'section');
-  const resultCountLabel = createMockEl('result-count-label', 'span');
+  const loadingLabel = createMockEl('loading-label', 'span');
+  elements.set('result-count-label', loadingLabel);
   const filterHeaderBtn = createMockEl('filter-header-btn', 'button');
   const filterCountBadge = createMockEl('filter-count-badge', 'span', ['hidden']);
   const filterOverlay = createMockEl('filter-view-overlay', 'div', ['hidden']);
@@ -488,7 +490,8 @@ test('Seam 3: Activity deep-linking (?activity=...), cold-start gate bypass, fee
   const locationSwitcherBtn = createMockEl('location-switcher-btn', 'button');
   const currentLocationLabel = createMockEl('current-location-label', 'span');
   const feedContainer = createMockEl('feed-container', 'section');
-  const resultCountLabel = createMockEl('result-count-label', 'span');
+  const loadingLabel = createMockEl('loading-label', 'span');
+  elements.set('result-count-label', loadingLabel);
   const filterHeaderBtn = createMockEl('filter-header-btn', 'button');
   const filterCountBadge = createMockEl('filter-count-badge', 'span', ['hidden']);
   const filterOverlay = createMockEl('filter-view-overlay', 'div', ['hidden']);
@@ -577,6 +580,149 @@ test('Seam 3: Activity deep-linking (?activity=...), cold-start gate bypass, fee
   // 5. Target activity was scrolled into view
   assert.ok(scrolledElements.length > 0, 'Target card should have scrollIntoView called');
   assert.equal(scrolledElements[0].el, targetCard);
+
+  storage.clear();
+});
+
+test('Loading label: displays "Loading activities..." initially, hides after loading finishes, and does not show count', () => {
+  const storage = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => storage.get(key) || null,
+    setItem: (key, val) => storage.set(key, String(val)),
+    removeItem: (key) => storage.delete(key),
+    clear: () => storage.clear()
+  };
+
+  const domListeners = new Map();
+  const elements = new Map();
+
+  function createMockEl(id, tag = 'div', classes = []) {
+    const classSet = new Set(classes);
+    const listeners = new Map();
+    let innerHTML = '';
+    let textContent = '';
+    const attrs = new Map();
+
+    const el = {
+      id,
+      tagName: tag.toUpperCase(),
+      style: {},
+      get innerHTML() { return innerHTML; },
+      set innerHTML(val) { innerHTML = val; },
+      get textContent() { return textContent; },
+      set textContent(val) { textContent = val; },
+      classList: {
+        add: (...c) => c.forEach(name => classSet.add(name)),
+        remove: (...c) => c.forEach(name => classSet.delete(name)),
+        toggle: (name, force) => {
+          if (force === undefined) {
+            classSet.has(name) ? classSet.delete(name) : classSet.add(name);
+          } else if (force) {
+            classSet.add(name);
+          } else {
+            classSet.delete(name);
+          }
+        },
+        contains: (name) => classSet.has(name)
+      },
+      getAttribute: (name) => attrs.get(name) || null,
+      setAttribute: (name, val) => attrs.set(name, String(val)),
+      addEventListener: (type, cb) => {
+        if (!listeners.has(type)) listeners.set(type, []);
+        listeners.get(type).push(cb);
+      },
+      dispatchEvent: (e) => {
+        const cbs = listeners.get(e.type) || [];
+        cbs.forEach(cb => cb(e));
+      },
+      closest: () => null,
+      scrollIntoView: () => {}
+    };
+    elements.set(id, el);
+    return el;
+  }
+
+  const gateOverlay = createMockEl('location-gate-overlay', 'div');
+  const gateCloseBtn = createMockEl('gate-close-btn', 'button');
+  const locationSwitcherBtn = createMockEl('location-switcher-btn', 'button');
+  const currentLocationLabel = createMockEl('current-location-label', 'span');
+  const feedContainer = createMockEl('feed-container', 'section');
+  const loadingLabel = createMockEl('loading-label', 'span');
+  loadingLabel.textContent = 'Loading activities...';
+  const filterHeaderBtn = createMockEl('filter-header-btn', 'button');
+  const filterCountBadge = createMockEl('filter-count-badge', 'span', ['hidden']);
+  const filterOverlay = createMockEl('filter-view-overlay', 'div', ['hidden']);
+
+  globalThis.window = {
+    location: {
+      hash: '',
+      pathname: '/',
+      search: ''
+    },
+    history: {
+      replaceState: () => {},
+      pushState: () => {},
+      back: () => {}
+    },
+    addEventListener: (evt, cb) => {
+      if (!domListeners.has(evt)) domListeners.set(evt, []);
+      domListeners.get(evt).push(cb);
+    }
+  };
+
+  globalThis.document = {
+    getElementById: (id) => elements.get(id) || null,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    addEventListener: (evt, cb) => {
+      if (!domListeners.has(evt)) domListeners.set(evt, []);
+      domListeners.get(evt).push(cb);
+    }
+  };
+
+  // 1. Initially, before initApp finishes, loading label has loading text and is not hidden
+  assert.equal(loadingLabel.textContent, 'Loading activities...');
+  assert.ok(!loadingLabel.classList.contains('hidden'), 'Label should not be hidden before initialization');
+
+  // Initialize app
+  const app = initApp({
+    activities: [
+      {
+        id: 'act_1',
+        title: 'Morning Yoga',
+        subcategory: 'yoga',
+        venue: {
+          name: 'Perth Park',
+          coordinates: { lat: -31.95, lng: 115.86 }
+        },
+        cost: { is_free: true }
+      }
+    ],
+    location: { name: 'Perth', lat: -31.95, lng: 115.86 }
+  });
+
+  // 2. After loading is finished, label is hidden
+  assert.ok(loadingLabel.classList.contains('hidden'), 'Loading label must have "hidden" class after loading finishes');
+  assert.equal(loadingLabel.style.display, 'none', 'Loading label style.display must be "none"');
+
+  // 3. Count is NOT displayed in the label
+  assert.ok(!loadingLabel.textContent.includes('Showing'), 'Loading label must not contain result count text');
+  assert.ok(!loadingLabel.textContent.includes('activities within'), 'Loading label must not contain count summary');
+
+  // 4. Changing radius or filters should not reveal result count in the label
+  app.store.setRadius(25);
+  assert.ok(loadingLabel.classList.contains('hidden'), 'Loading label must remain hidden on store update');
+  assert.ok(!loadingLabel.textContent.includes('Showing'), 'Loading label must not show count on radius change');
+
+  // 5. Refactored helper controls work properly
+  app.showLoading('Refreshing feed...');
+  assert.ok(!loadingLabel.classList.contains('hidden'), 'showLoading should remove hidden class');
+  assert.equal(loadingLabel.textContent, 'Refreshing feed...');
+  assert.equal(loadingLabel.style.display, '');
+
+  app.hideLoading();
+  assert.ok(loadingLabel.classList.contains('hidden'), 'hideLoading should add hidden class');
+  assert.equal(loadingLabel.style.display, 'none');
 
   storage.clear();
 });

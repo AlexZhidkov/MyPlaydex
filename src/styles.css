@@ -281,8 +281,14 @@ body {
   padding: 0 0.25rem;
 }
 
+.loading-label,
 .result-count-label {
   font-weight: 500;
+}
+
+.loading-label.hidden,
+.result-count-label.hidden {
+  display: none !important;
 }
 
 /* 4-Tier Activity Card */
@@ -410,26 +416,17 @@ body {
 .venue-name {
   font-weight: 600;
   color: var(--text);
+  text-decoration: none;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  transition: color 0.15s ease;
 }
 
-.directions-link {
-  margin-left: auto;
+.venue-name:hover,
+.venue-name:focus-visible {
   color: var(--primary);
-  font-weight: 600;
-  font-size: 0.8rem;
-  text-decoration: none;
-  white-space: nowrap;
-  padding: 0.15rem 0.4rem;
-  border-radius: var(--radius-sm);
-  background: #e0f2fe;
-}
-
-.directions-link:hover {
   text-decoration: underline;
-  background: #bae6fd;
 }
 
 .organizer-name {
