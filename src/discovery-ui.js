@@ -203,7 +203,7 @@ export function renderActivityCard(activity = {}) {
   const editMailtoUrl = createSuggestEditMailtoUrl(activity);
 
   return `
-    <article class="activity-card" data-id="${escapeHtml(activity.id)}">
+    <article class="activity-card" data-id="${escapeHtml(activity.id)}" data-url="${escapeHtml(sourceUrl)}" tabindex="0">
       <!-- Tier 1: Metadata line -->
       <div class="card-tier card-tier-1">
         <span class="badge badge-sport">${sportIcon} ${escapeHtml(sportSlug)}</span>
@@ -219,18 +219,15 @@ export function renderActivityCard(activity = {}) {
 
       <!-- Tier 3: Venue (Outbound Google Maps), Organizer -->
       <div class="card-tier card-tier-3">
-        <div class="card-venue-row">
+        <div class="card-venue-row" data-directions-url="${escapeHtml(directionsUrl)}" title="Open in Google Maps">
           <span class="venue-icon" aria-hidden="true">📍</span>
           <a href="${escapeHtml(directionsUrl)}" class="venue-name" target="_blank" rel="noopener noreferrer" title="Open in Google Maps">${escapeHtml(venue.name || 'Venue location')}</a>
         </div>
         ${organizer.name ? `<div class="card-organizer-row"><span class="organizer-icon" aria-hidden="true">👥</span> <span class="organizer-name">${escapeHtml(organizer.name)}</span></div>` : ''}
       </div>
 
-      <!-- Tier 4: Primary external referral action & suggest edit link -->
+      <!-- Tier 4: Suggest edit link -->
       <div class="card-tier card-tier-4">
-        <a href="${escapeHtml(sourceUrl)}" class="btn btn-primary btn-referral" target="_blank" rel="noopener noreferrer">
-          View Club / Details ↗
-        </a>
         <a href="${escapeHtml(editMailtoUrl)}" class="suggest-edit-link" target="_blank" rel="noopener noreferrer" title="Suggest an edit for this activity">
           Suggest an edit
         </a>

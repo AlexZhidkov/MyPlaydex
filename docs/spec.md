@@ -333,7 +333,7 @@ Once a location is established, the interface transitions to a focused, responsi
   1. *Metadata Line:* Sport tag, Cost badge (e.g. "Free" or "$10"), and Distance badge (e.g. "2.4 km away").
   2. *Title & Schedule:* Activity title followed by start date and time.
   3. *Venue & Organizer:* Venue name linked directly to Google Maps (`https://www.google.com/maps/search/?api=1&query=...`), and the hosting Organizer name.
-  4. *Primary Action:* Single prominent button linking to the official Club / Registration URL.
+  4. *Interaction & Referral:* Whole-card click navigates directly to the official Club / Registration source URL; "Suggest an edit" link in the bottom-right for data corrections.
 - **Empty State Recovery:** If filters or narrow radius yield zero results, displays clear 1-tap recovery buttons (**"Expand radius to 25 km"** or **"Clear sport filters"**).
 
 ### 7.5 Dedicated Multi-Category Filter Page (`/#filters`)

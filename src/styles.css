@@ -331,13 +331,19 @@ body {
   flex-direction: column;
   gap: 0.45rem;
   box-shadow: var(--card-shadow);
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
   height: 100%;
+  cursor: pointer;
 }
 
 .activity-card:hover {
   transform: translateY(-1px);
   box-shadow: var(--card-shadow-hover);
+}
+
+.activity-card:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }
 
 /* Deep-link Activity Highlight Pulse */
@@ -448,6 +454,18 @@ body {
   overflow: hidden;
 }
 
+.card-venue-row {
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  padding: 0.15rem 0.25rem;
+  margin: -0.15rem -0.25rem;
+  transition: background-color 0.15s ease;
+}
+
+.card-venue-row:hover {
+  background-color: #f1f5f9;
+}
+
 .venue-name {
   font-weight: 600;
   color: var(--text);
@@ -459,7 +477,8 @@ body {
 }
 
 .venue-name:hover,
-.venue-name:focus-visible {
+.venue-name:focus-visible,
+.card-venue-row:hover .venue-name {
   color: var(--primary);
   text-decoration: underline;
 }
@@ -477,15 +496,8 @@ body {
   padding-top: 0.15rem;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 0.5rem;
-}
-
-.card-tier-4 .btn {
-  flex: 1;
-  padding: 0.4rem 0.65rem;
-  font-size: 0.825rem;
-  line-height: 1.25;
 }
 
 .suggest-edit-link {

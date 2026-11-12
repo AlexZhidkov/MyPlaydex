@@ -87,13 +87,17 @@ test('Seam 3: renderActivityCard outputs 4-tier semantic card structure with all
   assert.ok(html.includes('Scarborough Beach Amphitheatre'), 'Should include venue name');
   assert.ok(html.includes('class="venue-name"'), 'Should include venue-name link');
   assert.ok(html.includes('href="https://www.google.com/maps/search/?api=1'), 'Venue name must link to outbound Google Maps');
+  assert.ok(html.includes('data-directions-url="https://www.google.com/maps/search/?api=1'), 'card-venue-row must have data-directions-url');
   assert.ok(!html.includes('directions-link'), 'directions-link button must be removed');
   assert.ok(!html.includes('Directions ↗'), 'Directions ↗ text must be removed');
   assert.ok(html.includes('Scarborough Beach Sports Club'), 'Should include organizer name');
 
-  // Tier 4: primary external referral button
-  assert.ok(html.includes('https://example.com/volleyball-scarborough'), 'Must link to source_url');
-  assert.ok(html.includes('target="_blank"'), 'Referral must open in external tab');
+  // Whole-card click navigation & button removal
+  assert.ok(html.includes('data-url="https://example.com/volleyball-scarborough"'), 'Card must have data-url for whole-card click navigation');
+  assert.ok(html.includes('tabindex="0"'), 'Card must have tabindex="0" for keyboard focus');
+  assert.ok(!html.includes('View Club / Details'), 'View Club / Details button must be removed');
+  assert.ok(!html.includes('btn-referral'), 'btn-referral class must be removed');
+  assert.ok(html.includes('target="_blank"'), 'Outbound links must open in external tab');
   assert.ok(html.includes('rel="noopener'), 'Must have security rel for external tab');
 });
 

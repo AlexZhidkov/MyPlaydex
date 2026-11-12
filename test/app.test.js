@@ -727,3 +727,218 @@ test('Loading label: displays "Loading activities..." initially, hides after loa
   storage.clear();
 });
 
+test('Seam 3: Activity card click delegates to source_url in new tab, and card-venue-row opens Google Maps directions', () => {
+  const storage = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => storage.get(key) || null,
+    setItem: (key, val) => storage.set(key, String(val)),
+    removeItem: (key) => storage.delete(key),
+    clear: () => storage.clear()
+  };
+
+  const domListeners = new Map();
+  const elements = new Map();
+
+  function createMockEl(id, tag = 'div', classes = []) {
+    const classSet = new Set(classes);
+    const listeners = new Map();
+    let innerHTML = '';
+    let textContent = '';
+    const attrs = new Map();
+
+    const el = {
+      id,
+      tagName: tag.toUpperCase(),
+      style: {},
+      dataset: {},
+      get innerHTML() { return innerHTML; },
+      set innerHTML(val) { innerHTML = val; },
+      get textContent() { return textContent; },
+      set textContent(val) { textContent = val; },
+      classList: {
+        add: (...c) => c.forEach(name => classSet.add(name)),
+        remove: (...c) => c.forEach(name => classSet.delete(name)),
+        toggle: (name, force) => {
+          if (force === undefined) {
+            classSet.has(name) ? classSet.delete(name) : classSet.add(name);
+          } else if (force) {
+            classSet.add(name);
+          } else {
+            classSet.delete(name);
+          }
+        },
+        contains: (name) => classSet.has(name)
+      },
+      getAttribute: (name) => attrs.get(name) || null,
+      setAttribute: (name, val) => {
+        attrs.set(name, String(val));
+        if (name.startsWith('data-')) {
+          const camel = name.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+          el.dataset[camel] = String(val);
+        }
+      },
+      addEventListener: (type, cb) => {
+        if (!listeners.has(type)) listeners.set(type, []);
+        listeners.get(type).push(cb);
+      },
+      dispatchEvent: (e) => {
+        const cbs = listeners.get(e.type) || [];
+        cbs.forEach(cb => cb(e));
+      },
+      closest: () => null,
+      scrollIntoView: () => {}
+    };
+    elements.set(id, el);
+    return el;
+  }
+
+  const gateOverlay = createMockEl('location-gate-overlay', 'div');
+  const gateCloseBtn = createMockEl('gate-close-btn', 'button');
+  const locationSwitcherBtn = createMockEl('location-switcher-btn', 'button');
+  const currentLocationLabel = createMockEl('current-location-label', 'span');
+  const feedContainer = createMockEl('feed-container', 'section');
+  const loadingLabel = createMockEl('loading-label', 'span');
+  const filterHeaderBtn = createMockEl('filter-header-btn', 'button');
+  const filterCountBadge = createMockEl('filter-count-badge', 'span', ['hidden']);
+  const filterOverlay = createMockEl('filter-view-overlay', 'div', ['hidden']);
+
+  const openedWindows = [];
+  globalThis.window = {
+    location: {
+      hash: '',
+      pathname: '/',
+      search: ''
+    },
+    history: {
+      replaceState: () => {},
+      pushState: () => {},
+      back: () => {}
+    },
+    open: (url, target, features) => {
+      openedWindows.push({ url, target, features });
+      return {};
+    },
+    addEventListener: (evt, cb) => {
+      if (!domListeners.has(evt)) domListeners.set(evt, []);
+      domListeners.get(evt).push(cb);
+    }
+  };
+
+  globalThis.document = {
+    getElementById: (id) => elements.get(id) || null,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    addEventListener: (evt, cb) => {
+      if (!domListeners.has(evt)) domListeners.set(evt, []);
+      domListeners.get(evt).push(cb);
+    }
+  };
+
+  const app = initApp({
+    activities: [
+      {
+        id: 'act_tennis_1',
+        title: 'Social Tennis Night',
+        subcategory: 'tennis',
+        venue: {
+          name: 'Robertson Park Tennis Centre',
+          address: 'Fitzgerald St, Perth',
+          coordinates: { lat: -31.94, lng: 115.85 }
+        },
+        cost: { is_free: true },
+        source_url: 'https://example.com/tennis-perth'
+      }
+    ],
+    location: { name: 'Perth', lat: -31.95, lng: 115.86 }
+  });
+
+  const cardEl = createMockEl('card-act_tennis_1', 'article', ['activity-card']);
+  cardEl.setAttribute('data-id', 'act_tennis_1');
+  cardEl.setAttribute('data-url', 'https://example.com/tennis-perth');
+
+  const venueRowEl = createMockEl('venue-row', 'div', ['card-venue-row']);
+  const mapsUrl = 'https://www.google.com/maps/search/?api=1&query=Robertson+Park';
+  venueRowEl.setAttribute('data-directions-url', mapsUrl);
+
+  const venueAnchorEl = createMockEl('venue-link', 'a', ['venue-name']);
+  venueAnchorEl.setAttribute('href', mapsUrl);
+  venueRowEl.querySelector = (sel) => (sel.includes('venue-name') ? venueAnchorEl : null);
+
+  const venueIconEl = createMockEl('venue-icon', 'span', ['venue-icon']);
+  const suggestEditEl = createMockEl('edit-link', 'a', ['suggest-edit-link']);
+
+  // Case 1: Clicking anywhere on the activity card opens source_url in a new tab
+  openedWindows.length = 0;
+  const cardTarget = {
+    closest: (sel) => {
+      if (sel.includes('card-venue-row')) return null;
+      if (sel.includes('a, button')) return null;
+      if (sel.includes('activity-card')) return cardEl;
+      return null;
+    }
+  };
+  feedContainer.dispatchEvent({ type: 'click', target: cardTarget });
+
+  assert.equal(openedWindows.length, 1, 'Should trigger 1 window.open call for card click');
+  assert.equal(openedWindows[0].url, 'https://example.com/tennis-perth');
+  assert.equal(openedWindows[0].target, '_blank');
+  assert.equal(openedWindows[0].features, 'noopener,noreferrer');
+
+  // Case 2: Clicking on card-venue-row (e.g. pin icon or row padding) opens Google Maps
+  openedWindows.length = 0;
+  const venueIconTarget = {
+    closest: (sel) => {
+      if (sel.includes('card-venue-row')) return venueRowEl;
+      if (sel === 'a') return null; // not an anchor
+      if (sel.includes('activity-card')) return cardEl;
+      return null;
+    }
+  };
+  feedContainer.dispatchEvent({ type: 'click', target: venueIconTarget });
+
+  assert.equal(openedWindows.length, 1, 'Should trigger 1 window.open call for venue row click');
+  assert.equal(openedWindows[0].url, mapsUrl);
+  assert.equal(openedWindows[0].target, '_blank');
+  assert.equal(openedWindows[0].features, 'noopener,noreferrer');
+
+  // Case 3: Clicking directly on the anchor inside card-venue-row does NOT trigger card navigation
+  openedWindows.length = 0;
+  const venueAnchorTarget = {
+    closest: (sel) => {
+      if (sel.includes('card-venue-row')) return venueRowEl;
+      if (sel === 'a' || sel.includes('a, button')) return venueAnchorEl;
+      if (sel.includes('activity-card')) return cardEl;
+      return null;
+    }
+  };
+  feedContainer.dispatchEvent({ type: 'click', target: venueAnchorTarget });
+  assert.equal(openedWindows.length, 0, 'Click on venue anchor allows native anchor navigation without window.open call');
+
+  // Case 4: Clicking on suggest-edit-link does NOT trigger card navigation
+  openedWindows.length = 0;
+  const editTarget = {
+    closest: (sel) => {
+      if (sel.includes('card-venue-row')) return null;
+      if (sel.includes('a, button')) return suggestEditEl;
+      if (sel.includes('activity-card')) return cardEl;
+      return null;
+    }
+  };
+  feedContainer.dispatchEvent({ type: 'click', target: editTarget });
+  assert.equal(openedWindows.length, 0, 'Click on suggest-edit-link must not trigger card window.open');
+
+  // Case 5: Pressing Enter on focused activity-card triggers source_url in a new tab
+  openedWindows.length = 0;
+  cardEl.closest = (sel) => (sel.includes('activity-card') ? cardEl : null);
+  feedContainer.dispatchEvent({
+    type: 'keydown',
+    key: 'Enter',
+    target: cardEl
+  });
+
+  assert.equal(openedWindows.length, 1, 'Pressing Enter on focused card should trigger window.open');
+  assert.equal(openedWindows[0].url, 'https://example.com/tennis-perth');
+
+  storage.clear();
+});
+

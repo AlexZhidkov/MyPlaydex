@@ -593,20 +593,67 @@ export function initApp(options = {}) {
     window.addEventListener('hashchange', handleHashRouting);
   }
 
-  // Empty state 1-tap recovery click handlers
+  // Activity Feed Interaction Delegation (Empty State Recovery, Venue Map Directions, Card Navigation)
   if (feedContainer) {
     feedContainer.addEventListener('click', (e) => {
-      const expandBtn = e.target.closest('[data-action="expand-radius"]');
+      // 1. Empty state 1-tap recovery click handlers
+      const expandBtn = e.target.closest && e.target.closest('[data-action="expand-radius"]');
       if (expandBtn) {
         store.setRadius(25);
         return;
       }
 
-      const clearFiltersBtn = e.target.closest('[data-action="clear-filters"]');
+      const clearFiltersBtn = e.target.closest && e.target.closest('[data-action="clear-filters"]');
       if (clearFiltersBtn) {
         clearSavedSportsFilters();
         store.setSportsFilter([]);
         return;
+      }
+
+      // 2. Venue row: Outbound Google Maps directions
+      const venueRow = e.target.closest && e.target.closest('.card-venue-row');
+      if (venueRow) {
+        // If clicked outside the <a> tag (e.g. on 📍 icon or row padding), open directions in a new tab.
+        // If clicked on the <a> link itself, native browser link behavior handles it.
+        const isAnchor = Boolean(e.target.closest && e.target.closest('a'));
+        if (!isAnchor) {
+          const venueLink = venueRow.querySelector ? venueRow.querySelector('a.venue-name') : null;
+          const directionsUrl = venueRow.dataset?.directionsUrl
+            || (venueRow.getAttribute && venueRow.getAttribute('data-directions-url'))
+            || (venueLink && (venueLink.getAttribute ? venueLink.getAttribute('href') : venueLink.href));
+          if (directionsUrl && typeof window !== 'undefined' && typeof window.open === 'function') {
+            window.open(directionsUrl, '_blank', 'noopener,noreferrer');
+          }
+        }
+        return;
+      }
+
+      // 3. Other interactive links (e.g. Suggest an edit mailto link)
+      if (e.target.closest && e.target.closest('a, button')) {
+        return;
+      }
+
+      // 4. Activity card: whole-card click opens club/activity source_url in a new tab
+      const card = e.target.closest && e.target.closest('.activity-card');
+      if (card) {
+        const url = card.dataset?.url || (card.getAttribute && card.getAttribute('data-url'));
+        if (url && url !== '#' && typeof window !== 'undefined' && typeof window.open === 'function') {
+          window.open(url, '_blank', 'noopener,noreferrer');
+        }
+        return;
+      }
+    });
+
+    // Support keyboard accessibility (Enter key on focused activity card)
+    feedContainer.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        const card = e.target.closest && e.target.closest('.activity-card');
+        if (card && e.target === card) {
+          const url = card.dataset?.url || (card.getAttribute && card.getAttribute('data-url'));
+          if (url && url !== '#' && typeof window !== 'undefined' && typeof window.open === 'function') {
+            window.open(url, '_blank', 'noopener,noreferrer');
+          }
+        }
       }
     });
   }
