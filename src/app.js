@@ -250,9 +250,17 @@ export function initApp(options = {}) {
       loadingLabel.classList.add('hidden');
       loadingLabel.style.display = 'none';
     }
+    const metaRow = typeof document !== 'undefined' && document.querySelector ? document.querySelector('.feed-meta-row') : null;
+    if (metaRow) {
+      metaRow.style.display = 'none';
+    }
   }
 
   function showLoading(text = 'Loading activities...') {
+    const metaRow = typeof document !== 'undefined' && document.querySelector ? document.querySelector('.feed-meta-row') : null;
+    if (metaRow) {
+      metaRow.style.display = '';
+    }
     if (loadingLabel) {
       loadingLabel.textContent = text;
       loadingLabel.classList.remove('hidden');
