@@ -280,4 +280,37 @@ test('Seam 3: createUrlVerifier deduplicates via Firestore getAll and runCache, 
   assert.equal(missing.source_url, null);
 });
 
+test('Seam 3: verifyListings supports legacy external_url and url fields from existing Firestore documents', async () => {
+  const mockFetch = async (url) => ({
+    ok: true,
+    status: 200,
+    url
+  });
+
+  const verifier = createUrlVerifier({ fetch: mockFetch });
+
+  const legacyListings = [
+    {
+      id: 'legacy_1',
+      title: 'Legacy Listing with external_url',
+      external_url: 'https://example.com/legacy-link'
+    },
+    {
+      id: 'legacy_2',
+      title: 'Legacy Listing with url',
+      url: 'http://example.com/legacy-http'
+    }
+  ];
+
+  const results = await verifier.verifyListings(legacyListings);
+
+  assert.equal(results[0].verified, true);
+  assert.equal(results[0].source_url, 'https://example.com/legacy-link');
+  assert.equal(results[0].raw_source_url, 'https://example.com/legacy-link');
+
+  assert.equal(results[1].verified, true);
+  assert.equal(results[1].source_url, 'https://example.com/legacy-http');
+  assert.equal(results[1].raw_source_url, 'http://example.com/legacy-http');
+});
+
 

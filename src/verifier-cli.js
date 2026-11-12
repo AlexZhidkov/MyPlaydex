@@ -40,7 +40,8 @@ export async function runVerifier({
     activities.map(a => [a.id, {
       verified: a.verified,
       source_url: a.source_url,
-      raw_source_url: a.raw_source_url
+      raw_source_url: a.raw_source_url,
+      external_url: a.external_url
     }])
   );
 
@@ -63,11 +64,11 @@ export async function runVerifier({
 
   for (const item of verifiedActivities) {
     const orig = originalSnapshots.get(item.id) || {};
-    const candidateUrl = item.source_url || item.raw_source_url;
+    const candidateUrl = item.source_url || item.raw_source_url || orig.external_url;
 
     if (item.verified === true) {
       verifiedCount++;
-      if (!force && orig.verified === true && (orig.source_url === item.source_url || orig.raw_source_url === candidateUrl)) {
+      if (!force && orig.verified === true && (orig.source_url === item.source_url || orig.raw_source_url === candidateUrl || orig.external_url === candidateUrl)) {
         skippedCount++;
       }
       const wasRepaired = (orig.verified !== true) || (orig.source_url !== item.source_url);

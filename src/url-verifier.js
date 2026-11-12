@@ -268,7 +268,7 @@ export function createUrlVerifier(options = {}) {
 
       for (let i = 0; i < resolvedListings.length; i++) {
         const item = resolvedListings[i];
-        const rawCandidate = item.source_url || item.raw_source_url;
+        const rawCandidate = item.source_url || item.raw_source_url || item.external_url || item.url;
         const candidateUrl = typeof rawCandidate === 'string' ? rawCandidate.trim() : '';
 
         // Strict preservation of raw_source_url
@@ -288,7 +288,7 @@ export function createUrlVerifier(options = {}) {
         // If already verified: true and matching URL, skip probing (unless force is true)
         const existing = existingDocsMap.get(item.id);
         if (!force && existing && existing.verified === true) {
-          const existingUrl = existing.source_url || existing.raw_source_url;
+          const existingUrl = existing.source_url || existing.raw_source_url || existing.external_url || existing.url;
           if (existingUrl === candidateUrl || existing.source_url === candidateUrl) {
             item.verified = true;
             item.source_url = existing.source_url || candidateUrl;

@@ -342,5 +342,48 @@ test('Seam 2: runVerifier preserves distinct existing raw_source_url when degrad
   assert.equal(repaired.raw_source_url, 'http://stirling.wa.gov.au/tennis');
 });
 
+test('Seam 2: runVerifier detects and updates legacy external_url documents in Firestore', async () => {
+  const initialActivities = [
+    {
+      id: 'legacy_stirling_1',
+      title: 'Legacy Stirling Farmers Market',
+      external_url: 'https://stirling.wa.gov.au/market'
+    }
+  ];
+
+  const updateCalls = [];
+  const mockAdapter = {
+    isDryRun: () => false,
+    async scanActivities() {
+      return initialActivities.map(a => ({ ...a }));
+    },
+    async batchUpdateActivityUrls(updates) {
+      updateCalls.push(updates);
+      return { total: updates.length, updated: updates.length, failed: 0, dryRun: false };
+    }
+  };
+
+  const mockProber = {
+    async probeAll(urls) {
+      return urls.map(url => ({ reachable: true, status: 200, url }));
+    }
+  };
+
+  const summary = await runVerifier({
+    adapter: mockAdapter,
+    prober: mockProber,
+    options: { force: false, dryRun: false },
+    logger: { log: () => {} }
+  });
+
+  assert.equal(summary.scannedCount, 1);
+  assert.equal(summary.verifiedCount, 1);
+  assert.equal(summary.updatedCount, 1);
+  assert.equal(updateCalls[0][0].verified, true);
+  assert.equal(updateCalls[0][0].source_url, 'https://stirling.wa.gov.au/market');
+  assert.equal(updateCalls[0][0].raw_source_url, 'https://stirling.wa.gov.au/market');
+});
+
+
 
 
