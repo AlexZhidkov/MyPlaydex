@@ -7,6 +7,7 @@
 import { pathToFileURL } from 'node:url';
 import { sanitizeActivity } from './sanitizer.js';
 import { createFirestoreAdapter, initFirestoreFromEnv } from './firestore-adapter.js';
+import { createUrlVerifier } from './url-verifier.js';
 import { createStirlingCrawler } from './crawlers/stirling-crawler.js';
 import { createDlgscCrawler } from './crawlers/dlgsc-crawler.js';
 import { createVolleyballWaCrawler } from './crawlers/volleyball-wa-crawler.js';
@@ -63,6 +64,11 @@ export async function runCrawlerHarness({ crawlers = [], adapter, options = {} }
   const targetCrawler = options.crawler || 'all';
   const limit = options.limit;
   const logger = options.logger || console;
+
+  const urlVerifier = options.urlVerifier || createUrlVerifier({
+    adapter,
+    ...options.urlVerifierOptions
+  });
 
   const activeCrawlers = targetCrawler === 'all'
     ? crawlers
@@ -128,7 +134,11 @@ export async function runCrawlerHarness({ crawlers = [], adapter, options = {} }
       totalInvalid += invalidItems.length;
 
       if (validItems.length > 0) {
-        const writeResult = await adapter.batchUpsertActivities(validItems);
+        const verifiedItems = options.skipUrlVerification
+          ? validItems
+          : await urlVerifier.verifyListings(validItems);
+
+        const writeResult = await adapter.batchUpsertActivities(verifiedItems);
         upsertedCount = writeResult.upserted;
         totalUpserted += upsertedCount;
       }

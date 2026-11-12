@@ -221,6 +221,38 @@ test('Seam 2: batchUpsertActivities captures batch commit failures without crash
   assert.match(result.errors[0].message, /Firestore deadline exceeded/);
 });
 
+test('Seam 2: getActivities retrieves existing records via getAll and returns empty map in dryRun', async () => {
+  const dryAdapter = createFirestoreAdapter({ dryRun: true });
+  const dryResult = await dryAdapter.getActivities(['act_1', 'act_2']);
+  assert.equal(dryResult.size, 0);
+
+  const mockDb = {
+    collection(colName) {
+      return {
+        doc(id) {
+          return { id, colName };
+        }
+      };
+    },
+    async getAll(...docRefs) {
+      return docRefs.map(ref => ({
+        id: ref.id,
+        exists: ref.id === 'act_1',
+        data() {
+          return { id: ref.id, title: 'Existing Activity', verified: true };
+        }
+      }));
+    }
+  };
+
+  const liveAdapter = createFirestoreAdapter({ db: mockDb, dryRun: false });
+  const liveResult = await liveAdapter.getActivities(['act_1', 'act_missing']);
+  assert.equal(liveResult.size, 1);
+  assert.equal(liveResult.has('act_1'), true);
+  assert.equal(liveResult.get('act_1').title, 'Existing Activity');
+  assert.equal(liveResult.has('act_missing'), false);
+});
+
 test('Seam 2: initFirestoreFromEnv correctly parses JSON and base64 service account keys', async () => {
   const { initFirestoreFromEnv } = await import('../src/firestore-adapter.js');
 

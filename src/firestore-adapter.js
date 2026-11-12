@@ -58,6 +58,48 @@ export function createFirestoreAdapter(options = {}) {
     },
 
     /**
+     * Batch-retrieves existing activity records from Firestore for deduplication.
+     *
+     * @param {Array<string>} ids - Array of activity IDs
+     * @returns {Promise<Map<string, object>>} Map of id -> document data
+     */
+    async getActivities(ids = []) {
+      if (!ids.length || dryRun || !db) {
+        return new Map();
+      }
+
+      const result = new Map();
+      const chunkSize = 500;
+
+      for (let i = 0; i < ids.length; i += chunkSize) {
+        const chunkIds = ids.slice(i, i + chunkSize);
+        const docRefs = chunkIds.map(id => db.collection(collectionName).doc(id));
+
+        try {
+          if (typeof db.getAll === 'function') {
+            const snapshots = await db.getAll(...docRefs);
+            for (const snap of snapshots) {
+              if (snap && snap.exists) {
+                result.set(snap.id, snap.data());
+              }
+            }
+          } else {
+            const snapshots = await Promise.all(docRefs.map(ref => ref.get()));
+            for (const snap of snapshots) {
+              if (snap && snap.exists) {
+                result.set(snap.id, snap.data());
+              }
+            }
+          }
+        } catch {
+          // If retrieval fails, return partial or empty map
+        }
+      }
+
+      return result;
+    },
+
+    /**
      * Upserts an array of activity documents and their canonical entities in batches.
      * Atomically updates /activities, /venues, /organizers, and /regions collections.
      *

@@ -591,3 +591,122 @@ test('Seam 7: runCrawlerHarness targets dlgsc, volleyball_wa, eventbrite, and me
   assert.equal(muSummary.successfulCrawlers, 1);
   assert.equal(muSummary.totalValid, 1);
 });
+
+test('Seam 4: runCrawlerHarness executes pre-write URL verification, degrades unreachable links to Unverified, and preserves crawler health', async () => {
+  const probed = [];
+  const mockFetch = async (url) => {
+    probed.push(url);
+    if (url.includes('broken')) {
+      return { ok: false, status: 404, url, body: null };
+    }
+    return { ok: true, status: 200, url, body: null };
+  };
+
+  const existingStore = new Map([
+    ['c1_3', { id: 'c1_3', verified: true, source_url: 'https://example.com/already-good' }],
+    ['c1_4', { id: 'c1_4', verified: false, raw_source_url: 'https://example.com/was-bad-now-fixed' }]
+  ]);
+
+  let upsertedActivities = [];
+  const mockAdapter = {
+    isDryRun() { return false; },
+    async getActivities(ids) {
+      const res = new Map();
+      for (const id of ids) {
+        if (existingStore.has(id)) {
+          res.set(id, existingStore.get(id));
+        }
+      }
+      return res;
+    },
+    async batchUpsertActivities(items) {
+      upsertedActivities = [...items];
+      return { total: items.length, upserted: items.length, failed: 0, batches: 1, errors: [], dryRun: false };
+    }
+  };
+
+  const mockCrawler = {
+    name: 'test_crawler',
+    async fetchListings() {
+      return [
+        // 1. Recoverable and reachable
+        {
+          source: 'c1',
+          source_id: '1',
+          title: 'Activity 1',
+          source_url: 'http://example.com/event-1',
+          coordinates: { lat: -31.95, lng: 115.86 }
+        },
+        // 2. Unreachable (404) -> should degrade to Unverified Listing without dropping
+        {
+          source: 'c1',
+          source_id: '2',
+          title: 'Activity 2',
+          source_url: 'https://example.com/broken-link',
+          coordinates: { lat: -31.95, lng: 115.86 }
+        },
+        // 3. Existing verified record -> should skip network probe
+        {
+          source: 'c1',
+          source_id: '3',
+          title: 'Activity 3',
+          source_url: 'https://example.com/already-good',
+          coordinates: { lat: -31.95, lng: 115.86 }
+        },
+        // 4. Existing unverified record -> should re-probe and self-heal
+        {
+          source: 'c1',
+          source_id: '4',
+          title: 'Activity 4',
+          source_url: 'https://example.com/was-bad-now-fixed',
+          coordinates: { lat: -31.95, lng: 115.86 }
+        }
+      ];
+    }
+  };
+
+  const summary = await runCrawlerHarness({
+    crawlers: [mockCrawler],
+    adapter: mockAdapter,
+    options: {
+      urlVerifierOptions: {
+        fetch: mockFetch
+      }
+    }
+  });
+
+  assert.equal(summary.successfulCrawlers, 1);
+  assert.equal(summary.failedCrawlers, 0);
+  assert.equal(summary.totalValid, 4);
+  assert.equal(summary.totalInvalid, 0);
+  assert.equal(summary.totalUpserted, 4);
+
+  // Probe calls:
+  // Activity 1 was probed (after scheme recovery http -> https)
+  assert.ok(probed.includes('https://example.com/event-1'));
+  // Activity 2 was probed and failed
+  assert.ok(probed.includes('https://example.com/broken-link'));
+  // Activity 3 was skipped!
+  assert.ok(!probed.includes('https://example.com/already-good'));
+  // Activity 4 was re-probed and healed!
+  assert.ok(probed.includes('https://example.com/was-bad-now-fixed'));
+
+  // Upserted verification states:
+  const act1 = upsertedActivities.find(a => a.id === 'c1_1');
+  assert.equal(act1.verified, true);
+  assert.equal(act1.source_url, 'https://example.com/event-1');
+
+  const act2 = upsertedActivities.find(a => a.id === 'c1_2');
+  assert.equal(act2.verified, false);
+  assert.equal(act2.source_url, null);
+  assert.equal(act2.raw_source_url, 'https://example.com/broken-link');
+
+  const act3 = upsertedActivities.find(a => a.id === 'c1_3');
+  assert.equal(act3.verified, true);
+  assert.equal(act3.source_url, 'https://example.com/already-good');
+
+  const act4 = upsertedActivities.find(a => a.id === 'c1_4');
+  assert.equal(act4.verified, true);
+  assert.equal(act4.source_url, 'https://example.com/was-bad-now-fixed');
+});
+
