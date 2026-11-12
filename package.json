@@ -8,7 +8,9 @@
     "crawl": "node src/crawler-runner.js",
     "crawl:dry-run": "node src/crawler-runner.js --dry-run",
     "seed": "node src/crawler-runner.js --seed",
-    "prototype": "python3 -m http.server 3000"
+    "prototype": "python3 -m http.server 3000",
+    "deploy:hosting": "npx -y firebase-tools@latest deploy --only hosting",
+    "serve:hosting": "npx -y firebase-tools@latest emulators:start --only hosting"
   },
   "dependencies": {
     "firebase-admin": "^12.0.0"

@@ -1,5 +1,6 @@
 {
   "hosting": {
+    "site": "myplaydex",
     "public": ".",
     "ignore": [
       "firebase.json",
@@ -9,7 +10,13 @@
       ".github/**",
       ".scratch/**",
       "docs/**",
-      "prototype/**"
+      "prototype/**",
+      "package*.json",
+      "*.md",
+      "LICENSE",
+      "src/crawler-*.js",
+      "src/crawlers/**",
+      "src/firestore-adapter.js"
     ],
     "rewrites": [
       {

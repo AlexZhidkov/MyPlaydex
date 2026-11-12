@@ -82,3 +82,29 @@ test('Seam 4: index.html embeds static Open Graph, Twitter Card metadata and hea
     'Header suggest link must point to mailto:azhidkov@gmail.com'
   );
 });
+
+test('Seam 4: Responsive header hides Suggest and Filter text labels on small screens', () => {
+  const indexHtmlPath = path.join(REPO_ROOT, 'index.html');
+  const stylesCssPath = path.join(REPO_ROOT, 'src', 'styles.css');
+
+  const html = fs.readFileSync(indexHtmlPath, 'utf8');
+  const css = fs.readFileSync(stylesCssPath, 'utf8');
+
+  // Verify dedicated text span elements exist in HTML
+  assert.ok(html.includes('suggest-btn-text'), 'HTML must have .suggest-btn-text span');
+  assert.ok(html.includes('filter-btn-text'), 'HTML must have .filter-btn-text span');
+
+  // Verify responsive CSS media query hides both text labels on small screens
+  assert.ok(css.includes('@media (max-width:'), 'CSS must include a max-width media query for small screens');
+  assert.ok(css.includes('.suggest-btn-text') && css.includes('.filter-btn-text'), 'CSS must target both button text spans');
+  assert.match(
+    css,
+    /@media[^{]+\{[^}]*\.suggest-btn-text[^}]*display:\s*none/s,
+    'Small screen media query must set display: none on .suggest-btn-text'
+  );
+  assert.match(
+    css,
+    /@media[^{]+\{[^}]*\.filter-btn-text[^}]*display:\s*none/s,
+    'Small screen media query must set display: none on .filter-btn-text'
+  );
+});
