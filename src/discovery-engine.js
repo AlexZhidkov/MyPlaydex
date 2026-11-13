@@ -6,6 +6,87 @@
 
 const EARTH_RADIUS_KM = 6371;
 
+export const DISCOVERY_TABS = ['activities', 'organizers', 'venues'];
+
+/**
+ * Normalizes a tab identifier to one of 'activities' | 'organizers' | 'venues'.
+ *
+ * @param {string} [tab='activities']
+ * @returns {'activities' | 'organizers' | 'venues'}
+ */
+export function normalizeDiscoveryTab(tab = 'activities') {
+  const normalized = String(tab || '').toLowerCase().trim();
+  if (normalized === 'organizers' || normalized === 'organizer') {
+    return 'organizers';
+  }
+  if (normalized === 'venues' || normalized === 'venue') {
+    return 'venues';
+  }
+  return 'activities';
+}
+
+/**
+ * Extracts valid { lat, lng } coordinates from an Activity, Organizer, or Venue listing.
+ *
+ * @param {object} [item={}]
+ * @returns {{ lat: number, lng: number } | null}
+ */
+export function extractListingCoordinates(item = {}) {
+  if (!item || typeof item !== 'object') {
+    return null;
+  }
+
+  const candidates = [
+    item.coordinates,
+    item.venue?.coordinates,
+    item.lat !== undefined && item.lng !== undefined ? { lat: item.lat, lng: item.lng } : null,
+    item.venue?.lat !== undefined && item.venue?.lng !== undefined ? { lat: item.venue.lat, lng: item.venue.lng } : null
+  ];
+
+  for (const candidate of candidates) {
+    if (
+      candidate &&
+      typeof candidate.lat === 'number' &&
+      typeof candidate.lng === 'number' &&
+      !Number.isNaN(candidate.lat) &&
+      !Number.isNaN(candidate.lng)
+    ) {
+      return { lat: candidate.lat, lng: candidate.lng };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Extracts deduplicated sport slugs from `subcategories`, `subcategory`, and `sport`.
+ *
+ * @param {object} [item={}]
+ * @returns {string[]}
+ */
+function extractListingSports(item = {}) {
+  if (!item || typeof item !== 'object') {
+    return [];
+  }
+
+  const sports = [];
+  if (Array.isArray(item.subcategories)) {
+    for (const s of item.subcategories) {
+      if (typeof s === 'string' && s.trim() && !sports.includes(s.trim())) {
+        sports.push(s.trim());
+      }
+    }
+  }
+
+  for (const single of [item.subcategory, item.sport]) {
+    if (typeof single === 'string' && single.trim() && !sports.includes(single.trim())) {
+      sports.push(single.trim());
+    }
+  }
+
+  return sports;
+}
+
 /**
  * Calculates the great-circle distance between two coordinates in kilometres
  * using the Haversine formula.
@@ -86,44 +167,49 @@ export function isActivityExpired(activity, todayAwst = getTodayAwstDate()) {
 }
 
 /**
- * Filter activities by categorical facets and deterministic AWST expiration.
+ * Filter listings (Activities, Organizers, or Venues) by categorical facets
+ * and optional AWST date expiration.
  *
- * @param {Array<object>} activities
+ * @param {Array<object>} [listings=[]]
  * @param {{ sport?: string, sports?: string[], freeOnly?: boolean, gender?: string, age?: string }} [filters={}]
- * @param {string} [todayAwst=getTodayAwstDate()]
- * @returns {Array<object>} Filtered activities
+ * @param {object} [options={}]
+ * @param {string} [options.todayAwst]
+ * @param {boolean} [options.applyExpiration=true]
+ * @returns {Array<object>} Filtered listings
  */
-export function filterActivities(activities, filters = {}, todayAwst = getTodayAwstDate()) {
+export function filterListings(listings = [], filters = {}, options = {}) {
   const { sport, sports, freeOnly, gender, age } = filters;
+  const todayAwst = options.todayAwst || getTodayAwstDate();
+  const applyExpiration = options.applyExpiration !== false;
 
-  return activities.filter((activity) => {
-    // Expiration check
-    if (isActivityExpired(activity, todayAwst)) {
+  return listings.filter((item) => {
+    // Expiration check (applied strictly to Activities, never Organizers/Venues)
+    if (applyExpiration && isActivityExpired(item, todayAwst)) {
       return false;
     }
 
     // Sport facets: multi-sport array (OR logic) or single sport string
     if (Array.isArray(sports) && sports.length > 0) {
-      const actSport = activity.subcategory || activity.sport;
-      if (!sports.includes(actSport)) {
+      const itemSports = extractListingSports(item);
+      if (!itemSports.some((s) => sports.includes(s))) {
         return false;
       }
     } else if (sport && sport !== 'all') {
-      const actSport = activity.subcategory || activity.sport;
-      if (actSport !== sport) {
+      const itemSports = extractListingSports(item);
+      if (!itemSports.includes(sport)) {
         return false;
       }
     }
 
     // Cost facet
-    const isFree = activity.cost ? activity.cost.is_free : Boolean(activity.is_free);
+    const isFree = item.cost ? item.cost.is_free : Boolean(item.is_free);
     if (freeOnly && !isFree) {
       return false;
     }
 
     // Gender facet ('all', 'women_only', 'men_only')
     if (gender && gender !== 'all') {
-      const actGender = activity.demographics?.gender;
+      const actGender = item.demographics?.gender;
       if (actGender && actGender !== gender) {
         if (gender === 'women' && actGender === 'women_only') {
           // match
@@ -139,7 +225,7 @@ export function filterActivities(activities, filters = {}, todayAwst = getTodayA
 
     // Age facet ('all', 'adults', 'juniors', 'masters')
     if (age && age !== 'all') {
-      const actAge = activity.demographics?.age;
+      const actAge = item.demographics?.age;
       if (actAge && actAge !== age && actAge !== 'all') {
         return false;
       }
@@ -150,10 +236,44 @@ export function filterActivities(activities, filters = {}, todayAwst = getTodayA
 }
 
 /**
- * Filter and rank activities by distance from location and selected facets.
- * Supports location: null (returns []), numeric and 'all' radius, and maxResults cap.
+ * Filter activities by categorical facets and deterministic AWST expiration.
  *
  * @param {Array<object>} activities
+ * @param {{ sport?: string, sports?: string[], freeOnly?: boolean, gender?: string, age?: string }} [filters={}]
+ * @param {string} [todayAwst=getTodayAwstDate()]
+ * @returns {Array<object>} Filtered activities
+ */
+export function filterActivities(activities, filters = {}, todayAwst = getTodayAwstDate()) {
+  return filterListings(activities, filters, { todayAwst, applyExpiration: true });
+}
+
+/**
+ * Filter organizers by categorical facets (without AWST schedule expiration).
+ *
+ * @param {Array<object>} [organizers=[]]
+ * @param {object} [filters={}]
+ * @returns {Array<object>}
+ */
+export function filterOrganizers(organizers = [], filters = {}) {
+  return filterListings(organizers, filters, { applyExpiration: false });
+}
+
+/**
+ * Filter venues by categorical facets (without AWST schedule expiration).
+ *
+ * @param {Array<object>} [venues=[]]
+ * @param {object} [filters={}]
+ * @returns {Array<object>}
+ */
+export function filterVenues(venues = [], filters = {}) {
+  return filterListings(venues, filters, { applyExpiration: false });
+}
+
+/**
+ * Filter and rank listings (Activities, Organizers, or Venues) by distance from location and selected facets.
+ * Supports location: null (returns []), numeric and 'all' radius, and maxResults cap.
+ *
+ * @param {Array<object>} [listings=[]]
  * @param {object} [options={}]
  * @param {{ lat: number, lng: number }|null} [options.location]
  * @param {{ lat: number, lng: number }} [options.center]
@@ -161,11 +281,13 @@ export function filterActivities(activities, filters = {}, todayAwst = getTodayA
  * @param {object} [options.filters={}]
  * @param {number} [options.maxResults=50]
  * @param {string} [options.todayAwst]
- * @returns {Array<object>} Filtered and distance-ranked activities
+ * @param {boolean} [options.applyExpiration]
+ * @param {string} [options.type]
+ * @returns {Array<object>} Filtered and distance-ranked listings
  */
-export function filterAndRankActivities(activities, options = {}) {
+export function filterAndRankListings(listings = [], options = {}) {
   const location = options.location !== undefined ? options.location : options.center;
-  // Cold start gate: if location is null or undefined, return no activities
+  // Cold start gate: if location is null or undefined, return no listings
   if (!location || typeof location.lat !== 'number' || typeof location.lng !== 'number') {
     return [];
   }
@@ -174,22 +296,25 @@ export function filterAndRankActivities(activities, options = {}) {
   const filters = options.filters || {};
   const maxResults = options.maxResults !== undefined ? options.maxResults : 50;
   const todayAwst = options.todayAwst || getTodayAwstDate();
+  const applyExpiration = options.applyExpiration !== undefined
+    ? options.applyExpiration
+    : (options.type !== 'organizer' && options.type !== 'organizers' && options.type !== 'venue' && options.type !== 'venues');
 
-  // Step 1: Filter by categorical facets and expiration
-  const facetMatched = filterActivities(activities, filters, todayAwst);
+  // Step 1: Filter by categorical facets and optional expiration
+  const facetMatched = filterListings(listings, filters, { todayAwst, applyExpiration });
 
   // Step 2: Compute distance for each and filter by radius (unless radiusKm === 'all')
   const isAllRadius = radiusKm === 'all' || radiusKm === Infinity;
   const numericRadius = Number(radiusKm);
 
   const withDistance = [];
-  for (const activity of facetMatched) {
-    const coords = activity.venue?.coordinates || (activity.venue?.lat !== undefined ? activity.venue : null);
+  for (const item of facetMatched) {
+    const coords = extractListingCoordinates(item);
     const distanceKm = coords ? calculateDistanceKm(location, coords) : Infinity;
 
     if (isAllRadius || distanceKm <= numericRadius) {
       withDistance.push({
-        ...activity,
+        ...item,
         distanceKm
       });
     }
@@ -204,6 +329,39 @@ export function filterAndRankActivities(activities, options = {}) {
   }
 
   return withDistance;
+}
+
+/**
+ * Filter and rank activities by distance from location and selected facets.
+ *
+ * @param {Array<object>} activities
+ * @param {object} [options={}]
+ * @returns {Array<object>}
+ */
+export function filterAndRankActivities(activities, options = {}) {
+  return filterAndRankListings(activities, { ...options, applyExpiration: true });
+}
+
+/**
+ * Filter and rank organizers by distance from location and selected facets.
+ *
+ * @param {Array<object>} [organizers=[]]
+ * @param {object} [options={}]
+ * @returns {Array<object>}
+ */
+export function filterAndRankOrganizers(organizers = [], options = {}) {
+  return filterAndRankListings(organizers, { ...options, applyExpiration: false });
+}
+
+/**
+ * Filter and rank venues by distance from location and selected facets.
+ *
+ * @param {Array<object>} [venues=[]]
+ * @param {object} [options={}]
+ * @returns {Array<object>}
+ */
+export function filterAndRankVenues(venues = [], options = {}) {
+  return filterAndRankListings(venues, { ...options, applyExpiration: false });
 }
 
 /**
@@ -226,6 +384,9 @@ export function createDiscoveryStore(activitiesOrConfig = [], optionalConfig = {
   }
 
   const activities = [...initialActivities];
+  const organizers = Array.isArray(config.organizers) ? [...config.organizers] : [];
+  const venues = Array.isArray(config.venues) ? [...config.venues] : [];
+  let activeTab = normalizeDiscoveryTab(config.activeTab || config.tab || 'activities');
   let location = config.location !== undefined ? config.location : (config.center || null);
   let radiusKm = config.radiusKm !== undefined ? config.radiusKm : 10;
   let maxResults = config.maxResults !== undefined ? config.maxResults : 50;
@@ -238,24 +399,30 @@ export function createDiscoveryStore(activitiesOrConfig = [], optionalConfig = {
     ...(config.filters || {})
   };
   let selectedActivityId = config.selectedActivityId || config.pinnedActivityId || null;
+  let selectedOrganizerId = config.selectedOrganizerId || null;
+  let selectedVenueId = config.selectedVenueId || null;
   let hoveredActivityId = null;
 
   const listeners = new Set();
 
-  function computeFiltered() {
-    const list = filterAndRankActivities(activities, {
+  function computeFilteredForList(sourceList, selectedId, applyExpiration) {
+    const list = filterAndRankListings(sourceList, {
       location,
       radiusKm,
       filters,
-      maxResults
+      maxResults,
+      applyExpiration
     });
 
-    if (selectedActivityId && !list.some((a) => a.id === selectedActivityId)) {
-      const target = activities.find((a) => a.id === selectedActivityId);
+    if (selectedId && !list.some((item) => item.id === selectedId)) {
+      const target = sourceList.find((item) => item.id === selectedId);
       if (target) {
-        const coords = target.venue?.coordinates || (target.venue?.lat !== undefined ? target.venue : null);
+        const coords = extractListingCoordinates(target);
         const distanceKm = coords && location ? calculateDistanceKm(location, coords) : null;
         list.unshift({ ...target, distanceKm: distanceKm !== null ? distanceKm : 0 });
+        if (typeof maxResults === 'number' && maxResults > 0 && list.length > maxResults) {
+          list.length = maxResults;
+        }
       }
     }
 
@@ -274,27 +441,63 @@ export function createDiscoveryStore(activitiesOrConfig = [], optionalConfig = {
   }
 
   function getState() {
+    const filteredActivities = computeFilteredForList(activities, selectedActivityId, true);
+    const filteredOrganizers = computeFilteredForList(organizers, selectedOrganizerId, false);
+    const filteredVenues = computeFilteredForList(venues, selectedVenueId, false);
+    const filteredListings = activeTab === 'organizers'
+      ? filteredOrganizers
+      : (activeTab === 'venues' ? filteredVenues : filteredActivities);
+
     return {
+      activeTab,
       activities,
+      organizers,
+      venues,
       location: location ? { ...location } : null,
       center: location ? { ...location } : null,
       radiusKm,
       filters: { ...filters, sports: [...(filters.sports || [])] },
       selectedActivityId,
+      selectedOrganizerId,
+      selectedVenueId,
       hoveredActivityId,
       maxResults,
-      filteredActivities: computeFiltered()
+      filteredActivities,
+      filteredOrganizers,
+      filteredVenues,
+      filteredListings
     };
+  }
+
+  function setTabInternal(nextTab) {
+    activeTab = normalizeDiscoveryTab(nextTab);
+    notify('tab');
   }
 
   return {
     getState,
+    setTab: setTabInternal,
+    setActiveTab: setTabInternal,
     setActivities(newActivities = []) {
       activities.length = 0;
       if (Array.isArray(newActivities)) {
         activities.push(...newActivities);
       }
       notify('activities');
+    },
+    setOrganizers(newOrganizers = []) {
+      organizers.length = 0;
+      if (Array.isArray(newOrganizers)) {
+        organizers.push(...newOrganizers);
+      }
+      notify('organizers');
+    },
+    setVenues(newVenues = []) {
+      venues.length = 0;
+      if (Array.isArray(newVenues)) {
+        venues.push(...newVenues);
+      }
+      notify('venues');
     },
     setLocation(newLocation) {
       location = newLocation ? { ...newLocation } : null;
@@ -328,6 +531,14 @@ export function createDiscoveryStore(activitiesOrConfig = [], optionalConfig = {
     },
     setSelectedActivity(id) {
       selectedActivityId = id;
+      notify('select');
+    },
+    setSelectedOrganizer(id) {
+      selectedOrganizerId = id;
+      notify('select');
+    },
+    setSelectedVenue(id) {
+      selectedVenueId = id;
       notify('select');
     },
     setHoveredActivity(id) {

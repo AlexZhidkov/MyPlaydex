@@ -80,6 +80,49 @@
 
     <!-- Main Feed & Controls -->
     <main class="main-layout">
+      <!-- Top-Level 3-Tab Discovery Switcher -->
+      <section class="discovery-tabs-section" aria-label="Discovery lists">
+        <div
+          id="discovery-tabs"
+          class="discovery-tabs"
+          role="tablist"
+          focusgroup="tablist nomemory"
+          aria-label="Discovery categories"
+        >
+          <button
+            type="button"
+            id="tab-activities"
+            class="discovery-tab active"
+            data-tab="activities"
+            role="tab"
+            aria-selected="true"
+            focusgroupstart
+          >
+            Activities
+          </button>
+          <button
+            type="button"
+            id="tab-organizers"
+            class="discovery-tab"
+            data-tab="organizers"
+            role="tab"
+            aria-selected="false"
+          >
+            Organizers
+          </button>
+          <button
+            type="button"
+            id="tab-venues"
+            class="discovery-tab"
+            data-tab="venues"
+            role="tab"
+            aria-selected="false"
+          >
+            Venues
+          </button>
+        </div>
+      </section>
+
       <!-- Proximity Radius Selector Bar -->
       <section class="radius-bar-section" aria-label="Proximity Radius">
         <div
@@ -133,9 +176,15 @@
         >
       </div>
 
-      <!-- Reactive Activity Feed Container -->
-      <section id="feed-container" class="feed-container" aria-live="polite">
-        <!-- Activity cards or empty state render here -->
+      <!-- Reactive Discovery Feed Container -->
+      <section
+        id="feed-container"
+        class="feed-container"
+        role="tabpanel"
+        aria-labelledby="tab-activities"
+        aria-live="polite"
+      >
+        <!-- Activity, Organizer, or Venue cards or empty state render here -->
       </section>
     </main>
 

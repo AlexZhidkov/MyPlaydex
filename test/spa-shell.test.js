@@ -136,3 +136,23 @@ test('Seam 4: firestore.rules grants public read and denies client write on acti
     'Default catch-all rule must deny read and write'
   );
 });
+
+test('Seam 2 (Issue #13): index.html renders 3-tab switcher (Activities | Organizers | Venues) above discovery feed with accessible tab semantics', () => {
+  const indexHtmlPath = path.join(REPO_ROOT, 'index.html');
+  const html = fs.readFileSync(indexHtmlPath, 'utf8');
+  const css = fs.readFileSync(path.join(REPO_ROOT, 'src', 'styles.css'), 'utf8');
+
+  assert.ok(html.includes('role="tablist"'), 'index.html must include a tablist container');
+  assert.ok(html.includes('data-tab="activities"') && html.includes('Activities'), 'Must include Activities tab');
+  assert.ok(html.includes('data-tab="organizers"') && html.includes('Organizers'), 'Must include Organizers tab');
+  assert.ok(html.includes('data-tab="venues"') && html.includes('Venues'), 'Must include Venues tab');
+  assert.ok(html.includes('role="tabpanel"'), 'Feed container must have role="tabpanel"');
+
+  const tabPos = html.indexOf('id="discovery-tabs"');
+  const feedPos = html.indexOf('id="feed-container"');
+  assert.ok(tabPos !== -1 && feedPos !== -1 && tabPos < feedPos, '3-tab switcher must render above #feed-container');
+
+  // CSS styles active tab with non-color underline indicator
+  assert.match(css, /\.discovery-tab/, 'styles.css must style .discovery-tab');
+  assert.match(css, /border-block-end:\s*3px solid/, 'styles.css must draw non-color underline indicator for selected tab');
+});

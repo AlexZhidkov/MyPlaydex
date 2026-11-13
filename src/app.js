@@ -5,15 +5,25 @@
  * Outbound Google Maps Navigation, and 1-tap empty state recovery.
  */
 
-import { createDiscoveryStore } from './discovery-engine.js';
+import { createDiscoveryStore, extractListingCoordinates, normalizeDiscoveryTab } from './discovery-engine.js';
 import { searchSuburbs, getSuburbByPostcodeOrName, getSuburbBySlugOrName, suburbNameToSlug, findNearestSuburb } from './perth-centroids.js';
-import { renderActivityCard, renderEmptyState, renderFilterView, createSuggestActivityMailtoUrl } from './discovery-ui.js';
+import {
+  renderActivityCard,
+  renderOrganizerCard,
+  renderVenueCard,
+  renderEmptyState,
+  renderFilterView,
+  createSuggestActivityMailtoUrl
+} from './discovery-ui.js';
 
 const STORAGE_KEY_LOCATION = 'myplaydex_location';
 const STORAGE_KEY_SPORTS = 'myplaydex_sports_filters';
 
 export const DEFAULT_FIREBASE_PROJECT_ID = 'myplaydex';
 export const DEFAULT_FIRESTORE_COLLECTION = 'activities';
+export const DEFAULT_ORGANIZERS_COLLECTION = 'organizers';
+export const DEFAULT_VENUES_COLLECTION = 'venues';
+export const DEFAULT_FIRESTORE_PAGE_SIZE = 50;
 
 /**
  * Unwraps a single Cloud Firestore REST API typed value into a plain JavaScript primitive/object.
@@ -63,8 +73,8 @@ export function unwrapFirestoreValue(valObj) {
 export function parseFirestoreDocument(doc) {
   if (!doc || typeof doc !== 'object') return null;
 
-  // If already a plain activity object (e.g., from SDK or pre-parsed JSON)
-  if (!doc.fields && (doc.id || doc.title)) {
+  // If already a plain listing object (e.g., from SDK or pre-parsed JSON)
+  if (!doc.fields && (doc.id || doc.title || (doc.name && !String(doc.name).startsWith('projects/')))) {
     return { ...doc };
   }
 
@@ -83,18 +93,18 @@ export function parseFirestoreDocument(doc) {
 }
 
 /**
- * Fetches all activity documents from the Cloud Firestore `/activities` collection.
- * Supports injected `db` instance (SDK/mock) or public Firestore REST v1 endpoint with pagination.
+ * Fetches up to 50 documents from a public Cloud Firestore collection in a single request.
+ * Supports injected `db` instance (SDK `.limit(50).get()`) or public Firestore REST v1 endpoint (`pageSize=50` without pagination loops).
  *
  * @param {object} [options={}]
- * @param {object} [options.db] - Optional Firestore instance with collection('activities').get()
+ * @param {object} [options.db] - Optional Firestore instance with collection(name)
  * @param {Function} [options.fetchImpl] - Fetch implementation (defaults to globalThis.fetch)
  * @param {string} [options.projectId=DEFAULT_FIREBASE_PROJECT_ID] - Firebase project ID
  * @param {string} [options.collectionName=DEFAULT_FIRESTORE_COLLECTION] - Collection name
- * @param {number} [options.pageSize=300] - Page size per REST request
+ * @param {number} [options.pageSize=DEFAULT_FIRESTORE_PAGE_SIZE] - Page size capped at 50
  * @returns {Promise<Array<object>>}
  */
-export async function fetchActivitiesFromFirestore(options = {}) {
+export async function fetchCollectionFromFirestore(options = {}) {
   const {
     db = null,
     fetchImpl = typeof globalThis !== 'undefined' && typeof globalThis.fetch === 'function'
@@ -102,61 +112,98 @@ export async function fetchActivitiesFromFirestore(options = {}) {
       : null,
     projectId = DEFAULT_FIREBASE_PROJECT_ID,
     collectionName = DEFAULT_FIRESTORE_COLLECTION,
-    pageSize = 300
+    pageSize = DEFAULT_FIRESTORE_PAGE_SIZE
   } = options;
+
+  const limit = Math.min(Math.max(1, Number(pageSize) || DEFAULT_FIRESTORE_PAGE_SIZE), DEFAULT_FIRESTORE_PAGE_SIZE);
 
   // 1. If a Firestore DB instance is provided (e.g. Firebase SDK or test double)
   if (db && typeof db.collection === 'function') {
-    const snapshot = await db.collection(collectionName).get();
+    const colRef = db.collection(collectionName);
+    const query = typeof colRef.limit === 'function' ? colRef.limit(limit) : colRef;
+    const snapshot = await query.get();
     const docs = snapshot?.docs || [];
-    return docs.map((doc) => {
+    return docs.slice(0, limit).map((doc) => {
       const data = typeof doc.data === 'function' ? doc.data() : doc;
       return { id: doc.id, ...data };
     });
   }
 
-  // 2. Otherwise query the Cloud Firestore v1 REST API directly
+  // 2. Otherwise query the Cloud Firestore v1 REST API in a single capped request
   if (typeof fetchImpl !== 'function') {
     return [];
   }
 
   const baseUrl = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/${encodeURIComponent(collectionName)}`;
-  const activities = [];
-  let pageToken = null;
+  const url = new URL(baseUrl);
+  url.searchParams.set('pageSize', String(limit));
 
-  do {
-    const url = new URL(baseUrl);
-    url.searchParams.set('pageSize', String(pageSize));
-    if (pageToken) {
-      url.searchParams.set('pageToken', pageToken);
-    }
+  const response = await fetchImpl(url.toString());
+  if (!response || !response.ok) {
+    const status = response ? response.status : 'unknown';
+    throw new Error(`Failed to fetch /${collectionName} from Firestore (HTTP ${status})`);
+  }
 
-    const response = await fetchImpl(url.toString());
-    if (!response || !response.ok) {
-      const status = response ? response.status : 'unknown';
-      throw new Error(`Failed to fetch /${collectionName} from Firestore (HTTP ${status})`);
-    }
-
-    const payload = await response.json();
-    const documents = Array.isArray(payload?.documents) ? payload.documents : [];
-    for (const doc of documents) {
-      const activity = parseFirestoreDocument(doc);
-      if (activity) {
-        activities.push(activity);
+  const payload = await response.json();
+  const documents = Array.isArray(payload?.documents) ? payload.documents : [];
+  const records = [];
+  for (const doc of documents) {
+    const parsed = parseFirestoreDocument(doc);
+    if (parsed) {
+      records.push(parsed);
+      if (records.length >= limit) {
+        break;
       }
     }
+  }
 
-    pageToken = payload?.nextPageToken || null;
-  } while (pageToken);
+  return records;
+}
 
-  return activities;
+/**
+ * Fetches up to 50 activity documents from `/activities`.
+ *
+ * @param {object} [options={}]
+ * @returns {Promise<Array<object>>}
+ */
+export function fetchActivitiesFromFirestore(options = {}) {
+  return fetchCollectionFromFirestore({
+    ...options,
+    collectionName: options.collectionName || DEFAULT_FIRESTORE_COLLECTION
+  });
+}
+
+/**
+ * Fetches up to 50 organizer documents from `/organizers`.
+ *
+ * @param {object} [options={}]
+ * @returns {Promise<Array<object>>}
+ */
+export function fetchOrganizersFromFirestore(options = {}) {
+  return fetchCollectionFromFirestore({
+    ...options,
+    collectionName: options.organizersCollectionName || options.collectionName || DEFAULT_ORGANIZERS_COLLECTION
+  });
+}
+
+/**
+ * Fetches up to 50 venue documents from `/venues`.
+ *
+ * @param {object} [options={}]
+ * @returns {Promise<Array<object>>}
+ */
+export function fetchVenuesFromFirestore(options = {}) {
+  return fetchCollectionFromFirestore({
+    ...options,
+    collectionName: options.venuesCollectionName || options.collectionName || DEFAULT_VENUES_COLLECTION
+  });
 }
 
 /**
  * Parses query parameters from window.location.search or given search string.
  *
  * @param {string} [search]
- * @returns {{ suburb: string | null, radius: number | 'all' | null, activity: string | null }}
+ * @returns {{ tab: string | null, suburb: string | null, radius: number | 'all' | null, activity: string | null, organizer: string | null, venue: string | null }}
  */
 export function parseDiscoveryUrlParams(search) {
   const searchStr = search !== undefined
@@ -164,7 +211,7 @@ export function parseDiscoveryUrlParams(search) {
     : (typeof window !== 'undefined' && window.location ? window.location.search : '');
 
   if (!searchStr) {
-    return { suburb: null, radius: null, activity: null };
+    return { tab: null, suburb: null, radius: null, activity: null, organizer: null, venue: null };
   }
 
   const params = new URLSearchParams(searchStr);
@@ -179,15 +226,30 @@ export function parseDiscoveryUrlParams(search) {
       radius = num;
     }
   }
-  const activity = params.get('activity') || null;
 
-  return { suburb, radius, activity };
+  const activity = params.get('activity') || null;
+  const organizer = params.get('organizer') || null;
+  const venue = params.get('venue') || null;
+
+  const rawTab = params.get('tab');
+  let tab = null;
+  if (rawTab === 'activities' || rawTab === 'organizers' || rawTab === 'venues') {
+    tab = rawTab;
+  } else if (venue) {
+    tab = 'venues';
+  } else if (organizer) {
+    tab = 'organizers';
+  } else if (activity) {
+    tab = 'activities';
+  }
+
+  return { tab, suburb, radius, activity, organizer, venue };
 }
 
 /**
  * Updates URL search parameters using history.replaceState without adding history entries.
  *
- * @param {{ suburb?: string | null, radius?: number | string | null, activity?: string | null }} newParams
+ * @param {{ tab?: string | null, suburb?: string | null, radius?: number | string | null, activity?: string | null, organizer?: string | null, venue?: string | null }} newParams
  */
 export function syncUrlState(newParams = {}) {
   if (typeof window === 'undefined' || !window.location || !window.history || typeof window.history.replaceState !== 'function') {
@@ -195,6 +257,14 @@ export function syncUrlState(newParams = {}) {
   }
 
   const params = new URLSearchParams(window.location.search);
+
+  if (newParams.tab !== undefined) {
+    if (newParams.tab) {
+      params.set('tab', normalizeDiscoveryTab(newParams.tab));
+    } else {
+      params.delete('tab');
+    }
+  }
 
   if (newParams.suburb !== undefined) {
     if (newParams.suburb) {
@@ -217,11 +287,13 @@ export function syncUrlState(newParams = {}) {
     }
   }
 
-  if (newParams.activity !== undefined) {
-    if (newParams.activity) {
-      params.set('activity', newParams.activity);
-    } else {
-      params.delete('activity');
+  for (const key of ['activity', 'organizer', 'venue']) {
+    if (newParams[key] !== undefined) {
+      if (newParams[key]) {
+        params.set(key, newParams[key]);
+      } else {
+        params.delete(key);
+      }
     }
   }
 
@@ -318,7 +390,28 @@ export function saveLocation(location) {
 export function initApp(options = {}) {
   const urlParams = parseDiscoveryUrlParams();
   const hasExplicitActivities = Array.isArray(options.activities);
+  const hasExplicitOrganizers = Array.isArray(options.organizers);
+  const hasExplicitVenues = Array.isArray(options.venues);
   const initialActivities = hasExplicitActivities ? options.activities : [];
+  const initialOrganizers = hasExplicitOrganizers ? options.organizers : [];
+  const initialVenues = hasExplicitVenues ? options.venues : [];
+
+  const targetActivityId = options.activityId || urlParams.activity || null;
+  const targetOrganizerId = options.organizerId || urlParams.organizer || null;
+  const targetVenueId = options.venueId || urlParams.venue || null;
+
+  let initialTab;
+  if (urlParams.tab) {
+    initialTab = normalizeDiscoveryTab(urlParams.tab);
+  } else if (targetVenueId) {
+    initialTab = 'venues';
+  } else if (targetOrganizerId) {
+    initialTab = 'organizers';
+  } else if (targetActivityId) {
+    initialTab = 'activities';
+  } else {
+    initialTab = normalizeDiscoveryTab(options.tab || 'activities');
+  }
 
   let initialLocation = options.location !== undefined ? options.location : null;
   if (!initialLocation && urlParams.suburb) {
@@ -328,18 +421,22 @@ export function initApp(options = {}) {
     initialLocation = getSavedLocation();
   }
 
-  const targetActivityId = options.activityId || urlParams.activity;
+  function getTabTargetId(tab) {
+    if (tab === 'organizers') return targetOrganizerId;
+    if (tab === 'venues') return targetVenueId;
+    return targetActivityId;
+  }
 
-  function resolveDeepLinkLocation(activitiesList) {
-    if (!targetActivityId) return null;
-    const deepLinkedActivity = activitiesList.find((a) => a.id === targetActivityId) || null;
-    if (!deepLinkedActivity) return null;
-    const venue = deepLinkedActivity.venue || {};
-    const coords = venue.coordinates || (venue.lat !== undefined && venue.lng !== undefined ? venue : null);
-    if (coords && typeof coords.lat === 'number' && typeof coords.lng === 'number') {
+  function resolveDeepLinkLocation(recordsList, targetId = targetActivityId) {
+    if (!targetId || !Array.isArray(recordsList)) return null;
+    const targetRecord = recordsList.find((item) => item.id === targetId) || null;
+    if (!targetRecord) return null;
+    const coords = extractListingCoordinates(targetRecord);
+    if (coords) {
       const nearestSuburb = findNearestSuburb(coords);
+      const fallbackName = targetRecord.venue?.name || targetRecord.name || 'Perth';
       return {
-        name: nearestSuburb ? nearestSuburb.name : (venue.name || 'Perth'),
+        name: nearestSuburb ? nearestSuburb.name : fallbackName,
         postcode: nearestSuburb ? nearestSuburb.postcode : undefined,
         lat: coords.lat,
         lng: coords.lng
@@ -348,8 +445,12 @@ export function initApp(options = {}) {
     return null;
   }
 
-  if (targetActivityId && !initialLocation) {
-    initialLocation = resolveDeepLinkLocation(initialActivities);
+  const initialTabRecords = initialTab === 'organizers'
+    ? initialOrganizers
+    : (initialTab === 'venues' ? initialVenues : initialActivities);
+  const initialTargetId = getTabTargetId(initialTab);
+  if (initialTargetId && !initialLocation) {
+    initialLocation = resolveDeepLinkLocation(initialTabRecords, initialTargetId);
   }
 
   let initialRadius = options.radiusKm !== undefined ? options.radiusKm : 10;
@@ -361,9 +462,14 @@ export function initApp(options = {}) {
 
   const store = createDiscoveryStore({
     activities: initialActivities,
+    organizers: initialOrganizers,
+    venues: initialVenues,
+    activeTab: initialTab,
     location: initialLocation,
     radiusKm: initialRadius,
     selectedActivityId: targetActivityId,
+    selectedOrganizerId: targetOrganizerId,
+    selectedVenueId: targetVenueId,
     filters: {
       sports: savedSports
     },
@@ -379,6 +485,11 @@ export function initApp(options = {}) {
   const suggestionsList = document.getElementById('suburb-suggestions-list');
   const gpsBtn = document.querySelector('[data-action="use-gps"]');
   const radiusPills = document.querySelectorAll('.radius-pill');
+  const tabsContainer = document.getElementById('discovery-tabs');
+  const tabButtonsFromQuery = document.querySelectorAll ? Array.from(document.querySelectorAll('.discovery-tab')) : [];
+  const tabButtons = tabButtonsFromQuery.length > 0
+    ? tabButtonsFromQuery
+    : ['activities', 'organizers', 'venues'].map((t) => document.getElementById(`tab-${t}`)).filter(Boolean);
   const feedContainer = document.getElementById('feed-container');
   const loadingLabel = document.getElementById('loading-label') || document.getElementById('result-count-label');
   const filterHeaderBtn = document.getElementById('filter-header-btn');
@@ -413,8 +524,41 @@ export function initApp(options = {}) {
     }
   }
 
+  const loadedTabs = new Set();
+  if (hasExplicitActivities) loadedTabs.add('activities');
+  if (hasExplicitOrganizers) loadedTabs.add('organizers');
+  if (hasExplicitVenues) loadedTabs.add('venues');
+  const inFlightLoads = new Map();
+
+  const TAB_CONFIG = {
+    activities: {
+      loadingText: 'Loading activities...',
+      fetch: (fetchOpts) => fetchActivitiesFromFirestore(fetchOpts),
+      setRecords: (records) => store.setActivities(records),
+      getRecords: (state) => state.activities,
+      getFiltered: (state) => state.filteredActivities,
+      renderCard: renderActivityCard
+    },
+    organizers: {
+      loadingText: 'Loading organizers...',
+      fetch: (fetchOpts) => fetchOrganizersFromFirestore(fetchOpts),
+      setRecords: (records) => store.setOrganizers(records),
+      getRecords: (state) => state.organizers,
+      getFiltered: (state) => state.filteredOrganizers,
+      renderCard: renderOrganizerCard
+    },
+    venues: {
+      loadingText: 'Loading venues...',
+      fetch: (fetchOpts) => fetchVenuesFromFirestore(fetchOpts),
+      setRecords: (records) => store.setVenues(records),
+      getRecords: (state) => state.venues,
+      getFiltered: (state) => state.filteredVenues,
+      renderCard: renderVenueCard
+    }
+  };
+
   let stagedSports = new Set(store.getState().filters.sports);
-  let hasHandledDeepLink = false;
+  const handledDeepLinks = new Set();
 
   function updateFilterHeaderUI(filters) {
     const sports = filters?.sports || [];
@@ -608,19 +752,150 @@ export function initApp(options = {}) {
     });
   }
 
+  function updateTabsUI(activeTab) {
+    for (const btn of tabButtons) {
+      const tabSlug = btn.getAttribute('data-tab') || (btn.id ? btn.id.replace(/^tab-/, '') : '');
+      const isActive = tabSlug === activeTab;
+      btn.classList.toggle('active', isActive);
+      if (typeof btn.setAttribute === 'function') {
+        btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+        if (isActive) {
+          btn.setAttribute('focusgroupstart', '');
+        } else if (typeof btn.removeAttribute === 'function') {
+          btn.removeAttribute('focusgroupstart');
+        }
+      }
+    }
+    if (feedContainer && typeof feedContainer.setAttribute === 'function') {
+      feedContainer.setAttribute('aria-labelledby', `tab-${activeTab}`);
+    }
+  }
+
+  function loadTabCollection(tab) {
+    const normalized = normalizeDiscoveryTab(tab);
+    const tabMeta = TAB_CONFIG[normalized];
+    if (loadedTabs.has(normalized)) {
+      return Promise.resolve(tabMeta.getRecords(store.getState()));
+    }
+    if (inFlightLoads.has(normalized)) {
+      return inFlightLoads.get(normalized);
+    }
+
+    if (store.getState().activeTab === normalized && (store.getState().location || getTabTargetId(normalized))) {
+      showLoading(tabMeta.loadingText);
+    }
+
+    const fetchPromise = tabMeta.fetch({
+      db: options.db,
+      fetchImpl: options.fetchImpl,
+      projectId: options.projectId,
+      collectionName: normalized === 'activities' ? options.collectionName : undefined,
+      organizersCollectionName: options.organizersCollectionName,
+      venuesCollectionName: options.venuesCollectionName
+    })
+      .then((records) => {
+        inFlightLoads.delete(normalized);
+        loadedTabs.add(normalized);
+
+        const targetId = getTabTargetId(normalized);
+        if (!store.getState().location && targetId) {
+          const deepLinkLoc = resolveDeepLinkLocation(records, targetId);
+          if (deepLinkLoc) {
+            store.setLocation(deepLinkLoc);
+          }
+        }
+        tabMeta.setRecords(records);
+        return records;
+      })
+      .catch((err) => {
+        inFlightLoads.delete(normalized);
+        console.warn(`Failed to load ${normalized} from Firestore:`, err);
+        tabMeta.setRecords([]);
+        return [];
+      });
+
+    inFlightLoads.set(normalized, fetchPromise);
+    return fetchPromise;
+  }
+
+  function selectTab(nextTab) {
+    const normalized = normalizeDiscoveryTab(nextTab);
+    updateTabsUI(normalized);
+    const loadPromise = loadTabCollection(normalized);
+    if (store.getState().activeTab !== normalized) {
+      store.setTab(normalized);
+    }
+    return loadPromise;
+  }
+
+  if (tabButtons.length > 0) {
+    for (const btn of tabButtons) {
+      btn.addEventListener('click', () => {
+        const tabSlug = btn.getAttribute('data-tab') || (btn.id ? btn.id.replace(/^tab-/, '') : 'activities');
+        selectTab(tabSlug);
+      });
+    }
+  }
+
+  if (tabsContainer) {
+    if (tabButtons.length === 0) {
+      tabsContainer.addEventListener('click', (e) => {
+        const btn = e.target?.closest && e.target.closest('[data-tab]');
+        if (btn) {
+          selectTab(btn.getAttribute('data-tab'));
+        }
+      });
+    }
+
+    const supportsFocusGroup = typeof HTMLElement !== 'undefined' && Object.hasOwn(HTMLElement.prototype, 'focusGroup');
+    if (!supportsFocusGroup) {
+      tabsContainer.addEventListener('keydown', (e) => {
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key) || tabButtons.length === 0) {
+          return;
+        }
+        const currentIndex = tabButtons.indexOf(e.target);
+        if (currentIndex === -1) return;
+        e.preventDefault();
+        let nextIndex = currentIndex;
+        if (e.key === 'ArrowRight') nextIndex = (currentIndex + 1) % tabButtons.length;
+        else if (e.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + tabButtons.length) % tabButtons.length;
+        else if (e.key === 'Home') nextIndex = 0;
+        else if (e.key === 'End') nextIndex = tabButtons.length - 1;
+        const targetBtn = tabButtons[nextIndex];
+        if (targetBtn && typeof targetBtn.focus === 'function') {
+          targetBtn.focus();
+        }
+      });
+    }
+  }
+
   // Render Feed on Store Updates
   function renderFeed(state) {
-    const { location, radiusKm, filteredActivities, filters } = state;
+    const activeTab = normalizeDiscoveryTab(state.activeTab);
+    const tabMeta = TAB_CONFIG[activeTab];
+    const filteredList = tabMeta.getFiltered(state);
+    const { location, radiusKm, filters } = state;
 
     // Header location text
     if (currentLocationLabel) {
       currentLocationLabel.textContent = location ? location.name : 'Set Location';
     }
 
+    updateTabsUI(activeTab);
     updateRadiusPillsUI(radiusKm);
     updateFilterHeaderUI(filters);
 
     if (!feedContainer) return;
+
+    const activeDeepLinkId = getTabTargetId(activeTab);
+
+    // If currently fetching this tab's collection, show loading state instead of flashing empty state
+    if (inFlightLoads.has(activeTab)) {
+      if (location || activeDeepLinkId) {
+        showLoading(tabMeta.loadingText);
+      }
+      return;
+    }
 
     // If cold start without location
     if (!location) {
@@ -633,29 +908,30 @@ export function initApp(options = {}) {
     closeLocationGate();
     hideLoading();
 
-    const count = filteredActivities.length;
-    const radiusLabel = radiusKm === 'all' ? 'All Greater Perth' : `${radiusKm} km`;
+    const count = filteredList.length;
 
     if (count === 0) {
       const hasSportFilters = Array.isArray(filters.sports) && filters.sports.length > 0;
       feedContainer.innerHTML = renderEmptyState({
         radiusKm,
-        hasFilters: hasSportFilters
+        hasFilters: hasSportFilters,
+        tab: activeTab
       });
       return;
     }
 
-    feedContainer.innerHTML = filteredActivities.map(renderActivityCard).join('\n');
+    feedContainer.innerHTML = filteredList.map(tabMeta.renderCard).join('\n');
 
-    if (targetActivityId && !hasHandledDeepLink) {
-      hasHandledDeepLink = true;
-      highlightAndScrollToActivity(targetActivityId);
+    if (activeDeepLinkId && !handledDeepLinks.has(activeDeepLinkId)) {
+      handledDeepLinks.add(activeDeepLinkId);
+      highlightAndScrollToListing(activeDeepLinkId);
     }
   }
 
-  function highlightAndScrollToActivity(activityId) {
-    if (!activityId || typeof document === 'undefined') return;
-    const card = document.querySelector(`.activity-card[data-id="${activityId}"]`);
+  function highlightAndScrollToListing(listingId) {
+    if (!listingId || typeof document === 'undefined') return;
+    const card = document.querySelector(`.activity-card[data-id="${listingId}"]`)
+      || document.querySelector(`[data-id="${listingId}"]`);
     if (card) {
       card.classList.add('highlight-pulse');
       if (typeof card.scrollIntoView === 'function') {
@@ -788,18 +1064,18 @@ export function initApp(options = {}) {
         return;
       }
 
-      // 4. Activity card: whole-card click opens club/activity source_url in a new tab
-      const card = e.target.closest && e.target.closest('.activity-card');
+      // 4. Listing card: whole-card click opens verified source_url (or Venue directions) in a new tab
+      const card = e.target.closest && e.target.closest('.activity-card, .organizer-card, .venue-card');
       if (card) {
         openVerifiedCardUrl(card);
         return;
       }
     });
 
-    // Support keyboard accessibility (Enter key on focused activity card)
+    // Support keyboard accessibility (Enter key on focused listing card)
     feedContainer.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
-        const card = e.target.closest && e.target.closest('.activity-card');
+        const card = e.target.closest && e.target.closest('.activity-card, .organizer-card, .venue-card');
         if (card && e.target === card) {
           openVerifiedCardUrl(card);
         }
@@ -816,6 +1092,7 @@ export function initApp(options = {}) {
 
   let lastSyncedLocationName = initialLocation ? initialLocation.name : null;
   let lastSyncedRadius = store.getState().radiusKm;
+  let lastSyncedTab = store.getState().activeTab;
 
   // Subscribe to store updates
   store.subscribe((state) => {
@@ -823,62 +1100,59 @@ export function initApp(options = {}) {
 
     const currentLocationName = state.location ? state.location.name : null;
     const currentRadius = state.radiusKm;
+    const currentTab = normalizeDiscoveryTab(state.activeTab);
 
-    if (currentLocationName !== lastSyncedLocationName || currentRadius !== lastSyncedRadius) {
-      lastSyncedLocationName = currentLocationName;
-      lastSyncedRadius = currentRadius;
-      const suburbSlug = currentLocationName && currentLocationName !== 'Near Me'
-        ? suburbNameToSlug(currentLocationName)
-        : null;
-      syncUrlState({
-        suburb: suburbSlug,
-        radius: currentRadius
-      });
+    if (
+      currentLocationName !== lastSyncedLocationName ||
+      currentRadius !== lastSyncedRadius ||
+      currentTab !== lastSyncedTab
+    ) {
+      const updates = {};
+      if (currentLocationName !== lastSyncedLocationName) {
+        lastSyncedLocationName = currentLocationName;
+        updates.suburb = currentLocationName && currentLocationName !== 'Near Me'
+          ? suburbNameToSlug(currentLocationName)
+          : null;
+      }
+      if (currentRadius !== lastSyncedRadius) {
+        lastSyncedRadius = currentRadius;
+        updates.radius = currentRadius;
+      }
+      if (currentTab !== lastSyncedTab) {
+        lastSyncedTab = currentTab;
+        updates.tab = currentTab;
+        updates.activity = null;
+        updates.organizer = null;
+        updates.venue = null;
+      }
+      syncUrlState(updates);
     }
   });
 
-  // Initial render & state hydration
+  // Initial render & state hydration (only active tab's collection is fetched initially)
   const initialState = store.getState();
   updateFilterHeaderUI(initialState.filters);
+  updateTabsUI(initialState.activeTab);
 
-  let ready = Promise.resolve(initialActivities);
+  let ready;
 
-  if (hasExplicitActivities) {
+  if (loadedTabs.has(initialTab)) {
     if (!initialState.location) {
       openLocationGate(false);
     } else {
       renderFeed(initialState);
     }
     hideLoading();
+    ready = Promise.resolve(TAB_CONFIG[initialTab].getRecords(initialState));
   } else {
-    if (!initialState.location && !targetActivityId) {
+    if (!initialState.location && !getTabTargetId(initialTab)) {
       openLocationGate(false);
     } else {
-      showLoading('Loading activities...');
+      closeLocationGate();
+      showLoading(TAB_CONFIG[initialTab].loadingText);
     }
 
-    ready = fetchActivitiesFromFirestore({
-      db: options.db,
-      fetchImpl: options.fetchImpl,
-      projectId: options.projectId,
-      collectionName: options.collectionName
-    })
-      .then((fetchedActivities) => {
-        const currentLoc = store.getState().location;
-        if (!currentLoc && targetActivityId) {
-          const deepLinkLoc = resolveDeepLinkLocation(fetchedActivities);
-          if (deepLinkLoc) {
-            store.setLocation(deepLinkLoc);
-          }
-        }
-        store.setActivities(fetchedActivities);
-        return fetchedActivities;
-      })
-      .catch((err) => {
-        console.warn('Failed to load activities from Firestore:', err);
-        store.setActivities([]);
-        return [];
-      });
+    ready = loadTabCollection(initialTab);
   }
 
   if (typeof window !== 'undefined' && window.location && window.location.hash === '#filters') {
@@ -888,12 +1162,16 @@ export function initApp(options = {}) {
   return {
     store,
     ready,
+    selectTab,
+    switchTab: selectTab,
+    loadTabCollection,
     openLocationGate,
     closeLocationGate,
     openFilterView,
     closeFilterView,
     applySportsFilters,
-    highlightAndScrollToActivity,
+    highlightAndScrollToListing,
+    highlightAndScrollToActivity: highlightAndScrollToListing,
     loadingLabel,
     hideLoading,
     showLoading

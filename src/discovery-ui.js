@@ -259,28 +259,141 @@ export function createSuggestActivityMailtoUrl() {
 }
 
 /**
- * Generates a pre-filled mailto URL for suggesting an edit to an existing activity.
+ * Extracts deduplicated sport slugs for rendering Tier 1 sport badges.
  *
- * @param {object} activity
+ * @param {object} [item={}]
+ * @returns {string[]}
+ */
+function getItemSports(item = {}) {
+  if (Array.isArray(item.subcategories) && item.subcategories.length > 0) {
+    const unique = [];
+    for (const s of item.subcategories) {
+      if (typeof s === 'string' && s.trim() && !unique.includes(s.trim())) {
+        unique.push(s.trim());
+      }
+    }
+    if (unique.length > 0) return unique;
+  }
+  return [item.subcategory || item.sport || 'other'];
+}
+
+/**
+ * Renders Tier 1 sport badge(s) for a Listing.
+ *
+ * @param {object} [item={}]
+ * @returns {string}
+ */
+function renderSportBadges(item = {}) {
+  return getItemSports(item)
+    .map((sportSlug) => {
+      const sportIcon = SPORT_ICONS[sportSlug] || '🏅';
+      return `<span class="badge badge-sport">${sportIcon} ${escapeHtml(sportSlug)}</span>`;
+    })
+    .join('\n        ');
+}
+
+/**
+ * Renders a distance badge if numeric `distanceKm` is present on a Listing.
+ *
+ * @param {object} [item={}]
+ * @returns {string}
+ */
+function renderDistanceBadge(item = {}) {
+  const distanceKm = typeof item.distanceKm === 'number' ? Math.round(item.distanceKm * 10) / 10 : null;
+  return distanceKm !== null ? `<span class="badge badge-distance">${distanceKm} km away</span>` : '';
+}
+
+/**
+ * Resolves listing entity kind ('organizer' | 'venue' | 'activity').
+ *
+ * @param {object} [listing={}]
+ * @returns {'organizer' | 'venue' | 'activity'}
+ */
+function inferListingKind(listing = {}) {
+  if (listing.entity_type === 'organizer' || listing.entity_type === 'venue' || listing.entity_type === 'activity') {
+    return listing.entity_type;
+  }
+  if (typeof listing.id === 'string') {
+    if (listing.id.startsWith('org_') && !listing.schedule) return 'organizer';
+    if (listing.id.startsWith('venue_') && !listing.schedule) return 'venue';
+  }
+  return 'activity';
+}
+
+/**
+ * Generates a pre-filled mailto URL for suggesting an edit to an existing Activity, Organizer, or Venue.
+ *
+ * @param {object} listing
  * @returns {string} mailto: URL
  */
-export function createSuggestEditMailtoUrl(activity = {}) {
-  const activityId = activity.id || 'N/A';
-  const title = activity.title || 'Untitled Activity';
-  const sport = activity.subcategory || activity.sport || 'other';
-  const organizerName = activity.organizer?.name || activity.club?.name || 'N/A';
-  const venueName = activity.venue?.name || 'N/A';
-  const venueAddress = activity.venue?.address || 'N/A';
-  const scheduleText = formatScheduleText(activity.schedule);
-  const sourceUrl = activity.source_url || activity.raw_source_url || 'N/A';
+export function createSuggestEditMailtoUrl(listing = {}) {
+  const kind = inferListingKind(listing);
+  const listingId = listing.id || 'N/A';
+  const sports = getItemSports(listing).join(', ');
+  const sourceUrl = listing.source_url || listing.raw_source_url || listing.website || 'N/A';
 
-  const subject = `[MyPlaydex] Suggest an edit: ${title} (${activityId})`;
+  if (kind === 'organizer') {
+    const name = listing.name || listing.title || 'Untitled Organizer';
+    const address = listing.address || 'N/A';
+    const phone = listing.contact?.phone || listing.phone || 'N/A';
+    const email = listing.contact?.email || listing.email || 'N/A';
+    const subject = `[MyPlaydex] Suggest an edit: ${name} (${listingId})`;
+    const body = [
+      'Hi Alex,',
+      '',
+      'I would like to suggest an edit for the following organizer on MyPlaydex:',
+      '',
+      `Organizer ID: ${listingId}`,
+      `Name: ${name}`,
+      `Sports: ${sports}`,
+      `Address: ${address}`,
+      `Phone: ${phone}`,
+      `Email: ${email}`,
+      `Source URL: ${sourceUrl}`,
+      '',
+      'Suggested Changes / Notes:',
+      '',
+      ''
+    ].join('\n');
+    return `mailto:${CURATION_CONTACT_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  }
+
+  if (kind === 'venue') {
+    const name = listing.name || listing.title || 'Untitled Venue';
+    const address = listing.address || 'N/A';
+    const subject = `[MyPlaydex] Suggest an edit: ${name} (${listingId})`;
+    const body = [
+      'Hi Alex,',
+      '',
+      'I would like to suggest an edit for the following venue on MyPlaydex:',
+      '',
+      `Venue ID: ${listingId}`,
+      `Name: ${name}`,
+      `Sports: ${sports}`,
+      `Address: ${address}`,
+      `Source URL: ${sourceUrl}`,
+      '',
+      'Suggested Changes / Notes:',
+      '',
+      ''
+    ].join('\n');
+    return `mailto:${CURATION_CONTACT_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  }
+
+  const title = listing.title || listing.name || 'Untitled Activity';
+  const sport = listing.subcategory || listing.sport || 'other';
+  const organizerName = listing.organizer?.name || listing.club?.name || 'N/A';
+  const venueName = listing.venue?.name || 'N/A';
+  const venueAddress = listing.venue?.address || 'N/A';
+  const scheduleText = formatScheduleText(listing.schedule);
+
+  const subject = `[MyPlaydex] Suggest an edit: ${title} (${listingId})`;
   const body = [
     'Hi Alex,',
     '',
     'I would like to suggest an edit for the following activity on MyPlaydex:',
     '',
-    `Activity ID: ${activityId}`,
+    `Activity ID: ${listingId}`,
     `Title: ${title}`,
     `Sport: ${sport}`,
     `Organizer: ${organizerName}`,
@@ -297,18 +410,47 @@ export function createSuggestEditMailtoUrl(activity = {}) {
 }
 
 /**
+ * Renders Tier 3 Google Maps outbound row shared across Activity, Organizer, and Venue cards.
+ *
+ * @param {string} directionsUrl
+ * @param {string} labelText
+ * @returns {string}
+ */
+function renderMapsRow(directionsUrl, labelText) {
+  return `
+        <div class="card-venue-row" data-directions-url="${escapeHtml(directionsUrl)}" title="Open in Google Maps">
+          <span class="venue-icon" aria-hidden="true">📍</span>
+          <a href="${escapeHtml(directionsUrl)}" class="venue-name" target="_blank" rel="noopener noreferrer" title="Open in Google Maps">${escapeHtml(labelText)}</a>
+        </div>`.trim();
+}
+
+/**
+ * Renders Tier 4 "Suggest an edit" footer row shared across all Listing cards.
+ *
+ * @param {string} editMailtoUrl
+ * @param {string} titleText
+ * @returns {string}
+ */
+function renderSuggestEditTier(editMailtoUrl, titleText) {
+  return `
+      <div class="card-tier card-tier-4">
+        <a href="${escapeHtml(editMailtoUrl)}" class="suggest-edit-link" target="_blank" rel="noopener noreferrer" title="${escapeHtml(titleText)}">
+          Suggest an edit
+        </a>
+      </div>`.trim();
+}
+
+/**
  * Renders a 4-Tier Activity card HTML string.
  *
  * @param {object} activity
  * @returns {string} HTML string
  */
 export function renderActivityCard(activity = {}) {
-  const sportSlug = activity.subcategory || activity.sport || 'other';
-  const sportIcon = SPORT_ICONS[sportSlug] || '🏅';
+  const sportBadges = renderSportBadges(activity);
   const isFree = activity.cost ? activity.cost.is_free : Boolean(activity.is_free);
   const costLabel = activity.cost?.display_price || (isFree ? 'Free' : '$');
-  const distanceKm = typeof activity.distanceKm === 'number' ? Math.round(activity.distanceKm * 10) / 10 : null;
-  const distanceBadge = distanceKm !== null ? `<span class="badge badge-distance">${distanceKm} km away</span>` : '';
+  const distanceBadge = renderDistanceBadge(activity);
 
   const scheduleText = formatScheduleText(activity.schedule);
   const venue = activity.venue || {};
@@ -324,10 +466,10 @@ export function renderActivityCard(activity = {}) {
   const editMailtoUrl = createSuggestEditMailtoUrl(activity);
 
   return `
-    <article class="${cardClasses}" data-id="${escapeHtml(activity.id)}"${cardInteractiveAttrs}>
+    <article class="${cardClasses}" data-id="${escapeHtml(activity.id)}" data-entity-type="activity"${cardInteractiveAttrs}>
       <!-- Tier 1: Metadata line -->
       <div class="card-tier card-tier-1">
-        <span class="badge badge-sport">${sportIcon} ${escapeHtml(sportSlug)}</span>
+        ${sportBadges}
         <span class="badge badge-cost ${isFree ? 'badge-free' : ''}">${escapeHtml(costLabel)}</span>
         ${unverifiedBadge}
         ${distanceBadge}
@@ -341,32 +483,223 @@ export function renderActivityCard(activity = {}) {
 
       <!-- Tier 3: Venue (Outbound Google Maps), Organizer -->
       <div class="card-tier card-tier-3">
-        <div class="card-venue-row" data-directions-url="${escapeHtml(directionsUrl)}" title="Open in Google Maps">
-          <span class="venue-icon" aria-hidden="true">📍</span>
-          <a href="${escapeHtml(directionsUrl)}" class="venue-name" target="_blank" rel="noopener noreferrer" title="Open in Google Maps">${escapeHtml(venue.name || 'Venue location')}</a>
-        </div>
+        ${renderMapsRow(directionsUrl, venue.name || 'Venue location')}
         ${organizer.name ? `<div class="card-organizer-row"><span class="organizer-icon" aria-hidden="true">👥</span> <span class="organizer-name">${escapeHtml(organizer.name)}</span></div>` : ''}
       </div>
 
       <!-- Tier 4: Suggest edit link -->
-      <div class="card-tier card-tier-4">
-        <a href="${escapeHtml(editMailtoUrl)}" class="suggest-edit-link" target="_blank" rel="noopener noreferrer" title="Suggest an edit for this activity">
-          Suggest an edit
-        </a>
-      </div>
+      ${renderSuggestEditTier(editMailtoUrl, 'Suggest an edit for this activity')}
     </article>
   `.trim();
 }
 
 /**
- * Renders the empty state when no activities match the search radius or filters.
- * Includes 1-tap recovery buttons.
+ * Renders a 4-Tier Organizer card HTML string.
+ *
+ * @param {object} [organizer={}]
+ * @returns {string} HTML string
+ */
+export function renderOrganizerCard(organizer = {}) {
+  const sportBadges = renderSportBadges(organizer);
+  const distanceBadge = renderDistanceBadge(organizer);
+
+  const rawCost = (
+    organizer.cost_description ||
+    organizer.cost?.display_price ||
+    (organizer.kidsport ? 'KidSport eligible' : '')
+  ).trim();
+  const isHighlightCost = Boolean(organizer.cost?.is_free || organizer.is_free || /free|kidsport/i.test(rawCost));
+  const costBadge = rawCost
+    ? `<span class="badge badge-cost ${isHighlightCost ? 'badge-free' : ''}">${escapeHtml(rawCost)}</span>`
+    : '';
+
+  const rawCandidateUrl = organizer.source_url !== undefined ? organizer.source_url : organizer.website;
+  const trimmedSourceUrl = typeof rawCandidateUrl === 'string' ? rawCandidateUrl.trim() : '';
+  const isVerified = organizer.verified !== false && Boolean(trimmedSourceUrl) && trimmedSourceUrl !== '#';
+  const unverifiedBadge = !isVerified ? `<span class="badge badge-unverified">Unverified</span>` : '';
+
+  const cardClasses = isVerified
+    ? 'activity-card organizer-card'
+    : 'activity-card organizer-card activity-card-unverified organizer-card-unverified';
+  const cardInteractiveAttrs = isVerified
+    ? ` data-url="${escapeHtml(trimmedSourceUrl)}" tabindex="0"`
+    : '';
+
+  const name = organizer.name || organizer.title || 'Untitled Organizer';
+  const description = typeof organizer.description === 'string' ? organizer.description.trim() : '';
+  const phone = organizer.contact?.phone || organizer.phone || '';
+  const email = organizer.contact?.email || organizer.email || '';
+  const contactParts = [];
+  if (phone) contactParts.push(`📞 ${escapeHtml(phone)}`);
+  if (email) contactParts.push(`✉️ ${escapeHtml(email)}`);
+
+  const addressText = organizer.address || name || 'Greater Perth, WA';
+  const directionsUrl = createOutboundDirectionsUrl({
+    name,
+    address: organizer.address,
+    coordinates: organizer.coordinates
+  });
+  const editMailtoUrl = createSuggestEditMailtoUrl({ ...organizer, entity_type: 'organizer' });
+
+  return `
+    <article class="${cardClasses}" data-id="${escapeHtml(organizer.id)}" data-entity-type="organizer"${cardInteractiveAttrs}>
+      <!-- Tier 1: Sport badge(s), optional KidSport/cost badge, Unverified badge, distance -->
+      <div class="card-tier card-tier-1">
+        ${sportBadges}
+        ${costBadge}
+        ${unverifiedBadge}
+        ${distanceBadge}
+      </div>
+
+      <!-- Tier 2: Organizer name, description, and public phone/email contact summary -->
+      <div class="card-tier card-tier-2">
+        <h3 class="card-title">${escapeHtml(name)}</h3>
+        ${description ? `<p class="card-description">${escapeHtml(description)}</p>` : ''}
+        ${contactParts.length > 0 ? `<p class="card-contact">${contactParts.join(' • ')}</p>` : ''}
+      </div>
+
+      <!-- Tier 3: Address row with outbound Google Maps link -->
+      <div class="card-tier card-tier-3">
+        ${renderMapsRow(directionsUrl, addressText)}
+      </div>
+
+      <!-- Tier 4: Suggest edit link -->
+      ${renderSuggestEditTier(editMailtoUrl, 'Suggest an edit for this organizer')}
+    </article>
+  `.trim();
+}
+
+/**
+ * Renders a 4-Tier Venue card HTML string.
+ *
+ * @param {object} [venue={}]
+ * @returns {string} HTML string
+ */
+export function renderVenueCard(venue = {}) {
+  const sportBadges = renderSportBadges(venue);
+  const distanceBadge = renderDistanceBadge(venue);
+
+  const trimmedSourceUrl = typeof venue.source_url === 'string' ? venue.source_url.trim() : '';
+  const hasVerifiedExternalUrl = venue.verified !== false && Boolean(trimmedSourceUrl) && trimmedSourceUrl !== '#';
+  const hasFailedExternalUrl = venue.verified === false || (Boolean(venue.raw_source_url) && !hasVerifiedExternalUrl);
+  const unverifiedBadge = hasFailedExternalUrl ? `<span class="badge badge-unverified">Unverified</span>` : '';
+
+  const name = venue.name || venue.title || 'Untitled Venue';
+  const addressText = venue.address || name || 'Greater Perth, WA';
+  const directionsUrl = createOutboundDirectionsUrl({
+    name,
+    address: venue.address,
+    coordinates: venue.coordinates
+  });
+  const wholeCardUrl = hasVerifiedExternalUrl ? trimmedSourceUrl : directionsUrl;
+
+  const summaryParts = [];
+  if (typeof venue.description === 'string' && venue.description.trim()) {
+    summaryParts.push(venue.description.trim());
+  }
+  if (typeof venue.hours === 'string' && venue.hours.trim() && !summaryParts.some((p) => p.includes(venue.hours.trim()))) {
+    summaryParts.push(venue.hours.trim());
+  }
+  const summaryText = summaryParts.join(' • ');
+  const editMailtoUrl = createSuggestEditMailtoUrl({ ...venue, entity_type: 'venue' });
+
+  return `
+    <article class="activity-card venue-card" data-id="${escapeHtml(venue.id)}" data-entity-type="venue" data-url="${escapeHtml(wholeCardUrl)}" tabindex="0">
+      <!-- Tier 1: Sport badge(s), Unverified badge if external URL failed, distance -->
+      <div class="card-tier card-tier-1">
+        ${sportBadges}
+        ${unverifiedBadge}
+        ${distanceBadge}
+      </div>
+
+      <!-- Tier 2: Venue name, formatted street address, and description/hours summary -->
+      <div class="card-tier card-tier-2">
+        <h3 class="card-title">${escapeHtml(name)}</h3>
+        <p class="card-address"><span class="venue-icon" aria-hidden="true">📍</span> <span>${escapeHtml(addressText)}</span></p>
+        ${summaryText ? `<p class="card-description">${escapeHtml(summaryText)}</p>` : ''}
+      </div>
+
+      <!-- Tier 3: Outbound Google Maps link -->
+      <div class="card-tier card-tier-3">
+        ${renderMapsRow(directionsUrl, addressText)}
+      </div>
+
+      <!-- Tier 4: Suggest edit link -->
+      ${renderSuggestEditTier(editMailtoUrl, 'Suggest an edit for this venue')}
+    </article>
+  `.trim();
+}
+
+const DISCOVERY_TAB_CONFIG = [
+  { slug: 'activities', label: 'Activities' },
+  { slug: 'organizers', label: 'Organizers' },
+  { slug: 'venues', label: 'Venues' }
+];
+
+/**
+ * Renders the accessible 3-tab switcher (Activities | Organizers | Venues).
+ *
+ * @param {string} [activeTab='activities']
+ * @returns {string} HTML string
+ */
+export function renderTabSwitcher(activeTab = 'activities') {
+  const buttonsHtml = DISCOVERY_TAB_CONFIG.map(({ slug, label }) => {
+    const isActive = activeTab === slug;
+    return `
+      <button
+        type="button"
+        id="tab-${slug}"
+        class="discovery-tab ${isActive ? 'active' : ''}"
+        data-tab="${slug}"
+        role="tab"
+        aria-selected="${isActive ? 'true' : 'false'}"${isActive ? '\n        focusgroupstart' : ''}
+      >
+        ${label}
+      </button>
+    `.trim();
+  }).join('\n      ');
+
+  return `
+    <div
+      id="discovery-tabs"
+      class="discovery-tabs"
+      role="tablist"
+      focusgroup="tablist nomemory"
+      aria-label="Discovery categories"
+    >
+      ${buttonsHtml}
+    </div>
+  `.trim();
+}
+
+const EMPTY_STATE_COPY = {
+  activities: {
+    title: 'No activities found nearby',
+    noun: 'activities'
+  },
+  organizers: {
+    title: 'No organizers found nearby',
+    noun: 'organizers'
+  },
+  venues: {
+    title: 'No venues found nearby',
+    noun: 'venues'
+  }
+};
+
+/**
+ * Renders the empty state when no listings match the search radius or filters.
+ * Adapts copy to the active tab while preserving 1-tap recovery buttons.
  *
  * @param {object} [options={}]
  * @returns {string} HTML string
  */
 export function renderEmptyState(options = {}) {
   const isAllRadius = options.radiusKm === 'all';
+  const rawTab = String(options.tab || options.activeTab || 'activities').toLowerCase();
+  const normalizedTab = rawTab === 'organizer' ? 'organizers' : (rawTab === 'venue' ? 'venues' : rawTab);
+  const copy = EMPTY_STATE_COPY[normalizedTab] || EMPTY_STATE_COPY.activities;
+
   const expandButton = !isAllRadius
     ? `<button type="button" class="btn btn-outline" data-action="expand-radius">Expand radius to 25 km</button>`
     : '';
@@ -375,9 +708,9 @@ export function renderEmptyState(options = {}) {
   return `
     <div class="empty-state">
       <div class="empty-state-icon" aria-hidden="true">🔍</div>
-      <h3 class="empty-state-title">No activities found nearby</h3>
+      <h3 class="empty-state-title">${copy.title}</h3>
       <p class="empty-state-message">
-        We couldn't find any activities matching your selected radius or filters. Try expanding your search or resetting sport filters.
+        We couldn't find any ${copy.noun} matching your selected radius or filters. Try expanding your search or resetting sport filters.
       </p>
       <div class="empty-state-actions">
         ${expandButton}

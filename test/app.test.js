@@ -10,7 +10,12 @@ import {
   clearSavedSportsFilters,
   unwrapFirestoreValue,
   parseFirestoreDocument,
+  parseDiscoveryUrlParams,
+  syncUrlState,
+  fetchCollectionFromFirestore,
   fetchActivitiesFromFirestore,
+  fetchOrganizersFromFirestore,
+  fetchVenuesFromFirestore,
   initApp
 } from '../src/app.js';
 
@@ -1076,82 +1081,84 @@ test('Firestore Client: unwrapFirestoreValue and parseFirestoreDocument parse RE
   assert.equal(parsedFallbackId.title, 'Subiaco Tennis');
 });
 
-test('Firestore Client: fetchActivitiesFromFirestore paginates REST API and supports injected db', async () => {
+test('Firestore Client: fetchers cap REST loads to 50 records in a single request and apply .limit(50) on SDK queries', async () => {
   const requestedUrls = [];
   const mockFetch = async (url) => {
     requestedUrls.push(url);
-    if (!url.includes('pageToken=')) {
-      return {
-        ok: true,
-        status: 200,
-        async json() {
-          return {
-            documents: [
-              {
-                name: 'projects/myplaydex/databases/(default)/documents/activities/act_page_1',
-                fields: {
-                  id: { stringValue: 'act_page_1' },
-                  title: { stringValue: 'Page 1 Activity' }
-                }
-              }
-            ],
-            nextPageToken: 'token_page_2'
-          };
-        }
-      };
-    }
+    const docs = Array.from({ length: 60 }, (_, idx) => ({
+      name: `projects/myplaydex/databases/(default)/documents/organizers/org_${idx}`,
+      fields: {
+        id: { stringValue: `org_${idx}` },
+        name: { stringValue: `Organizer ${idx}` }
+      }
+    }));
     return {
       ok: true,
       status: 200,
       async json() {
         return {
-          documents: [
-            {
-              name: 'projects/myplaydex/databases/(default)/documents/activities/act_page_2',
-              fields: {
-                id: { stringValue: 'act_page_2' },
-                title: { stringValue: 'Page 2 Activity' }
-              }
-            }
-          ]
+          documents: docs,
+          nextPageToken: 'ignored_next_page_token'
         };
       }
     };
   };
 
-  const results = await fetchActivitiesFromFirestore({
+  // Even when pageSize > 50 or nextPageToken is returned, REST fetch executes a single request capped at 50
+  const results = await fetchOrganizersFromFirestore({
     fetchImpl: mockFetch,
     projectId: 'myplaydex',
-    collectionName: 'activities',
-    pageSize: 1
+    pageSize: 300
   });
 
-  assert.equal(requestedUrls.length, 2);
-  assert.ok(requestedUrls[0].includes('https://firestore.googleapis.com/v1/projects/myplaydex/databases/(default)/documents/activities'));
-  assert.ok(requestedUrls[1].includes('pageToken=token_page_2'));
-  assert.equal(results.length, 2);
-  assert.deepEqual(results.map((r) => r.id), ['act_page_1', 'act_page_2']);
+  assert.equal(requestedUrls.length, 1, 'Must execute exactly one REST request without multi-page loop');
+  assert.ok(requestedUrls[0].includes('/documents/organizers'));
+  assert.ok(requestedUrls[0].includes('pageSize=50'), `Expected pageSize=50, got: ${requestedUrls[0]}`);
+  assert.ok(!requestedUrls[0].includes('pageToken='), 'Must not request subsequent pages');
+  assert.equal(results.length, 50, 'Must cap returned records to 50');
+  assert.equal(results[0].id, 'org_0');
 
-  // Also supports injected db instance
+  // Default pageSize for activities and venues is also 50, single request
+  requestedUrls.length = 0;
+  await fetchActivitiesFromFirestore({ fetchImpl: mockFetch });
+  assert.equal(requestedUrls.length, 1);
+  assert.ok(requestedUrls[0].includes('/documents/activities'));
+  assert.ok(requestedUrls[0].includes('pageSize=50'));
+
+  requestedUrls.length = 0;
+  await fetchVenuesFromFirestore({ fetchImpl: mockFetch });
+  assert.equal(requestedUrls.length, 1);
+  assert.ok(requestedUrls[0].includes('/documents/venues'));
+  assert.ok(requestedUrls[0].includes('pageSize=50'));
+
+  // Injected db instance must invoke .limit(50) when supported
+  const recordedCalls = [];
   const mockDb = {
     collection(colName) {
-      assert.equal(colName, 'activities');
+      recordedCalls.push({ colName });
       return {
-        async get() {
+        limit(limitVal) {
+          recordedCalls[recordedCalls.length - 1].limit = limitVal;
           return {
-            docs: [
-              { id: 'db_1', data: () => ({ title: 'From DB Instance' }) }
-            ]
+            async get() {
+              return {
+                docs: [
+                  { id: 'db_1', data: () => ({ name: 'From DB Instance' }) }
+                ]
+              };
+            }
           };
         }
       };
     }
   };
 
-  const dbResults = await fetchActivitiesFromFirestore({ db: mockDb });
+  const dbResults = await fetchCollectionFromFirestore({ db: mockDb, collectionName: 'venues', pageSize: 200 });
+  assert.equal(recordedCalls.length, 1);
+  assert.equal(recordedCalls[0].colName, 'venues');
+  assert.equal(recordedCalls[0].limit, 50, 'SDK query must enforce .limit(50)');
   assert.equal(dbResults.length, 1);
   assert.equal(dbResults[0].id, 'db_1');
-  assert.equal(dbResults[0].title, 'From DB Instance');
 });
 
 test('Firestore Client: src/app.js has no MOCK_PERTH_ACTIVITIES fallback and loads /activities asynchronously from Firestore', async () => {
@@ -1413,6 +1420,407 @@ test('Firestore Client: deep-linked ?activity=<id> resolves location from fetche
   assert.ok(feedContainer.innerHTML.includes('Deep Linked Firestore Tennis'));
   assert.ok(targetCard.classList.contains('highlight-pulse'), 'Target card should be highlighted');
   assert.equal(scrolledElements.length, 1);
+
+  storage.clear();
+});
+
+test('Seam 3 (Issue #13): 3-tab lazy-loading fetches only active tab initially, caches in memory, syncs ?tab=..., and adapts empty state', async () => {
+  const storage = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => storage.get(key) || null,
+    setItem: (key, val) => storage.set(key, String(val)),
+    removeItem: (key) => storage.delete(key),
+    clear: () => storage.clear()
+  };
+
+  const elements = new Map();
+  function createMockEl(id, tag = 'div', classes = []) {
+    const classSet = new Set(classes);
+    const listeners = new Map();
+    let innerHTML = '';
+    let textContent = '';
+    const attrs = new Map();
+
+    const el = {
+      id,
+      tagName: tag.toUpperCase(),
+      style: {},
+      dataset: {},
+      get innerHTML() { return innerHTML; },
+      set innerHTML(val) { innerHTML = val; },
+      get textContent() { return textContent; },
+      set textContent(val) { textContent = val; },
+      classList: {
+        add: (...c) => c.forEach((n) => classSet.add(n)),
+        remove: (...c) => c.forEach((n) => classSet.delete(n)),
+        toggle: (n, force) => {
+          if (force === undefined) classSet.has(n) ? classSet.delete(n) : classSet.add(n);
+          else if (force) classSet.add(n);
+          else classSet.delete(n);
+        },
+        contains: (n) => classSet.has(n)
+      },
+      getAttribute: (n) => attrs.get(n) || null,
+      setAttribute: (n, v) => attrs.set(n, String(v)),
+      removeAttribute: (n) => attrs.delete(n),
+      addEventListener: (type, cb) => {
+        if (!listeners.has(type)) listeners.set(type, []);
+        listeners.get(type).push(cb);
+      },
+      dispatchEvent: (e) => {
+        const cbs = listeners.get(e.type) || [];
+        cbs.forEach((cb) => cb(e));
+      },
+      closest: () => null,
+      scrollIntoView: () => {}
+    };
+    elements.set(id, el);
+    return el;
+  }
+
+  createMockEl('location-gate-overlay', 'div', ['hidden']);
+  createMockEl('gate-close-btn', 'button');
+  createMockEl('location-switcher-btn', 'button');
+  createMockEl('current-location-label', 'span');
+  const feedContainer = createMockEl('feed-container', 'section');
+  const loadingLabel = createMockEl('loading-label', 'span');
+  createMockEl('filter-header-btn', 'button');
+  createMockEl('filter-count-badge', 'span', ['hidden']);
+  createMockEl('filter-view-overlay', 'div', ['hidden']);
+
+  const tabActivities = createMockEl('tab-activities', 'button', ['discovery-tab', 'active']);
+  tabActivities.setAttribute('data-tab', 'activities');
+  const tabOrganizers = createMockEl('tab-organizers', 'button', ['discovery-tab']);
+  tabOrganizers.setAttribute('data-tab', 'organizers');
+  const tabVenues = createMockEl('tab-venues', 'button', ['discovery-tab']);
+  tabVenues.setAttribute('data-tab', 'venues');
+  const tabButtons = [tabActivities, tabOrganizers, tabVenues];
+
+  const replaceStateUrls = [];
+  globalThis.window = {
+    location: { hash: '', pathname: '/', search: '?suburb=perth' },
+    history: {
+      replaceState: (_s, _t, url) => {
+        replaceStateUrls.push(url);
+        const [, search = ''] = url.split('?');
+        globalThis.window.location.search = search ? `?${search.split('#')[0]}` : '';
+      },
+      pushState: () => {},
+      back: () => {}
+    },
+    addEventListener: () => {}
+  };
+  globalThis.document = {
+    getElementById: (id) => elements.get(id) || null,
+    querySelector: () => null,
+    querySelectorAll: (sel) => (sel === '.discovery-tab' ? tabButtons : []),
+    addEventListener: () => {}
+  };
+
+  const fetchCalls = [];
+  const mockFetch = async (url) => {
+    fetchCalls.push(url);
+    if (url.includes('/documents/activities')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            documents: [
+              {
+                name: 'projects/myplaydex/databases/(default)/documents/activities/act_live_1',
+                fields: {
+                  id: { stringValue: 'act_live_1' },
+                  title: { stringValue: 'Live Perth Activity' },
+                  subcategory: { stringValue: 'soccer' },
+                  verified: { booleanValue: true },
+                  source_url: { stringValue: 'https://example.com/act' },
+                  venue: {
+                    mapValue: {
+                      fields: {
+                        name: { stringValue: 'Perth Oval' },
+                        coordinates: { mapValue: { fields: { lat: { doubleValue: -31.946 }, lng: { doubleValue: 115.87 } } } }
+                      }
+                    }
+                  },
+                  cost: { mapValue: { fields: { is_free: { booleanValue: true }, display_price: { stringValue: 'Free' } } } }
+                }
+              }
+            ]
+          };
+        }
+      };
+    }
+    if (url.includes('/documents/organizers')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            documents: [
+              {
+                name: 'projects/myplaydex/databases/(default)/documents/organizers/org_live_1',
+                fields: {
+                  id: { stringValue: 'org_live_1' },
+                  name: { stringValue: 'Perth Coastal Volleyball Club' },
+                  description: { stringValue: 'Social beach volleyball club' },
+                  address: { stringValue: '100 Marine Parade, Cottesloe' },
+                  subcategories: { arrayValue: { values: [{ stringValue: 'volleyball' }] } },
+                  cost_description: { stringValue: 'KidSport eligible' },
+                  verified: { booleanValue: true },
+                  source_url: { stringValue: 'https://example.com/org' },
+                  coordinates: { mapValue: { fields: { lat: { doubleValue: -31.951 }, lng: { doubleValue: 115.861 } } } },
+                  contact: { mapValue: { fields: { phone: { stringValue: '08 9000 1111' }, email: { stringValue: 'hello@org.au' } } } }
+                }
+              }
+            ]
+          };
+        }
+      };
+    }
+    if (url.includes('/documents/venues')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            documents: [
+              {
+                name: 'projects/myplaydex/databases/(default)/documents/venues/venue_live_1',
+                fields: {
+                  id: { stringValue: 'venue_live_1' },
+                  name: { stringValue: 'Loftus Recreation Centre' },
+                  address: { stringValue: '99 Loftus St, Leederville' },
+                  description: { stringValue: 'Indoor sports stadium' },
+                  subcategories: { arrayValue: { values: [{ stringValue: 'basketball' }] } },
+                  verified: { booleanValue: true },
+                  source_url: { stringValue: 'https://example.com/venue' },
+                  coordinates: { mapValue: { fields: { lat: { doubleValue: -31.9366 }, lng: { doubleValue: 115.8431 } } } }
+                }
+              }
+            ]
+          };
+        }
+      };
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  const app = initApp({ fetchImpl: mockFetch });
+  await app.ready;
+
+  // 1. Only /activities was fetched initially (neither /organizers nor /venues)
+  assert.equal(fetchCalls.length, 1);
+  assert.ok(fetchCalls[0].includes('/documents/activities'));
+  assert.ok(feedContainer.innerHTML.includes('Live Perth Activity'));
+
+  // 2. Switching to Organizers lazy-loads /organizers once, renders Organizer card, and syncs ?tab=organizers
+  await app.selectTab('organizers');
+  assert.equal(fetchCalls.length, 2);
+  assert.ok(fetchCalls[1].includes('/documents/organizers'));
+  assert.ok(feedContainer.innerHTML.includes('Perth Coastal Volleyball Club'));
+  assert.equal(tabOrganizers.getAttribute('aria-selected'), 'true');
+  assert.equal(tabActivities.getAttribute('aria-selected'), 'false');
+  assert.equal(feedContainer.getAttribute('aria-labelledby'), 'tab-organizers');
+  assert.ok(replaceStateUrls.some((u) => u.includes('tab=organizers')));
+
+  // 3. Switching to Venues lazy-loads /venues once, renders Venue card, and syncs ?tab=venues
+  await app.selectTab('venues');
+  assert.equal(fetchCalls.length, 3);
+  assert.ok(fetchCalls[2].includes('/documents/venues'));
+  assert.ok(feedContainer.innerHTML.includes('Loftus Recreation Centre'));
+  assert.ok(replaceStateUrls.some((u) => u.includes('tab=venues')));
+
+  // 4. Switching back to Organizers and Activities uses cached in-memory records (zero extra network calls)
+  await app.selectTab('organizers');
+  await app.selectTab('activities');
+  assert.equal(fetchCalls.length, 3, 'Cached tabs must not re-fetch from Firestore');
+
+  // 5. Empty state adapts copy to active tab when sport filters match nothing
+  app.store.setSportsFilter(['cricket']);
+  assert.ok(feedContainer.innerHTML.includes('No activities found nearby'));
+  await app.selectTab('organizers');
+  assert.ok(feedContainer.innerHTML.includes('No organizers found nearby'));
+  await app.selectTab('venues');
+  assert.ok(feedContainer.innerHTML.includes('No venues found nearby'));
+
+  storage.clear();
+});
+
+test('Seam 3 (Issue #13): Deep-linking ?organizer=<id> and ?venue=<id> activates tab, bypasses gate, resolves location, and highlights card', async () => {
+  const storage = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => storage.get(key) || null,
+    setItem: (key, val) => storage.set(key, String(val)),
+    removeItem: (key) => storage.delete(key),
+    clear: () => storage.clear()
+  };
+
+  function setupDom(search, targetId) {
+    const elements = new Map();
+    const scrolled = [];
+    function createMockEl(id, tag = 'div', classes = []) {
+      const classSet = new Set(classes);
+      let innerHTML = '';
+      let textContent = '';
+      const attrs = new Map();
+      const el = {
+        id,
+        tagName: tag.toUpperCase(),
+        style: {},
+        get innerHTML() { return innerHTML; },
+        set innerHTML(val) { innerHTML = val; },
+        get textContent() { return textContent; },
+        set textContent(val) { textContent = val; },
+        classList: {
+          add: (...c) => c.forEach((n) => classSet.add(n)),
+          remove: (...c) => c.forEach((n) => classSet.delete(n)),
+          toggle: (n, force) => {
+            if (force === undefined) classSet.has(n) ? classSet.delete(n) : classSet.add(n);
+            else if (force) classSet.add(n);
+            else classSet.delete(n);
+          },
+          contains: (n) => classSet.has(n)
+        },
+        getAttribute: (n) => attrs.get(n) || null,
+        setAttribute: (n, v) => attrs.set(n, String(v)),
+        removeAttribute: (n) => attrs.delete(n),
+        addEventListener: () => {},
+        dispatchEvent: () => {},
+        closest: () => null,
+        scrollIntoView: (opts) => scrolled.push({ el, opts })
+      };
+      elements.set(id, el);
+      return el;
+    }
+
+    const gateOverlay = createMockEl('location-gate-overlay', 'div');
+    createMockEl('gate-close-btn', 'button');
+    createMockEl('location-switcher-btn', 'button');
+    createMockEl('current-location-label', 'span');
+    const feedContainer = createMockEl('feed-container', 'section');
+    createMockEl('loading-label', 'span');
+    createMockEl('filter-header-btn', 'button');
+    createMockEl('filter-count-badge', 'span', ['hidden']);
+    createMockEl('filter-view-overlay', 'div', ['hidden']);
+    const tabActivities = createMockEl('tab-activities', 'button', ['discovery-tab']);
+    tabActivities.setAttribute('data-tab', 'activities');
+    const tabOrganizers = createMockEl('tab-organizers', 'button', ['discovery-tab']);
+    tabOrganizers.setAttribute('data-tab', 'organizers');
+    const tabVenues = createMockEl('tab-venues', 'button', ['discovery-tab']);
+    tabVenues.setAttribute('data-tab', 'venues');
+
+    const targetCard = createMockEl(`card-${targetId}`, 'article', ['activity-card']);
+    targetCard.setAttribute('data-id', targetId);
+
+    globalThis.window = {
+      location: { hash: '', pathname: '/', search },
+      history: { replaceState: () => {}, pushState: () => {}, back: () => {} },
+      addEventListener: () => {}
+    };
+    globalThis.document = {
+      getElementById: (id) => elements.get(id) || null,
+      querySelector: (sel) => (sel && sel.includes(targetId) ? targetCard : null),
+      querySelectorAll: (sel) => (sel === '.discovery-tab' ? [tabActivities, tabOrganizers, tabVenues] : []),
+      addEventListener: () => {}
+    };
+
+    return { gateOverlay, feedContainer, targetCard, scrolled, tabOrganizers, tabVenues };
+  }
+
+  // Case A: ?organizer=org_fremantle
+  const domOrg = setupDom('?organizer=org_fremantle', 'org_fremantle');
+  const requestedOrgUrls = [];
+  const appOrg = initApp({
+    fetchImpl: async (url) => {
+      requestedOrgUrls.push(url);
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            documents: [
+              {
+                name: 'projects/myplaydex/databases/(default)/documents/organizers/org_fremantle',
+                fields: {
+                  id: { stringValue: 'org_fremantle' },
+                  name: { stringValue: 'Fremantle Basketball Club' },
+                  subcategories: { arrayValue: { values: [{ stringValue: 'basketball' }] } },
+                  verified: { booleanValue: true },
+                  source_url: { stringValue: 'https://fremantle.org.au' },
+                  coordinates: { mapValue: { fields: { lat: { doubleValue: -32.0569 }, lng: { doubleValue: 115.7439 } } } }
+                }
+              }
+            ]
+          };
+        }
+      };
+    }
+  });
+  await appOrg.ready;
+
+  assert.equal(requestedOrgUrls.length, 1);
+  assert.ok(requestedOrgUrls[0].includes('/documents/organizers'), 'Should fetch /organizers directly on ?organizer= deep link');
+  assert.equal(appOrg.store.getState().activeTab, 'organizers');
+  assert.equal(domOrg.tabOrganizers.getAttribute('aria-selected'), 'true');
+  assert.equal(appOrg.store.getState().location.lat, -32.0569);
+  assert.ok(domOrg.gateOverlay.classList.contains('hidden'));
+  assert.ok(domOrg.feedContainer.innerHTML.includes('Fremantle Basketball Club'));
+  assert.ok(domOrg.targetCard.classList.contains('highlight-pulse'));
+  assert.equal(domOrg.scrolled.length, 1);
+
+  // Case B: ?venue=venue_scarborough_qd66s4
+  const domVenue = setupDom('?venue=venue_scarborough_qd66s4', 'venue_scarborough_qd66s4');
+  const requestedVenueUrls = [];
+  const appVenue = initApp({
+    fetchImpl: async (url) => {
+      requestedVenueUrls.push(url);
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            documents: [
+              {
+                name: 'projects/myplaydex/databases/(default)/documents/venues/venue_scarborough_qd66s4',
+                fields: {
+                  id: { stringValue: 'venue_scarborough_qd66s4' },
+                  name: { stringValue: 'Scarborough Beach Courts' },
+                  address: { stringValue: 'The Esplanade, Scarborough WA' },
+                  subcategories: { arrayValue: { values: [{ stringValue: 'volleyball' }] } },
+                  verified: { booleanValue: false },
+                  raw_source_url: { stringValue: 'https://broken.example.com' },
+                  coordinates: { mapValue: { fields: { lat: { doubleValue: -31.8942 }, lng: { doubleValue: 115.7571 } } } }
+                }
+              }
+            ]
+          };
+        }
+      };
+    }
+  });
+  await appVenue.ready;
+
+  assert.equal(requestedVenueUrls.length, 1);
+  assert.ok(requestedVenueUrls[0].includes('/documents/venues'), 'Should fetch /venues directly on ?venue= deep link');
+  assert.equal(appVenue.store.getState().activeTab, 'venues');
+  assert.equal(domVenue.tabVenues.getAttribute('aria-selected'), 'true');
+  assert.equal(appVenue.store.getState().location.lat, -31.8942);
+  assert.ok(domVenue.gateOverlay.classList.contains('hidden'));
+  assert.ok(domVenue.feedContainer.innerHTML.includes('Scarborough Beach Courts'));
+  assert.ok(domVenue.targetCard.classList.contains('highlight-pulse'));
+  assert.equal(domVenue.scrolled.length, 1);
+
+  // URL parser & sync helpers handle tab, organizer, venue
+  assert.deepEqual(parseDiscoveryUrlParams('?tab=venues&suburb=perth&radius=25&venue=v1'), {
+    tab: 'venues',
+    suburb: 'perth',
+    radius: 25,
+    activity: null,
+    organizer: null,
+    venue: 'v1'
+  });
+  assert.equal(typeof syncUrlState, 'function');
 
   storage.clear();
 });

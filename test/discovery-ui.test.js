@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   renderActivityCard,
+  renderOrganizerCard,
+  renderVenueCard,
+  renderTabSwitcher,
   renderEmptyState,
   renderLocationGate,
   renderFilterView,
@@ -307,5 +310,139 @@ test('Seam 2: renderActivityCard and createSuggestEditMailtoUrl handle Unverifie
   const css = fs.readFileSync(path.resolve('src/styles.css'), 'utf8');
   assert.match(css, /\.activity-card-unverified\s*\{[^}]*cursor:\s*default/s, 'styles.css must set cursor: default on .activity-card-unverified');
   assert.match(css, /\.activity-card-unverified:hover\s*\{[^}]*transform:\s*none/s, 'styles.css must disable hover lift on .activity-card-unverified:hover');
+});
+
+test('Seam 2 (Issue #13): renderOrganizerCard outputs 4-tier layout for verified and unverified Organizer Listings', () => {
+  const verifiedOrg = {
+    id: 'org_perth_volleyball',
+    name: 'Perth Coastal Volleyball Club',
+    description: 'Community social volleyball and junior coaching sessions.',
+    address: '123 Marine Parade, Cottesloe WA 6011',
+    coordinates: { lat: -31.9934, lng: 115.7578 },
+    subcategories: ['volleyball', 'social-fitness'],
+    cost_description: 'KidSport eligible',
+    contact: {
+      phone: '08 9123 4567',
+      email: 'info@perthcoastalvb.org.au'
+    },
+    source_url: 'https://perthcoastalvb.org.au',
+    verified: true,
+    distanceKm: 1.84
+  };
+
+  const verifiedHtml = renderOrganizerCard(verifiedOrg);
+
+  // Tier 1: multi-sport badges, KidSport/cost badge, distance badge, no Unverified badge
+  assert.ok(verifiedHtml.includes('organizer-card'), 'Should have organizer-card class');
+  assert.ok(verifiedHtml.includes('volleyball'), 'Should render first subcategory');
+  assert.ok(verifiedHtml.includes('social-fitness'), 'Should render second subcategory');
+  assert.ok(verifiedHtml.includes('KidSport eligible'), 'Should render KidSport/cost badge');
+  assert.ok(verifiedHtml.includes('1.8 km away'), 'Should render rounded distance badge');
+  assert.ok(!verifiedHtml.includes('badge-unverified'), 'Verified organizer should not render Unverified badge');
+
+  // Tier 2: name, description, phone/email contact summary
+  assert.ok(verifiedHtml.includes('Perth Coastal Volleyball Club'), 'Should include organizer name');
+  assert.ok(verifiedHtml.includes('Community social volleyball'), 'Should include description');
+  assert.ok(verifiedHtml.includes('08 9123 4567'), 'Should include public phone contact');
+  assert.ok(verifiedHtml.includes('info@perthcoastalvb.org.au'), 'Should include public email contact');
+
+  // Tier 3: address row with outbound Google Maps link
+  assert.ok(verifiedHtml.includes('card-venue-row'), 'Should include address row');
+  assert.ok(verifiedHtml.includes('123 Marine Parade, Cottesloe WA 6011'), 'Should display organizer address');
+  assert.ok(verifiedHtml.includes('href="https://www.google.com/maps/search/?api=1'), 'Should link to Google Maps');
+
+  // Tier 4: Suggest an edit mailto link
+  assert.ok(verifiedHtml.includes('Suggest an edit'), 'Should include Suggest an edit link');
+  assert.ok(verifiedHtml.includes('mailto:azhidkov@gmail.com'), 'Edit link must use mailto');
+  assert.ok(decodeURIComponent(verifiedHtml).includes('org_perth_volleyball'), 'Edit mailto must include organizer id');
+
+  // Whole-card click enabled for verified organizer
+  assert.ok(verifiedHtml.includes('data-url="https://perthcoastalvb.org.au"'), 'Verified organizer card must expose data-url');
+  assert.ok(verifiedHtml.includes('tabindex="0"'), 'Verified organizer card must be keyboard focusable');
+
+  // Unverified organizer degrades whole-card click and shows Unverified badge
+  const unverifiedOrg = {
+    ...verifiedOrg,
+    id: 'org_unverified',
+    source_url: null,
+    raw_source_url: 'https://broken.example.com/club',
+    verified: false
+  };
+  const unverifiedHtml = renderOrganizerCard(unverifiedOrg);
+  assert.ok(unverifiedHtml.includes('activity-card-unverified'), 'Unverified organizer must include activity-card-unverified');
+  assert.ok(unverifiedHtml.includes('badge-unverified'), 'Unverified organizer must render Unverified badge');
+  assert.ok(!unverifiedHtml.includes('data-url='), 'Unverified organizer must omit data-url');
+  assert.ok(!unverifiedHtml.includes('tabindex="0"'), 'Unverified organizer must omit tabindex="0"');
+  assert.ok(unverifiedHtml.includes('data-directions-url='), 'Unverified organizer still keeps Google Maps link');
+  assert.ok(unverifiedHtml.includes('Suggest an edit'), 'Unverified organizer still keeps Suggest an edit link');
+});
+
+test('Seam 2 (Issue #13): renderVenueCard outputs 4-tier layout with verified URL or Google Maps fallback and Unverified badge on failed URL', () => {
+  const verifiedVenue = {
+    id: 'venue_lofts_qd66fd',
+    name: 'Loftus Recreation Centre',
+    address: '99 Loftus St, Leederville WA 6007',
+    description: 'Indoor court centre for volleyball and basketball.',
+    hours: 'Mon-Sun 06:00 - 22:00',
+    coordinates: { lat: -31.9366, lng: 115.8431 },
+    subcategories: ['volleyball', 'basketball'],
+    source_url: 'https://loftusrecreationcentre.com.au',
+    verified: true,
+    distanceKm: 2.3
+  };
+
+  const verifiedHtml = renderVenueCard(verifiedVenue);
+  assert.ok(verifiedHtml.includes('venue-card'), 'Should have venue-card class');
+  assert.ok(verifiedHtml.includes('volleyball') && verifiedHtml.includes('basketball'), 'Should render sport badges');
+  assert.ok(!verifiedHtml.includes('badge-unverified'), 'Verified venue should not render Unverified badge');
+  assert.ok(verifiedHtml.includes('2.3 km away'), 'Should render distance badge');
+  assert.ok(verifiedHtml.includes('Loftus Recreation Centre'), 'Should render venue name');
+  assert.ok(verifiedHtml.includes('99 Loftus St, Leederville WA 6007'), 'Should render formatted street address');
+  assert.ok(verifiedHtml.includes('Indoor court centre'), 'Should render description');
+  assert.ok(verifiedHtml.includes('Mon-Sun 06:00 - 22:00'), 'Should render hours summary');
+  assert.ok(verifiedHtml.includes('data-directions-url="https://www.google.com/maps/search/?api=1'), 'Tier 3 should include Google Maps link');
+  assert.ok(verifiedHtml.includes('Suggest an edit'), 'Tier 4 should include Suggest an edit link');
+  assert.ok(verifiedHtml.includes('data-url="https://loftusrecreationcentre.com.au"'), 'Whole-card click opens verified URL');
+  assert.ok(verifiedHtml.includes('tabindex="0"'), 'Venue card should be focusable');
+
+  // Venue with failed external URL shows Unverified badge and falls back whole-card click to Google Maps directions
+  const failedUrlVenue = {
+    ...verifiedVenue,
+    id: 'venue_failed_qd66fd',
+    source_url: null,
+    raw_source_url: 'https://dead-venue.example.com',
+    verified: false
+  };
+  const failedHtml = renderVenueCard(failedUrlVenue);
+  assert.ok(failedHtml.includes('badge-unverified'), 'Failed external URL venue must render Unverified badge');
+  assert.ok(
+    failedHtml.includes('data-url="https://www.google.com/maps/search/?api=1'),
+    'Failed external URL venue whole-card click must fall back to Google Maps directions'
+  );
+  assert.ok(failedHtml.includes('tabindex="0"'), 'Venue card remains focusable with Google Maps fallback');
+});
+
+test('Seam 2 (Issue #13): renderTabSwitcher and renderEmptyState adapt copy per active tab while keeping recovery buttons', () => {
+  const tabsHtml = renderTabSwitcher('organizers');
+  assert.ok(tabsHtml.includes('role="tablist"'), 'Tab switcher must have role="tablist"');
+  assert.ok(tabsHtml.includes('data-tab="activities"') && tabsHtml.includes('Activities'));
+  assert.ok(tabsHtml.includes('data-tab="organizers"') && tabsHtml.includes('Organizers'));
+  assert.ok(tabsHtml.includes('data-tab="venues"') && tabsHtml.includes('Venues'));
+  assert.ok(tabsHtml.includes('id="tab-organizers"') && tabsHtml.includes('aria-selected="true"'));
+
+  const emptyActivities = renderEmptyState({ radiusKm: 10, tab: 'activities' });
+  assert.ok(emptyActivities.includes('No activities found nearby'));
+  assert.ok(emptyActivities.includes('data-action="expand-radius"'));
+  assert.ok(emptyActivities.includes('data-action="clear-filters"'));
+
+  const emptyOrganizers = renderEmptyState({ radiusKm: 10, tab: 'organizers' });
+  assert.ok(emptyOrganizers.includes('No organizers found nearby'));
+  assert.ok(emptyOrganizers.includes('data-action="expand-radius"'));
+  assert.ok(emptyOrganizers.includes('data-action="clear-filters"'));
+
+  const emptyVenues = renderEmptyState({ radiusKm: 'all', tab: 'venues' });
+  assert.ok(emptyVenues.includes('No venues found nearby'));
+  assert.ok(!emptyVenues.includes('data-action="expand-radius"'), 'Expand button hidden when radius is all');
+  assert.ok(emptyVenues.includes('data-action="clear-filters"'));
 });
 

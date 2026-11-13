@@ -4,6 +4,12 @@ import {
   calculateDistanceKm,
   filterActivities,
   filterAndRankActivities,
+  filterOrganizers,
+  filterVenues,
+  filterAndRankOrganizers,
+  filterAndRankVenues,
+  filterAndRankListings,
+  normalizeDiscoveryTab,
   createDiscoveryStore
 } from '../src/discovery-engine.js';
 
@@ -383,6 +389,150 @@ test('Seam 1: store.subscribe supports targeted event subscriptions per spec.md 
   assert.equal(locationEvents.length, 1);
   assert.equal(radiusEvents.length, 1);
   assert.equal(radiusEvents[0], 25);
+});
+
+test('Seam 1 (Issue #13): filterAndRankOrganizers and filterAndRankVenues match subcategories, bypass AWST expiration, rank by Haversine, and cap at 50', () => {
+  const perthCbd = { lat: -31.9505, lng: 115.8605 };
+
+  const organizers = [
+    {
+      id: 'org_multi',
+      name: 'Perth Multi-Sport Club',
+      subcategories: ['soccer', 'basketball'],
+      subcategory: 'soccer',
+      coordinates: { lat: -31.9450, lng: 115.8580 }, // ~0.65 km
+      schedule: { end_date: '2020-01-01', recurrence: 'none' } // Past date must NOT expire organizers
+    },
+    {
+      id: 'org_vb',
+      name: 'Scarborough Volleyball Club',
+      subcategories: ['volleyball'],
+      coordinates: { lat: -31.8942, lng: 115.7571 } // ~11.6 km
+    },
+    {
+      id: 'org_legacy_sport',
+      name: 'South Perth Tennis Club',
+      sport: 'tennis',
+      coordinates: { lat: -31.9750, lng: 115.8450 } // ~3.1 km
+    }
+  ];
+
+  // Multi-sport filter matches against subcategories array
+  const basketballOrgs = filterAndRankOrganizers(organizers, {
+    location: perthCbd,
+    radiusKm: 25,
+    filters: { sports: ['basketball'] },
+    todayAwst: '2026-11-14'
+  });
+  assert.equal(basketballOrgs.length, 1);
+  assert.equal(basketballOrgs[0].id, 'org_multi');
+  assert.ok(typeof basketballOrgs[0].distanceKm === 'number');
+
+  // Unfiltered within 5km includes org_multi and org_legacy_sport sorted by proximity, ignoring schedule expiration
+  const within5km = filterAndRankOrganizers(organizers, {
+    location: perthCbd,
+    radiusKm: 5,
+    todayAwst: '2026-11-14'
+  });
+  assert.deepEqual(within5km.map(o => o.id), ['org_multi', 'org_legacy_sport']);
+
+  // Venues also ignore expiration and cap at 50 results
+  const manyVenues = Array.from({ length: 65 }, (_, i) => ({
+    id: `venue_${i}`,
+    name: `Venue ${i}`,
+    subcategories: i % 2 === 0 ? ['volleyball', 'pickleball'] : ['tennis'],
+    coordinates: { lat: -31.9505 + i * 0.005, lng: 115.8605 },
+    end_date: '2020-01-01'
+  }));
+
+  const rankedVenues = filterAndRankVenues(manyVenues, {
+    location: perthCbd,
+    radiusKm: 'all',
+    todayAwst: '2026-11-14'
+  });
+  assert.equal(rankedVenues.length, 50);
+  assert.equal(rankedVenues[0].id, 'venue_0');
+  assert.ok(rankedVenues[0].distanceKm <= rankedVenues[1].distanceKm);
+
+  const pickleballVenues = filterVenues(manyVenues, { sports: ['pickleball'] });
+  assert.equal(pickleballVenues.length, 33);
+  assert.equal(filterOrganizers(organizers, { sports: ['tennis'] }).length, 1);
+  assert.equal(filterAndRankListings(manyVenues, { location: perthCbd, radiusKm: 'all', applyExpiration: false }).length, 50);
+});
+
+test('Seam 1 (Issue #13): Discovery store tracks activeTab, shares location/radius/filters across 3 collections, and pins deep-linked organizer/venue', () => {
+  assert.equal(normalizeDiscoveryTab('organizers'), 'organizers');
+  assert.equal(normalizeDiscoveryTab('venue'), 'venues');
+  assert.equal(normalizeDiscoveryTab('unknown'), 'activities');
+
+  const store = createDiscoveryStore({
+    activities: [
+      {
+        id: 'act_1',
+        title: 'Social Soccer',
+        subcategory: 'soccer',
+        venue: { coordinates: { lat: -31.9505, lng: 115.8605 } }
+      }
+    ],
+    organizers: [
+      {
+        id: 'org_1',
+        name: 'Perth Soccer Club',
+        subcategories: ['soccer', 'social-fitness'],
+        coordinates: { lat: -31.9510, lng: 115.8610 }
+      },
+      {
+        id: 'org_far',
+        name: 'Joondalup Volleyball Club',
+        subcategories: ['volleyball'],
+        coordinates: { lat: -31.7450, lng: 115.7660 } // ~24.5 km away
+      }
+    ],
+    venues: [
+      {
+        id: 'venue_1',
+        name: 'Langley Park',
+        subcategories: ['soccer', 'afl'],
+        coordinates: { lat: -31.9590, lng: 115.8690 }
+      }
+    ],
+    activeTab: 'organizers',
+    location: { name: 'Perth', lat: -31.9505, lng: 115.8605 },
+    radiusKm: 10,
+    selectedOrganizerId: 'org_far'
+  });
+
+  const initial = store.getState();
+  assert.equal(initial.activeTab, 'organizers');
+  // org_1 matches within 10km, org_far is pinned because selectedOrganizerId === 'org_far'
+  assert.equal(initial.filteredOrganizers.length, 2);
+  assert.equal(initial.filteredOrganizers[0].id, 'org_far');
+  assert.equal(initial.filteredListings.length, 2);
+  assert.equal(initial.filteredActivities.length, 1);
+  assert.equal(initial.filteredVenues.length, 1);
+
+  // Shared sports filter applies to active and other tabs alike
+  store.setSportsFilter(['afl']);
+  assert.equal(store.getState().filteredActivities.length, 0);
+  assert.equal(store.getState().filteredVenues.length, 1);
+
+  store.setTab('venues');
+  const venueState = store.getState();
+  assert.equal(venueState.activeTab, 'venues');
+  assert.equal(venueState.filteredListings.length, 1);
+  assert.equal(venueState.filteredListings[0].id, 'venue_1');
+
+  // Updating organizers/venues collections via setters
+  store.setOrganizers([
+    { id: 'org_new', name: 'New Org', subcategories: ['afl'], coordinates: { lat: -31.95, lng: 115.86 } }
+  ]);
+  assert.equal(store.getState().organizers.length, 1);
+  assert.equal(store.getState().filteredOrganizers.length, 1);
+
+  store.setVenues([]);
+  assert.equal(store.getState().filteredVenues.length, 0);
+  store.setSelectedVenue('venue_new');
+  assert.equal(store.getState().selectedVenueId, 'venue_new');
 });
 
 

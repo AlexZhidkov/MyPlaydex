@@ -221,6 +221,65 @@ body {
   gap: 0.65rem;
 }
 
+/* Top-Level 3-Tab Discovery Switcher */
+.discovery-tabs-section {
+  width: 100%;
+  max-width: 440px;
+  margin: 0 auto;
+  border-bottom: 1px solid var(--border);
+}
+
+.discovery-tabs {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0.25rem;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.discovery-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.discovery-tab {
+  position: relative;
+  flex: 1 0 auto;
+  padding: 0.55rem 0.75rem;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: center;
+  white-space: nowrap;
+  transition: color 0.15s ease;
+  user-select: none;
+}
+
+.discovery-tab:hover {
+  color: var(--text);
+}
+
+.discovery-tab:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+  border-radius: var(--radius-sm);
+}
+
+.discovery-tab[aria-selected="true"],
+.discovery-tab.active {
+  color: var(--primary);
+}
+
+.discovery-tab[aria-selected="true"]::after,
+.discovery-tab.active::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  border-block-end: 3px solid var(--primary);
+}
+
 /* Radius Pill Bar */
 .radius-bar-section {
   display: flex;
@@ -448,6 +507,32 @@ body {
   align-items: center;
   gap: 0.3rem;
   line-height: 1.2;
+}
+
+.card-description {
+  font-size: 0.8rem;
+  color: #475569;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.card-contact {
+  font-size: 0.78rem;
+  color: var(--text);
+  line-height: 1.3;
+  word-break: break-word;
+}
+
+.card-address {
+  font-size: 0.8rem;
+  color: #475569;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.3rem;
+  line-height: 1.3;
 }
 
 /* Tier 3 */
