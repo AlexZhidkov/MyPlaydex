@@ -943,3 +943,49 @@ export function sanitizeActivity(raw = {}, options = {}) {
     updated_at: updatedAt
   };
 }
+
+/**
+ * Resolves the canonical listing type ('organizer' | 'venue' | 'activity') for a raw record.
+ *
+ * @param {object} [raw={}]
+ * @returns {'organizer' | 'venue' | 'activity'}
+ */
+export function resolveListingType(raw = {}) {
+  if (!raw || typeof raw !== 'object') {
+    return 'activity';
+  }
+  const explicit = raw.entity_type || raw.listing_type || raw.type || raw.kind;
+  if (typeof explicit === 'string') {
+    const normalized = explicit.trim().toLowerCase();
+    if (normalized === 'organizer' || normalized === 'venue' || normalized === 'activity') {
+      return normalized;
+    }
+  }
+  if (typeof raw.id === 'string') {
+    if (raw.id.startsWith('org_') && !raw.venue && !raw.schedule) {
+      return 'organizer';
+    }
+    if (raw.id.startsWith('venue_') && !raw.organizer && !raw.schedule) {
+      return 'venue';
+    }
+  }
+  return 'activity';
+}
+
+/**
+ * Sanitizes a raw crawled record according to its resolved listing type.
+ *
+ * @param {object} [raw={}]
+ * @param {object} [options={}]
+ * @returns {object} Canonical Organizer, Venue, or Activity document
+ */
+export function sanitizeListing(raw = {}, options = {}) {
+  const type = resolveListingType(raw);
+  if (type === 'organizer') {
+    return sanitizeOrganizer(raw, options);
+  }
+  if (type === 'venue') {
+    return sanitizeVenue(raw, options);
+  }
+  return sanitizeActivity(raw, options);
+}

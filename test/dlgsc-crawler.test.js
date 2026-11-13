@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createDlgscCrawler, DLGSC_ENDPOINT } from '../src/crawlers/dlgsc-crawler.js';
-import { sanitizeActivity } from '../src/sanitizer.js';
+import { sanitizeOrganizer, sanitizeListing } from '../src/sanitizer.js';
+import { createFirestoreAdapter } from '../src/firestore-adapter.js';
 
-test('Seam 5: DLGSC Crawler parses public club search JSON, filters for Greater Perth, and formats canonical listings', async () => {
+test('Seam 5: DLGSC Crawler parses public club search JSON, filters for Greater Perth, and emits canonical Organizer Listings', async () => {
   const mockPayload = {
     clubs: {
       totalcount: 3,
@@ -86,41 +87,81 @@ test('Seam 5: DLGSC Crawler parses public club search JSON, filters for Greater 
   assert.equal(listings.length, 1);
   const raw = listings[0];
 
+  assert.equal(raw.id, 'org_subiaco_junior_soccer_club');
+  assert.equal(raw.entity_type, 'organizer');
   assert.equal(raw.source, 'dlgsc');
   assert.equal(raw.source_id, 'dlgsc-uuid-001');
-  assert.equal(raw.title, 'Subiaco Junior Soccer Club');
+  assert.equal(raw.name, 'Subiaco Junior Soccer Club');
   assert.equal(raw.region_id, 'perth');
-  assert.equal(raw.sport, 'Soccer');
   assert.equal(raw.category, 'sports');
   assert.equal(raw.subcategory, 'soccer');
-  assert.equal(raw.venue_name, 'Rosalie Park, Onslow Road');
+  assert.deepEqual(raw.subcategories, ['soccer']);
   assert.equal(raw.address, 'Rosalie Park, Onslow Road, Subiaco');
-  assert.equal(raw.coordinates.lat, -31.9445);
-  assert.equal(raw.coordinates.lng, 115.828);
-  assert.equal(raw.source_url, 'https://subiacosoccer.org.au');
-  assert.equal(raw.external_url, 'https://subiacosoccer.org.au');
-  assert.equal(raw.organizer.name, 'Subiaco Junior Soccer Club');
-  assert.equal(raw.organizer.website, 'https://subiacosoccer.org.au');
-  assert.equal(raw.organizer.contact.email, 'info@subiacosoccer.org.au');
-  assert.equal(raw.organizer.contact.phone, '08 9381 0000');
+  assert.deepEqual(raw.coordinates, { lat: -31.9445, lng: 115.828 });
+  assert.equal(raw.geohash.length, 9);
+  assert.equal(raw.website, 'https://subiacosoccer.org.au');
+  assert.equal(raw.contact.email, 'info@subiacosoccer.org.au');
+  assert.equal(raw.contact.phone, '08 9381 0000');
   assert.equal(raw.cost_description, 'KidSport eligible');
-  assert.equal(raw.demographics.age, 'juniors');
-  assert.equal(raw.schedule.recurrence, 'weekly');
+  assert.deepEqual(raw.demographics, { gender: 'all', age: 'juniors' });
+  assert.equal(raw.source_url, 'https://subiacosoccer.org.au');
+  assert.equal(raw.raw_source_url, 'https://subiacosoccer.org.au');
 
-  // Verify that the emitted listing sanitizes cleanly without error
-  const sanitized = sanitizeActivity(raw);
-  assert.equal(sanitized.id, 'dlgsc_dlgsc-uuid-001');
+  // Must not fabricate synthetic weekly activities or placeholder "<Organizer> Venue" records
+  assert.equal(raw.schedule, undefined);
+  assert.equal(raw.venue, undefined);
+  assert.equal(raw.venue_name, undefined);
+
+  // Verify that the emitted listing sanitizes cleanly via sanitizeOrganizer and sanitizeListing
+  const sanitized = sanitizeOrganizer(raw);
+  assert.equal(sanitized.id, 'org_subiaco_junior_soccer_club');
+  assert.equal(sanitized.name, 'Subiaco Junior Soccer Club');
   assert.equal(sanitized.region_id, 'perth');
   assert.equal(sanitized.category, 'sports');
   assert.equal(sanitized.subcategory, 'soccer');
-  assert.equal(sanitized.organizer.name, 'Subiaco Junior Soccer Club');
-  assert.ok(sanitized.organizer.id.startsWith('org_'));
-  assert.ok(sanitized.venue.id.startsWith('venue_'));
-  assert.equal(sanitized.venue.coordinates.lat, -31.9445);
-  assert.equal(sanitized.venue.coordinates.lng, 115.828);
-  assert.equal(sanitized.venue.geohash.length, 9);
-  assert.equal(sanitized.schedule.recurrence, 'weekly');
-  assert.equal(sanitized.demographics.age, 'juniors');
+  assert.deepEqual(sanitized.subcategories, ['soccer']);
+  assert.deepEqual(sanitized.coordinates, { lat: -31.9445, lng: 115.828 });
+  assert.equal(sanitized.geohash.length, 9);
+  assert.equal(sanitized.address, 'Rosalie Park, Onslow Road, Subiaco');
+  assert.equal(sanitized.website, 'https://subiacosoccer.org.au');
+  assert.deepEqual(sanitized.contact, { email: 'info@subiacosoccer.org.au', phone: '08 9381 0000' });
+  assert.equal(sanitized.cost_description, 'KidSport eligible');
+  assert.deepEqual(sanitized.demographics, { gender: 'all', age: 'juniors' });
+  assert.equal(sanitized.source_url, 'https://subiacosoccer.org.au');
+  assert.equal(sanitized.raw_source_url, 'https://subiacosoccer.org.au');
+  assert.equal(sanitized.schedule, undefined);
+
+  const sanitizedViaListing = sanitizeListing(raw);
+  assert.equal(sanitizedViaListing.id, 'org_subiaco_junior_soccer_club');
+
+  // Verify Firestore routing writes strictly to /organizers and zero docs to /activities or /venues
+  const writtenPaths = [];
+  const mockDb = {
+    collection(colName) {
+      return {
+        doc(id) {
+          return { id, colName, path: `${colName}/${id}` };
+        }
+      };
+    },
+    batch() {
+      const ops = [];
+      return {
+        set(docRef, data, options) {
+          ops.push({ docRef, data, options });
+        },
+        async commit() {
+          for (const op of ops) {
+            writtenPaths.push(op.docRef.path);
+          }
+        }
+      };
+    }
+  };
+  const adapter = createFirestoreAdapter({ db: mockDb, dryRun: false });
+  await adapter.batchUpsertListings([sanitizedViaListing]);
+
+  assert.deepEqual(writtenPaths, ['organizers/org_subiaco_junior_soccer_club']);
 });
 
 test('Seam 5: DLGSC Crawler throws descriptive error on HTTP failure', async () => {

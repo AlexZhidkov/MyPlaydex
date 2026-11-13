@@ -1,9 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createVolleyballWaCrawler, VOLLEYBALL_WA_ENDPOINT } from '../src/crawlers/volleyball-wa-crawler.js';
-import { sanitizeActivity } from '../src/sanitizer.js';
+import {
+  createVolleyballWaCrawler,
+  extractDistinctVenueName,
+  VOLLEYBALL_WA_ENDPOINT
+} from '../src/crawlers/volleyball-wa-crawler.js';
+import { sanitizeOrganizer, sanitizeVenue, sanitizeListing } from '../src/sanitizer.js';
+import { createFirestoreAdapter } from '../src/firestore-adapter.js';
 
-test('Seam 6: Volleyball WA Crawler queries AJAX directory endpoint, formats venues and sessions, and maps canonical listings', async () => {
+test('Seam 6: Volleyball WA Crawler classifies centres into Venues and clubs into Organizers (plus distinct Venues) without synthetic activities', async () => {
   const mockPayload = [
     {
       id: 30092,
@@ -36,6 +41,42 @@ test('Seam 6: Volleyball WA Crawler queries AJAX directory endpoint, formats ven
       phone: '',
       email: 'contact@chequers.org.au',
       url: 'https://volleyballwa.com.au/places/chequers-volleyball-club/',
+      terms: 'Affiliated Club',
+      hours: ''
+    },
+    {
+      // Club with street-only address (no distinct physical venue name) -> emits Organizer only
+      id: 35001,
+      store: 'Bayswater Volleyball Club',
+      address: '123 Roberts Road',
+      address2: '',
+      city: 'Bayswater',
+      state: 'WA',
+      zip: '6053',
+      country: 'Australia',
+      lat: '-31.918100',
+      lng: '115.913200',
+      phone: '0400 999 888',
+      email: 'hello@bayswatervolley.org.au',
+      url: 'https://bayswatervolley.org.au',
+      terms: 'Affiliated Club',
+      hours: ''
+    },
+    {
+      // Club with PO Box address (no distinct physical venue name) -> emits Organizer only
+      id: 35002,
+      store: 'Northern Districts Volleyball Club',
+      address: 'PO Box 456',
+      address2: '',
+      city: 'Joondalup',
+      state: 'WA',
+      zip: '6027',
+      country: 'Australia',
+      lat: '-31.745000',
+      lng: '115.766000',
+      phone: '',
+      email: '',
+      url: 'https://ndvc.org.au',
       terms: 'Affiliated Club',
       hours: ''
     },
@@ -76,55 +117,113 @@ test('Seam 6: Volleyball WA Crawler queries AJAX directory endpoint, formats ven
   assert.ok(requestedUrl.includes('search_radius=100'));
   assert.ok(requestedHeaders['User-Agent']);
 
-  // Records with missing coordinates dropped (2 of 3 retained)
-  assert.equal(listings.length, 2);
+  // 1 venue (The HUB) + 1 organizer & 1 venue (Chequers / Perth Modern School) + 1 organizer (Bayswater) + 1 organizer (Northern Districts) = 5
+  assert.equal(listings.length, 5);
 
-  const raw1 = listings[0];
-  assert.equal(raw1.source, 'volleyball_wa');
-  assert.equal(raw1.source_id, '30092');
-  assert.equal(raw1.title, 'The HUB');
-  assert.equal(raw1.region_id, 'perth');
-  assert.equal(raw1.sport, 'volleyball');
-  assert.equal(raw1.category, 'sports');
-  assert.equal(raw1.subcategory, 'volleyball');
-  assert.equal(raw1.venue_name, 'The HUB');
-  assert.equal(raw1.address, 'Inner City Beach, 180 Charles St, West Perth, WA 6005');
-  assert.equal(raw1.coordinates.lat, -31.941599);
-  assert.equal(raw1.coordinates.lng, 115.847653);
-  assert.equal(raw1.source_url, 'https://volleyballwa.com.au/social-volley/');
-  assert.equal(raw1.external_url, 'https://volleyballwa.com.au/social-volley/');
-  assert.equal(raw1.organizer.name, 'The HUB');
-  assert.equal(raw1.organizer.website, 'https://volleyballwa.com.au/social-volley/');
-  assert.equal(raw1.organizer.contact.phone, '08 9228 8522');
-  assert.equal(raw1.organizer.contact.email, 'info@volleyballwa.com.au');
-  assert.equal(raw1.schedule.recurrence, 'weekly');
-  assert.equal(raw1.demographics.gender, 'all');
-  assert.equal(raw1.demographics.age, 'all');
+  // None of the listings should generate synthetic weekly activities
+  for (const item of listings) {
+    assert.equal(item.schedule, undefined);
+  }
 
-  // Verify that listing sanitizes cleanly into canonical ActivityDocument
-  const sanitized1 = sanitizeActivity(raw1);
-  assert.equal(sanitized1.id, 'volleyball_wa_30092');
-  assert.equal(sanitized1.region_id, 'perth');
-  assert.equal(sanitized1.category, 'sports');
-  assert.equal(sanitized1.subcategory, 'volleyball');
-  assert.equal(sanitized1.organizer.name, 'The HUB');
-  assert.ok(sanitized1.organizer.id.startsWith('org_'));
-  assert.ok(sanitized1.venue.id.startsWith('venue_'));
-  assert.equal(sanitized1.venue.coordinates.lat, -31.941599);
-  assert.equal(sanitized1.venue.coordinates.lng, 115.847653);
-  assert.equal(sanitized1.venue.geohash.length, 9);
-  assert.equal(sanitized1.schedule.recurrence, 'weekly');
+  // 1. Centre record -> Venue Listing
+  const hubVenue = listings[0];
+  assert.ok(hubVenue.id.startsWith('venue_the_hub_'));
+  assert.equal(hubVenue.entity_type, 'venue');
+  assert.equal(hubVenue.source, 'volleyball_wa');
+  assert.equal(hubVenue.source_id, '30092');
+  assert.equal(hubVenue.name, 'The HUB');
+  assert.equal(hubVenue.region_id, 'perth');
+  assert.equal(hubVenue.category, 'sports');
+  assert.equal(hubVenue.subcategory, 'volleyball');
+  assert.deepEqual(hubVenue.subcategories, ['volleyball']);
+  assert.equal(hubVenue.address, 'Inner City Beach, 180 Charles St, West Perth, WA 6005');
+  assert.deepEqual(hubVenue.coordinates, { lat: -31.941599, lng: 115.847653 });
+  assert.equal(hubVenue.geohash.length, 9);
+  assert.match(hubVenue.description, /Monday 9:00 AM/);
+  assert.equal(hubVenue.source_url, 'https://volleyballwa.com.au/social-volley/');
+  assert.equal(hubVenue.raw_source_url, 'https://volleyballwa.com.au/social-volley/');
 
-  const raw2 = listings[1];
-  assert.equal(raw2.source_id, '34912');
-  assert.equal(raw2.title, 'Chequers Volleyball Club');
-  assert.equal(raw2.coordinates.lat, -31.944988);
-  assert.equal(raw2.coordinates.lng, 115.83866);
-  assert.equal(raw2.organizer.contact.email, 'contact@chequers.org.au');
+  const sanitizedHub = sanitizeVenue(hubVenue);
+  assert.equal(sanitizedHub.id, hubVenue.id);
+  assert.deepEqual(sanitizedHub.subcategories, ['volleyball']);
 
-  const sanitized2 = sanitizeActivity(raw2);
-  assert.equal(sanitized2.id, 'volleyball_wa_34912');
-  assert.equal(sanitized2.subcategory, 'volleyball');
+  // 2. Club record -> Organizer Listing + distinct Venue Listing
+  const chequersOrg = listings[1];
+  assert.equal(chequersOrg.id, 'org_chequers_volleyball_club');
+  assert.equal(chequersOrg.entity_type, 'organizer');
+  assert.equal(chequersOrg.name, 'Chequers Volleyball Club');
+  assert.equal(chequersOrg.address, 'Perth Modern School, 90 Roberts Rd, Subiaco, WA 6008');
+  assert.deepEqual(chequersOrg.coordinates, { lat: -31.944988, lng: 115.83866 });
+  assert.equal(chequersOrg.geohash.length, 9);
+  assert.deepEqual(chequersOrg.subcategories, ['volleyball']);
+  assert.equal(chequersOrg.website, 'https://volleyballwa.com.au/places/chequers-volleyball-club/');
+  assert.deepEqual(chequersOrg.contact, { phone: null, email: 'contact@chequers.org.au' });
+  assert.equal(chequersOrg.cost_description, 'Casual volleyball fees apply');
+  assert.deepEqual(chequersOrg.demographics, { gender: 'all', age: 'all' });
+  assert.equal(chequersOrg.source_url, 'https://volleyballwa.com.au/places/chequers-volleyball-club/');
+  assert.equal(chequersOrg.raw_source_url, 'https://volleyballwa.com.au/places/chequers-volleyball-club/');
+
+  const sanitizedChequers = sanitizeOrganizer(chequersOrg);
+  assert.equal(sanitizedChequers.id, 'org_chequers_volleyball_club');
+
+  const pmsVenue = listings[2];
+  assert.ok(pmsVenue.id.startsWith('venue_perth_modern_school_'));
+  assert.equal(pmsVenue.entity_type, 'venue');
+  assert.equal(pmsVenue.name, 'Perth Modern School');
+  assert.equal(pmsVenue.address, 'Perth Modern School, 90 Roberts Rd, Subiaco, WA 6008');
+  assert.deepEqual(pmsVenue.coordinates, { lat: -31.944988, lng: 115.83866 });
+  assert.equal(pmsVenue.geohash.length, 9);
+  assert.deepEqual(pmsVenue.subcategories, ['volleyball']);
+  assert.equal(pmsVenue.source_url, 'https://volleyballwa.com.au/places/chequers-volleyball-club/');
+  assert.equal(pmsVenue.raw_source_url, 'https://volleyballwa.com.au/places/chequers-volleyball-club/');
+
+  // 3. Clubs without distinct venue names emit Organizer only
+  const bayswaterOrg = listings[3];
+  assert.equal(bayswaterOrg.id, 'org_bayswater_volleyball_club');
+  assert.equal(bayswaterOrg.entity_type, 'organizer');
+
+  const ndvcOrg = listings[4];
+  assert.equal(ndvcOrg.id, 'org_northern_districts_volleyball_club');
+  assert.equal(ndvcOrg.entity_type, 'organizer');
+
+  // Verify extractDistinctVenueName helper edge cases
+  assert.equal(extractDistinctVenueName({ address: 'Perth Modern School', address2: '90 Roberts Rd' }, 'Chequers Volleyball Club'), 'Perth Modern School');
+  assert.equal(extractDistinctVenueName({ address: '123 Roberts Road', address2: '' }, 'Bayswater Volleyball Club'), null);
+  assert.equal(extractDistinctVenueName({ address: 'PO Box 456', address2: '' }, 'Northern Districts Volleyball Club'), null);
+  assert.equal(extractDistinctVenueName({ address: 'Roberts Road', address2: '' }, 'Some Club'), null);
+  assert.equal(extractDistinctVenueName({ address: 'Chequers Volleyball Club', address2: '90 Roberts Rd' }, 'Chequers Volleyball Club'), null);
+
+  // Verify Firestore routing writes only to /organizers and /venues and zero docs to /activities
+  const sanitizedListings = listings.map(item => sanitizeListing(item));
+  const writtenPaths = [];
+  const mockDb = {
+    collection(colName) {
+      return {
+        doc(id) {
+          return { id, colName, path: `${colName}/${id}` };
+        }
+      };
+    },
+    batch() {
+      const ops = [];
+      return {
+        set(docRef, data, options) {
+          ops.push({ docRef, data, options });
+        },
+        async commit() {
+          for (const op of ops) {
+            writtenPaths.push(op.docRef.path);
+          }
+        }
+      };
+    }
+  };
+  const adapter = createFirestoreAdapter({ db: mockDb, dryRun: false });
+  await adapter.batchUpsertListings(sanitizedListings);
+
+  assert.equal(writtenPaths.filter(p => p.startsWith('activities/')).length, 0);
+  assert.equal(writtenPaths.filter(p => p.startsWith('organizers/')).length, 3);
+  assert.equal(writtenPaths.filter(p => p.startsWith('venues/')).length, 2);
 });
 
 test('Seam 6: Volleyball WA Crawler throws descriptive error on HTTP failure', async () => {

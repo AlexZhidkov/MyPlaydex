@@ -715,3 +715,263 @@ test('Seam 4: runCrawlerHarness executes pre-write URL verification, degrades un
   assert.equal(act4.source_url, 'https://example.com/was-bad-now-fixed');
 });
 
+function createMockFirestoreDb(writtenDocs) {
+  return {
+    collection(colName) {
+      return {
+        doc(id) {
+          return { id, colName, path: `${colName}/${id}` };
+        }
+      };
+    },
+    async getAll(...docRefs) {
+      return docRefs.map(ref => ({ id: ref.id, exists: false, data: () => undefined }));
+    },
+    batch() {
+      const ops = [];
+      return {
+        set(docRef, data, options) {
+          ops.push({ docRef, data, options });
+        },
+        async commit() {
+          for (const op of ops) {
+            writtenDocs.set(op.docRef.path, op.data);
+          }
+        }
+      };
+    }
+  };
+}
+
+test('Seam 4: runCrawlerHarness routes directory crawlers (dlgsc, volleyball_wa) to /organizers and /venues with URL verification and anomaly gates', async () => {
+  const writtenDocs = new Map();
+  const mockDb = createMockFirestoreDb(writtenDocs);
+
+  const adapter = createFirestoreAdapter({ db: mockDb, dryRun: false });
+  const mockFetch = async (url) => {
+    if (url.includes('broken')) {
+      return { ok: false, status: 404, url, body: null };
+    }
+    return { ok: true, status: 200, url, body: null };
+  };
+
+  const dlgscDirectoryCrawler = {
+    name: 'dlgsc',
+    async fetchListings() {
+      return [
+        {
+          id: 'org_subiaco_soccer_club',
+          entity_type: 'organizer',
+          source: 'dlgsc',
+          source_id: 'dlg-1',
+          name: 'Subiaco Soccer Club',
+          address: 'Rosalie Park, Subiaco',
+          coordinates: { lat: -31.9445, lng: 115.828 },
+          subcategories: ['soccer'],
+          website: 'https://subiacosoccer.org.au',
+          source_url: 'https://subiacosoccer.org.au',
+          contact: { email: 'info@subiacosoccer.org.au', phone: '08 9381 0000' },
+          cost_description: 'KidSport eligible',
+          demographics: { gender: 'all', age: 'juniors' }
+        },
+        {
+          id: 'org_broken_link_club',
+          entity_type: 'organizer',
+          source: 'dlgsc',
+          source_id: 'dlg-2',
+          name: 'Broken Link Club',
+          address: '10 Test St, Perth',
+          coordinates: { lat: -31.95, lng: 115.86 },
+          subcategories: ['tennis'],
+          website: 'https://broken.example.com',
+          source_url: 'https://broken.example.com'
+        }
+      ];
+    }
+  };
+
+  const vwaDirectoryCrawler = {
+    name: 'volleyball_wa',
+    async fetchListings() {
+      return [
+        {
+          id: 'venue_the_hub_qd66h3',
+          entity_type: 'venue',
+          source: 'volleyball_wa',
+          source_id: '30092',
+          name: 'The HUB',
+          address: 'Inner City Beach, 180 Charles St, West Perth, WA 6005',
+          coordinates: { lat: -31.941599, lng: 115.847653 },
+          subcategories: ['volleyball'],
+          source_url: 'https://volleyballwa.com.au/social-volley/'
+        },
+        {
+          id: 'org_chequers_volleyball_club',
+          entity_type: 'organizer',
+          source: 'volleyball_wa',
+          source_id: '34912',
+          name: 'Chequers Volleyball Club',
+          address: 'Perth Modern School, 90 Roberts Rd, Subiaco, WA 6008',
+          coordinates: { lat: -31.944988, lng: 115.83866 },
+          subcategories: ['volleyball'],
+          source_url: 'https://volleyballwa.com.au/places/chequers/'
+        }
+      ];
+    }
+  };
+
+  const driftDirectoryCrawler = {
+    name: 'dlgsc_drift',
+    async fetchListings() {
+      return [
+        {
+          id: 'org_valid_only',
+          entity_type: 'organizer',
+          source: 'dlgsc',
+          source_id: 'd1',
+          name: 'Valid Org',
+          coordinates: { lat: -31.95, lng: 115.86 },
+          subcategories: ['cricket'],
+          source_url: 'https://valid.example.com'
+        },
+        {
+          // Missing coordinates -> fails sanitization (50% drop rate > 20% -> ERR_SCHEMA_DRIFT)
+          id: 'org_invalid_no_coords',
+          entity_type: 'organizer',
+          source: 'dlgsc',
+          source_id: 'd2',
+          name: 'Invalid Org'
+        }
+      ];
+    }
+  };
+
+  const zeroYieldDirectoryCrawler = {
+    name: 'volleyball_wa_empty',
+    async fetchListings() {
+      return [];
+    }
+  };
+
+  const summary = await runCrawlerHarness({
+    crawlers: [dlgscDirectoryCrawler, vwaDirectoryCrawler, driftDirectoryCrawler, zeroYieldDirectoryCrawler],
+    adapter,
+    options: {
+      urlVerifierOptions: { fetch: mockFetch }
+    }
+  });
+
+  assert.equal(summary.totalCrawlers, 4);
+  assert.equal(summary.successfulCrawlers, 2);
+  assert.equal(summary.failedCrawlers, 2);
+  assert.equal(summary.results.find(r => r.crawlerName === 'dlgsc_drift').errorCode, 'ERR_SCHEMA_DRIFT');
+  assert.equal(summary.results.find(r => r.crawlerName === 'volleyball_wa_empty').errorCode, 'ERR_ZERO_YIELD');
+
+  const writtenKeys = Array.from(writtenDocs.keys());
+  assert.equal(writtenKeys.filter(k => k.startsWith('activities/')).length, 0);
+  assert.ok(writtenDocs.has('organizers/org_subiaco_soccer_club'));
+  assert.ok(writtenDocs.has('organizers/org_broken_link_club'));
+  assert.ok(writtenDocs.has('organizers/org_chequers_volleyball_club'));
+  assert.ok(writtenDocs.has('venues/venue_the_hub_qd66h3'));
+
+  const brokenOrg = writtenDocs.get('organizers/org_broken_link_club');
+  assert.equal(brokenOrg.verified, false);
+  assert.equal(brokenOrg.source_url, null);
+  assert.equal(brokenOrg.raw_source_url, 'https://broken.example.com');
+});
+
+test('Seam 4: runCrawlerHarness preserves raw venue address, organizer contact, and post-verification URL status for scheduled Activity crawlers', async () => {
+  const writtenDocs = new Map();
+  const mockDb = createMockFirestoreDb(writtenDocs);
+
+  const adapter = createFirestoreAdapter({ db: mockDb, dryRun: false });
+  const mockFetch = async (url) => {
+    if (url.includes('broken-event')) {
+      return { ok: false, status: 404, url, body: null };
+    }
+    return { ok: true, status: 200, url, body: null };
+  };
+
+  const stirlingCrawler = {
+    name: 'stirling',
+    async fetchListings() {
+      return [
+        {
+          source: 'stirling',
+          source_id: 's-1',
+          title: 'Scarborough Beach Volleyball',
+          sport: 'volleyball',
+          venue_name: 'Scarborough Beach Amphitheatre',
+          address: 'The Esplanade, Scarborough WA 6019',
+          coordinates: { lat: -31.8942, lng: 115.7571 },
+          start_time: '2026-11-20T17:30:00+08:00',
+          external_url: 'https://stirling.wa.gov.au/events/beach-volley',
+          organizer: {
+            id: 'org_city_of_stirling',
+            name: 'City of Stirling',
+            website: 'https://www.stirling.wa.gov.au',
+            contact: { email: 'recreation@stirling.wa.gov.au', phone: '08 9205 8555' }
+          }
+        },
+        {
+          source: 'stirling',
+          source_id: 's-2',
+          title: 'Broken Link Basketball',
+          sport: 'basketball',
+          venue_name: 'Herb Graham Recreation Centre',
+          address: '38 Ashbury Cres, Mirrabooka WA 6061',
+          coordinates: { lat: -31.8691, lng: 115.8622 },
+          start_time: '2026-11-21T18:00:00+08:00',
+          external_url: 'https://stirling.wa.gov.au/broken-event',
+          organizer: {
+            id: 'org_mirrabooka_hoops',
+            name: 'Mirrabooka Hoops'
+          }
+        }
+      ];
+    }
+  };
+
+  const summary = await runCrawlerHarness({
+    crawlers: [stirlingCrawler],
+    adapter,
+    options: {
+      urlVerifierOptions: { fetch: mockFetch }
+    }
+  });
+
+  assert.equal(summary.successfulCrawlers, 1);
+  assert.equal(summary.totalUpserted, 2);
+
+  // Activity + linked Venue + linked Organizer + Region are all upserted
+  const activity1 = writtenDocs.get('activities/stirling_s-1');
+  assert.ok(activity1);
+  assert.equal(activity1.verified, true);
+  assert.equal(activity1.source_url, 'https://stirling.wa.gov.au/events/beach-volley');
+  assert.equal(Object.prototype.propertyIsEnumerable.call(activity1, '_canonicalEntities'), false);
+
+  const venue1 = writtenDocs.get('venues/venue_scarborough_beach_amphitheatre_qd66d1');
+  assert.ok(venue1);
+  assert.equal(venue1.address, 'The Esplanade, Scarborough WA 6019');
+  assert.equal(venue1.verified, true);
+
+  const org1 = writtenDocs.get('organizers/org_city_of_stirling');
+  assert.ok(org1);
+  assert.equal(org1.website, 'https://www.stirling.wa.gov.au');
+  assert.deepEqual(org1.contact, { email: 'recreation@stirling.wa.gov.au', phone: '08 9205 8555' });
+  assert.equal(org1.verified, true);
+
+  assert.ok(writtenDocs.has('regions/perth'));
+
+  // Degraded URL status is reflected on both the Activity and its extracted entities
+  const activity2 = writtenDocs.get('activities/stirling_s-2');
+  assert.equal(activity2.verified, false);
+  assert.equal(activity2.source_url, null);
+  assert.equal(activity2.raw_source_url, 'https://stirling.wa.gov.au/broken-event');
+
+  const org2 = writtenDocs.get('organizers/org_mirrabooka_hoops');
+  assert.equal(org2.verified, false);
+  assert.equal(org2.source_url, null);
+  assert.equal(org2.website, null);
+});
+

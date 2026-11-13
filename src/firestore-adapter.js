@@ -5,7 +5,7 @@
  * and zero-network dry-run capabilities.
  */
 
-import { extractCanonicalEntities, mergeEntityDocuments } from './sanitizer.js';
+import { extractCanonicalEntities, mergeEntityDocuments, resolveListingType } from './sanitizer.js';
 
 const FIRESTORE_MAX_BATCH_SIZE = 500;
 
@@ -213,13 +213,7 @@ export function createFirestoreAdapter(options = {}) {
    */
   function buildCandidateOps(item, explicitType) {
     const cleanItem = getCleanDocument(item);
-    const resolvedType = explicitType || (
-      typeof cleanItem.id === 'string' && cleanItem.id.startsWith('org_') && !cleanItem.venue && !cleanItem.schedule
-        ? 'organizer'
-        : (typeof cleanItem.id === 'string' && cleanItem.id.startsWith('venue_') && !cleanItem.organizer && !cleanItem.schedule
-            ? 'venue'
-            : 'activity')
-    );
+    const resolvedType = explicitType || resolveListingType(cleanItem);
 
     const ops = [];
 

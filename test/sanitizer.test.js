@@ -4,6 +4,8 @@ import {
   sanitizeActivity,
   sanitizeOrganizer,
   sanitizeVenue,
+  sanitizeListing,
+  resolveListingType,
   normalizeSport,
   normalizeSubcategories,
   extractCanonicalEntities
@@ -431,4 +433,60 @@ test('Seam 1: extractCanonicalEntities enriches Organizer and Venue documents wi
   assert.equal(entities.venue.source_url, 'https://www.stirling.wa.gov.au/events/volleyball-1092');
   assert.equal(entities.venue.raw_source_url, 'https://www.stirling.wa.gov.au/events/volleyball-1092');
   assert.equal(entities.venue.verified, true);
+});
+
+test('Seam 1: resolveListingType and sanitizeListing route organizer, venue, and activity records uniformly', () => {
+  // Explicit entity_type / listing_type / type / kind and org_/venue_ prefix resolution
+  assert.equal(resolveListingType({ entity_type: 'organizer', name: 'Club A' }), 'organizer');
+  assert.equal(resolveListingType({ listing_type: 'organizer', name: 'Club B' }), 'organizer');
+  assert.equal(resolveListingType({ type: 'organizer', name: 'Club C' }), 'organizer');
+  assert.equal(resolveListingType({ kind: 'organizer', name: 'Club D' }), 'organizer');
+  assert.equal(resolveListingType({ id: 'org_perth_club', name: 'Perth Club' }), 'organizer');
+
+  assert.equal(resolveListingType({ entity_type: 'venue', name: 'Venue A' }), 'venue');
+  assert.equal(resolveListingType({ listing_type: 'venue', name: 'Venue B' }), 'venue');
+  assert.equal(resolveListingType({ type: 'venue', name: 'Venue C' }), 'venue');
+  assert.equal(resolveListingType({ kind: 'venue', name: 'Venue D' }), 'venue');
+  assert.equal(resolveListingType({ id: 'venue_loftus_qd66hd', name: 'Loftus' }), 'venue');
+
+  // Activity with venue/schedule or without entity_type resolves to activity
+  assert.equal(resolveListingType({ id: 'org_something', title: 'Session', schedule: { recurrence: 'weekly' } }), 'activity');
+  assert.equal(resolveListingType({ source: 'stirling', source_id: '101', title: 'Morning Run' }), 'activity');
+
+  const sanitizedOrg = sanitizeListing({
+    entity_type: 'organizer',
+    source: 'dlgsc',
+    source_id: 'c-1',
+    name: 'Subiaco Soccer Club',
+    sports: ['Soccer'],
+    coordinates: { lat: -31.9445, lng: 115.828 },
+    source_url: 'https://subiacosoccer.org.au'
+  });
+  assert.equal(sanitizedOrg.id, 'org_subiaco_soccer_club');
+  assert.deepEqual(sanitizedOrg.subcategories, ['soccer']);
+  assert.equal(sanitizedOrg.schedule, undefined);
+
+  const sanitizedVenue = sanitizeListing({
+    entity_type: 'venue',
+    source: 'volleyball_wa',
+    source_id: 'v-1',
+    name: 'The HUB',
+    subcategory: 'volleyball',
+    coordinates: { lat: -31.9416, lng: 115.8477 },
+    source_url: 'https://volleyballwa.com.au/social-volley/'
+  });
+  assert.ok(sanitizedVenue.id.startsWith('venue_the_hub_'));
+  assert.deepEqual(sanitizedVenue.subcategories, ['volleyball']);
+  assert.equal(sanitizedVenue.schedule, undefined);
+
+  const sanitizedAct = sanitizeListing({
+    source: 'stirling',
+    source_id: 'a-1',
+    title: 'Beach Volleyball Session',
+    sport: 'volleyball',
+    coordinates: { lat: -31.8942, lng: 115.7571 },
+    start_time: '2026-11-20T17:30:00+08:00'
+  });
+  assert.equal(sanitizedAct.id, 'stirling_a-1');
+  assert.equal(sanitizedAct.schedule.start_date, '2026-11-20');
 });

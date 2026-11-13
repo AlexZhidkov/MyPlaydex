@@ -4,10 +4,63 @@
  * from the public WordPress store locator AJAX endpoint.
  */
 
-import { slugify } from '../sanitizer.js';
+import { slugify, normalizeSubcategories } from '../sanitizer.js';
+import { encodeGeohash } from '../geohash.js';
 
 export const VOLLEYBALL_WA_ENDPOINT = 'https://volleyballwa.com.au/wp-admin/admin-ajax.php';
 export const DEFAULT_VWA_CENTER = { lat: -31.95, lng: 115.86 };
+
+const POSTAL_OR_PLACEHOLDER_REGEX = /^(?:p\.?\s*o\.?\s*box|g\.?\s*p\.?\s*o\.?\s*box|locked\s+bag|post\s+office|c\/o\b|tba\b|tbc\b)/i;
+const STREET_NUMBER_PREFIX_REGEX = /^(?:\d+[a-z]?(?:\/\d+[a-z]?)?\s+|unit\s+\d+|lot\s+\d+|level\s+\d+|suite\s+\d+)/i;
+const BARE_STREET_SUFFIX_REGEX = /\b(?:st|street|rd|road|ave|avenue|dr|drive|pde|parade|cres|crescent|ct|court|cl|close|way|ln|lane|hwy|highway|tce|terrace|blvd|boulevard|pl|place|sq|square|esp|esplanade|rise|cir|circuit)$/i;
+const VENUE_KEYWORD_REGEX = /\b(?:school|college|university|uni|centre|center|stadium|arena|hall|park|reserve|oval|beach|club|gym|gymnasium|recreation|rec|sports|pavilion|academy|campus|complex|domain|grounds|courts)\b/i;
+
+/**
+ * Extracts a distinct physical venue name from a Volleyball WA directory record
+ * when the address includes a named school, centre, or park rather than a bare street or PO Box.
+ *
+ * @param {object} [item={}]
+ * @param {string} [organizerName='']
+ * @returns {string | null}
+ */
+export function extractDistinctVenueName(item = {}, organizerName = '') {
+  const rawCandidate = typeof item.venue_name === 'string' && item.venue_name.trim()
+    ? item.venue_name.trim()
+    : (typeof item.address === 'string' ? item.address.split(',')[0].trim() : '');
+
+  if (!rawCandidate) {
+    return null;
+  }
+
+  const lowerCandidate = rawCandidate.toLowerCase();
+  const lowerOrganizer = String(organizerName || '').trim().toLowerCase();
+  const lowerCity = String(item.city || '').trim().toLowerCase();
+
+  if (
+    lowerCandidate === lowerOrganizer ||
+    (lowerCity && lowerCandidate === lowerCity) ||
+    lowerCandidate === 'greater perth' ||
+    lowerCandidate === 'perth' ||
+    lowerCandidate === 'wa'
+  ) {
+    return null;
+  }
+
+  if (POSTAL_OR_PLACEHOLDER_REGEX.test(rawCandidate)) {
+    return null;
+  }
+
+  if (STREET_NUMBER_PREFIX_REGEX.test(rawCandidate)) {
+    return null;
+  }
+
+  const hasAddress2 = typeof item.address2 === 'string' && item.address2.trim() !== '';
+  if (!hasAddress2 && BARE_STREET_SUFFIX_REGEX.test(rawCandidate) && !VENUE_KEYWORD_REGEX.test(rawCandidate)) {
+    return null;
+  }
+
+  return rawCandidate;
+}
 
 /**
  * Formats address components from store locator record.
@@ -35,6 +88,46 @@ function summarizeHours(hoursHtml = '') {
     .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/**
+ * Appends a deduplicated canonical Venue Listing to `listings` if its deterministic ID
+ * has not been emitted yet in this crawl.
+ */
+function appendUniqueVenue(listings, seenVenueIds, {
+  name,
+  geohash,
+  sourceId,
+  urlLink,
+  description,
+  address,
+  lat,
+  lng,
+  subcategories
+}) {
+  const geohash6 = geohash.slice(0, 6);
+  const venueId = `venue_${slugify(name) || 'venue'}_${geohash6}`;
+  if (seenVenueIds.has(venueId)) {
+    return;
+  }
+  seenVenueIds.add(venueId);
+  listings.push({
+    id: venueId,
+    entity_type: 'venue',
+    source: 'volleyball_wa',
+    source_id: sourceId,
+    source_url: urlLink,
+    raw_source_url: urlLink,
+    region_id: 'perth',
+    name,
+    description,
+    address,
+    coordinates: { lat, lng },
+    geohash,
+    category: 'sports',
+    subcategory: 'volleyball',
+    subcategories
+  });
 }
 
 /**
@@ -85,6 +178,8 @@ export function createVolleyballWaCrawler(options = {}) {
       const records = Array.isArray(json) ? json : (json?.data || []);
 
       const listings = [];
+      const seenVenueIds = new Set();
+      const subcategories = normalizeSubcategories({ subcategory: 'volleyball' }, 'volleyball');
 
       for (let i = 0; i < records.length; i++) {
         const item = records[i];
@@ -96,62 +191,83 @@ export function createVolleyballWaCrawler(options = {}) {
           continue;
         }
 
-        const clubName = (item.store || 'Volleyball Club').trim();
+        const directoryName = (item.store || 'Volleyball Organizer').trim();
+        const sourceId = String(item.id || i + 1);
         const address = formatAddress(item);
         const urlLink = item.url && item.url.startsWith('http') ? item.url : 'https://volleyballwa.com.au/places/find-a-club/';
+        const website = item.url && item.url.startsWith('http') ? item.url : null;
         const costDescription = 'Casual volleyball fees apply';
+        const geohash = encodeGeohash(itemLat, itemLng, 9);
 
         const terms = (item.terms || '').trim();
-        const isBeach = clubName.toLowerCase().includes('beach') ||
+        const isClub = /\bclubs?\b/i.test(terms);
+        const isBeach = directoryName.toLowerCase().includes('beach') ||
           (item.address && item.address.toLowerCase().includes('beach')) ||
           terms.toLowerCase().includes('beach');
         const disciplineLabel = isBeach ? 'Beach volleyball' : 'Indoor and social volleyball';
 
         const hoursSummary = summarizeHours(item.hours);
-        const hoursSuffix = hoursSummary ? ` Weekly schedule: ${hoursSummary.slice(0, 100)}...` : '';
+        const hoursSuffix = hoursSummary ? ` Hours: ${hoursSummary.slice(0, 100)}.` : '';
 
         // Follow GLOSSARY.md avoiding 'facilities', 'places', or 'grounds'
-        const description = `${clubName} (${terms || 'Volleyball Venue'}) - ${disciplineLabel} sessions and social competitions in Greater Perth.${hoursSuffix}`;
+        const description = `${directoryName} (${terms || 'Volleyball Venue'}) - ${disciplineLabel} sessions and social competitions in Greater Perth.${hoursSuffix}`;
 
-        listings.push({
-          source: 'volleyball_wa',
-          source_id: String(item.id || i + 1),
-          source_url: urlLink,
-          external_url: urlLink,
-          region_id: 'perth',
-          title: clubName,
-          description,
-          category: 'sports',
-          subcategory: 'volleyball',
-          sport: 'volleyball',
-          organizer: {
-            id: `org_${slugify(clubName)}`,
-            name: clubName,
-            website: item.url || null,
+        if (isClub) {
+          listings.push({
+            id: `org_${slugify(directoryName) || 'volleyball_organizer'}`,
+            entity_type: 'organizer',
+            source: 'volleyball_wa',
+            source_id: sourceId,
+            source_url: urlLink,
+            raw_source_url: urlLink,
+            region_id: 'perth',
+            name: directoryName,
+            description,
+            address,
+            coordinates: { lat: itemLat, lng: itemLng },
+            geohash,
+            category: 'sports',
+            subcategory: 'volleyball',
+            subcategories,
+            website,
             contact: {
               phone: item.phone || null,
               email: item.email || null
+            },
+            cost_description: costDescription,
+            demographics: {
+              gender: 'all',
+              age: 'all'
             }
-          },
-          venue: {
-            name: clubName,
-            address,
-            coordinates: { lat: itemLat, lng: itemLng }
-          },
-          venue_name: clubName,
-          address,
-          coordinates: { lat: itemLat, lng: itemLng },
-          cost_description: costDescription,
-          display_price: costDescription,
-          is_free: false,
-          schedule: {
-            recurrence: 'weekly'
-          },
-          demographics: {
-            gender: 'all',
-            age: 'all'
+          });
+
+          const distinctVenueName = extractDistinctVenueName(item, directoryName);
+          if (distinctVenueName) {
+            appendUniqueVenue(listings, seenVenueIds, {
+              name: distinctVenueName,
+              geohash,
+              sourceId: `${sourceId}_venue`,
+              urlLink,
+              description: `${distinctVenueName} (${terms || 'Volleyball Venue'}) - ${disciplineLabel} venue in Greater Perth.${hoursSuffix}`,
+              address,
+              lat: itemLat,
+              lng: itemLng,
+              subcategories
+            });
           }
-        });
+        } else {
+          appendUniqueVenue(listings, seenVenueIds, {
+            name: directoryName,
+            geohash,
+            sourceId,
+            urlLink,
+            description,
+            address,
+            lat: itemLat,
+            lng: itemLng,
+            subcategories
+          });
+        }
       }
 
       return listings;

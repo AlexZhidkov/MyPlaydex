@@ -5,7 +5,7 @@
  */
 
 import { pathToFileURL } from 'node:url';
-import { sanitizeActivity } from './sanitizer.js';
+import { sanitizeListing, resolveListingType, extractCanonicalEntities } from './sanitizer.js';
 import { createFirestoreAdapter, initFirestoreFromEnv } from './firestore-adapter.js';
 import { createUrlVerifier } from './url-verifier.js';
 import { createStirlingCrawler } from './crawlers/stirling-crawler.js';
@@ -121,10 +121,13 @@ export async function runCrawlerHarness({ crawlers = [], adapter, options = {} }
         continue;
       }
 
+      const validEntries = [];
       for (const item of rawItems) {
         try {
-          const sanitized = sanitizeActivity(item);
+          const listingType = resolveListingType(item);
+          const sanitized = sanitizeListing(item);
           validItems.push(sanitized);
+          validEntries.push({ raw: item, listingType });
         } catch (err) {
           invalidItems.push({ item, error: err.message });
         }
@@ -138,7 +141,22 @@ export async function runCrawlerHarness({ crawlers = [], adapter, options = {} }
           ? validItems
           : await urlVerifier.verifyListings(validItems);
 
-        const writeResult = await adapter.batchUpsertActivities(verifiedItems);
+        for (let idx = 0; idx < verifiedItems.length; idx++) {
+          const verifiedItem = verifiedItems[idx];
+          const entry = validEntries[idx];
+          if (entry?.listingType === 'activity') {
+            Object.defineProperty(verifiedItem, '_canonicalEntities', {
+              value: extractCanonicalEntities(verifiedItem, entry.raw),
+              enumerable: false,
+              configurable: true,
+              writable: true
+            });
+          }
+        }
+
+        const writeResult = typeof adapter.batchUpsertListings === 'function'
+          ? await adapter.batchUpsertListings(verifiedItems)
+          : await adapter.batchUpsertActivities(verifiedItems);
         upsertedCount = writeResult.upserted;
         totalUpserted += upsertedCount;
       }
