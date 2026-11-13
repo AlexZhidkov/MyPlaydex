@@ -1,9 +1,11 @@
 /**
  * URL Verification and Link Recovery Module
  * Implements pre-write ingestion link repair, bounded concurrent probing,
- * deduplication against Firestore /activities, and graceful degradation
- * to Unverified Listings (ADR 0003).
+ * deduplication against Firestore /activities, /organizers, and /venues,
+ * and graceful degradation to Unverified Listings (ADR 0003 & ADR 0004).
  */
+
+import { resolveCollectionForListingId } from './firestore-adapter.js';
 
 export const DEFAULT_PROBE_TIMEOUT_MS = 6000;
 export const DEFAULT_CONCURRENCY = 8;
@@ -240,16 +242,53 @@ export function createUrlVerifier(options = {}) {
       const listingIds = listings.map(l => l.id).filter(Boolean);
       let existingDocsMap = options.existingDocsMap || new Map();
 
-      if (existingDocsMap.size === 0) {
-        if (adapter && typeof adapter.getActivities === 'function') {
+      if (existingDocsMap.size === 0 && listingIds.length > 0) {
+        if (adapter && typeof adapter.getListings === 'function') {
           try {
-            existingDocsMap = await adapter.getActivities(listingIds);
+            existingDocsMap = await adapter.getListings(listingIds);
+          } catch {
+            existingDocsMap = new Map();
+          }
+        } else if (adapter) {
+          try {
+            const orgIds = [];
+            const venueIds = [];
+            const activityIds = [];
+            for (const id of listingIds) {
+              const col = resolveCollectionForListingId(id);
+              if (col === 'organizers' && typeof adapter.getOrganizers === 'function') {
+                orgIds.push(id);
+              } else if (col === 'venues' && typeof adapter.getVenues === 'function') {
+                venueIds.push(id);
+              } else {
+                activityIds.push(id);
+              }
+            }
+            const lookups = [];
+            if (activityIds.length > 0 && typeof adapter.getActivities === 'function') {
+              lookups.push(adapter.getActivities(activityIds));
+            }
+            if (orgIds.length > 0) {
+              lookups.push(adapter.getOrganizers(orgIds));
+            }
+            if (venueIds.length > 0) {
+              lookups.push(adapter.getVenues(venueIds));
+            }
+            const maps = await Promise.all(lookups);
+            existingDocsMap = new Map();
+            for (const map of maps) {
+              if (map && typeof map.entries === 'function') {
+                for (const [k, v] of map.entries()) {
+                  existingDocsMap.set(k, v);
+                }
+              }
+            }
           } catch {
             existingDocsMap = new Map();
           }
         } else if (db && typeof db.getAll === 'function') {
           try {
-            const docRefs = listingIds.map(id => db.collection('activities').doc(id));
+            const docRefs = listingIds.map(id => db.collection(resolveCollectionForListingId(id)).doc(id));
             const snapshots = await db.getAll(...docRefs);
             for (const snap of snapshots) {
               if (snap && snap.exists) {
@@ -268,7 +307,7 @@ export function createUrlVerifier(options = {}) {
 
       for (let i = 0; i < resolvedListings.length; i++) {
         const item = resolvedListings[i];
-        const rawCandidate = item.source_url || item.raw_source_url || item.external_url || item.url;
+        const rawCandidate = item.source_url || item.raw_source_url || item.external_url || item.url || item.website;
         const candidateUrl = typeof rawCandidate === 'string' ? rawCandidate.trim() : '';
 
         // Strict preservation of raw_source_url
@@ -288,7 +327,7 @@ export function createUrlVerifier(options = {}) {
         // If already verified: true and matching URL, skip probing (unless force is true)
         const existing = existingDocsMap.get(item.id);
         if (!force && existing && existing.verified === true) {
-          const existingUrl = existing.source_url || existing.raw_source_url || existing.external_url || existing.url;
+          const existingUrl = existing.source_url || existing.raw_source_url || existing.external_url || existing.url || existing.website;
           if (existingUrl === candidateUrl || existing.source_url === candidateUrl) {
             item.verified = true;
             item.source_url = existing.source_url || candidateUrl;

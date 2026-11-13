@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sanitizeActivity, normalizeSport, extractCanonicalEntities } from '../src/sanitizer.js';
+import {
+  sanitizeActivity,
+  sanitizeOrganizer,
+  sanitizeVenue,
+  normalizeSport,
+  normalizeSubcategories,
+  extractCanonicalEntities
+} from '../src/sanitizer.js';
 
 test('Seam 1: normalizeSport maps various sport aliases to canonical MVP taxonomy', () => {
   assert.equal(normalizeSport('Football (Soccer)'), 'soccer');
@@ -228,4 +235,200 @@ test('Seam 1: sanitizeActivity and extractCanonicalEntities handle Unverified Li
   assert.equal(verifiedActivity.schedule.start_date, null, 'Undated listing must not default start_date to crawl execution date');
   assert.equal(verifiedActivity.schedule.start_time, null);
   assert.equal(verifiedActivity.schedule.day_of_week, null);
+});
+
+test('Seam 1: normalizeSubcategories deduplicates normalized sport slugs and drops fallback other when concrete sports exist', () => {
+  assert.deepEqual(
+    normalizeSubcategories({ subcategories: ['Beach Volleyball', 'volleyball', 'Basketball'] }),
+    ['volleyball', 'basketball']
+  );
+  assert.deepEqual(
+    normalizeSubcategories({ sports: 'Futsal, Tennis Socials; Other' }),
+    ['soccer', 'tennis']
+  );
+  assert.deepEqual(
+    normalizeSubcategories({ sport: 'Underwater Hockey' }),
+    ['other']
+  );
+  assert.deepEqual(
+    normalizeSubcategories({}, 'pickleball'),
+    ['pickleball']
+  );
+});
+
+test('Seam 1: sanitizeOrganizer produces canonical Organizer Listing with geohash, subcategories, contact, and verification', () => {
+  const organizer = sanitizeOrganizer({
+    source: 'dlgsc',
+    source_id: 'club-77',
+    name: '  Perth Coastal Sports Club  ',
+    description: 'Community club offering volleyball and basketball.',
+    address: '12 Ocean Dr, Scarborough WA 6019',
+    coordinates: { lat: -31.8942, lng: 115.7571 },
+    sports: ['Beach Volleyball', 'Hoops / Basketball'],
+    website: 'https://perthcoastal.org.au',
+    contact: { email: 'info@perthcoastal.org.au', phone: '08 9000 1111' },
+    cost_description: 'KidSport eligible',
+    demographics: { gender: 'women', age: 'juniors' },
+    source_url: 'https://perthcoastal.org.au/join',
+    raw_source_url: 'http://perthcoastal.org.au/join'
+  });
+
+  assert.equal(organizer.id, 'org_perth_coastal_sports_club');
+  assert.equal(organizer.region_id, 'perth');
+  assert.equal(organizer.name, 'Perth Coastal Sports Club');
+  assert.equal(organizer.description, 'Community club offering volleyball and basketball.');
+  assert.equal(organizer.address, '12 Ocean Dr, Scarborough WA 6019');
+  assert.deepEqual(organizer.coordinates, { lat: -31.8942, lng: 115.7571 });
+  assert.equal(organizer.geohash.length, 9);
+  assert.equal(organizer.category, 'sports');
+  assert.equal(organizer.subcategory, 'volleyball');
+  assert.deepEqual(organizer.subcategories, ['volleyball', 'basketball']);
+  assert.equal(organizer.website, 'https://perthcoastal.org.au');
+  assert.deepEqual(organizer.contact, { email: 'info@perthcoastal.org.au', phone: '08 9000 1111' });
+  assert.equal(organizer.cost_description, 'KidSport eligible');
+  assert.deepEqual(organizer.demographics, { gender: 'women_only', age: 'juniors' });
+  assert.equal(organizer.source_url, 'https://perthcoastal.org.au/join');
+  assert.equal(organizer.raw_source_url, 'http://perthcoastal.org.au/join');
+  assert.equal(organizer.verified, true);
+  assert.ok(organizer.updated_at);
+
+  // Unverified organizer degrades source_url while preserving raw_source_url
+  const unverifiedOrg = sanitizeOrganizer({
+    id: 'org_broken_club',
+    name: 'Broken Club',
+    coordinates: { lat: -31.95, lng: 115.86 },
+    raw_source_url: 'https://broken-club.example',
+    verified: false
+  });
+  assert.equal(unverifiedOrg.id, 'org_broken_club');
+  assert.equal(unverifiedOrg.verified, false);
+  assert.equal(unverifiedOrg.source_url, null);
+  assert.equal(unverifiedOrg.raw_source_url, 'https://broken-club.example');
+});
+
+test('Seam 1: sanitizeOrganizer throws SanitizationError on missing identity, name, or coordinates', () => {
+  assert.throws(() => sanitizeOrganizer({
+    name: 'No Identity Club',
+    coordinates: { lat: -31.95, lng: 115.86 }
+  }), /Missing required source identity/);
+
+  assert.throws(() => sanitizeOrganizer({
+    source: 'dlgsc',
+    source_id: '123',
+    coordinates: { lat: -31.95, lng: 115.86 }
+  }), /Missing required field: name/);
+
+  assert.throws(() => sanitizeOrganizer({
+    source: 'dlgsc',
+    source_id: '123',
+    name: 'No Coords Club'
+  }), /Missing valid coordinates/);
+});
+
+test('Seam 1: sanitizeVenue produces canonical Venue Listing with deterministic id, geohash, subcategories, and verification', () => {
+  const venue = sanitizeVenue({
+    source: 'volleyball_wa',
+    source_id: 'v-55',
+    name: '  Loftus Recreation Centre  ',
+    description: 'Indoor court venue in Leederville.',
+    address: '99 Loftus St, Leederville WA 6007',
+    coordinates: { lat: -31.9366, lng: 115.8431 },
+    subcategories: ['Volleyball', 'Futsal', 'Basketball'],
+    source_url: 'https://loftus.example.com.au',
+    raw_source_url: 'http://loftus.example.com.au'
+  });
+
+  assert.ok(venue.id.startsWith('venue_loftus_recreation_centre_'));
+  assert.equal(venue.id.length, 'venue_loftus_recreation_centre_'.length + 6);
+  assert.equal(venue.region_id, 'perth');
+  assert.equal(venue.name, 'Loftus Recreation Centre');
+  assert.equal(venue.description, 'Indoor court venue in Leederville.');
+  assert.equal(venue.address, '99 Loftus St, Leederville WA 6007');
+  assert.deepEqual(venue.coordinates, { lat: -31.9366, lng: 115.8431 });
+  assert.equal(venue.geohash.length, 9);
+  assert.equal(venue.category, 'sports');
+  assert.equal(venue.subcategory, 'volleyball');
+  assert.deepEqual(venue.subcategories, ['volleyball', 'soccer', 'basketball']);
+  assert.equal(venue.source_url, 'https://loftus.example.com.au');
+  assert.equal(venue.raw_source_url, 'http://loftus.example.com.au');
+  assert.equal(venue.verified, true);
+  assert.ok(venue.updated_at);
+
+  // Unverified venue degrades source_url while preserving raw_source_url and defaults address to name
+  const unverifiedVenue = sanitizeVenue({
+    id: 'venue_esplanade_qd66d1',
+    name: 'Esplanade Reserve',
+    coordinates: { lat: -32.0569, lng: 115.7439 },
+    source_url: 'https://dead.example.com',
+    verified: false
+  });
+  assert.equal(unverifiedVenue.id, 'venue_esplanade_qd66d1');
+  assert.equal(unverifiedVenue.address, 'Esplanade Reserve');
+  assert.equal(unverifiedVenue.verified, false);
+  assert.equal(unverifiedVenue.source_url, null);
+  assert.equal(unverifiedVenue.raw_source_url, 'https://dead.example.com');
+});
+
+test('Seam 1: sanitizeVenue throws SanitizationError on missing identity, name, or coordinates', () => {
+  assert.throws(() => sanitizeVenue({
+    name: 'No Identity Venue',
+    coordinates: { lat: -31.95, lng: 115.86 }
+  }), /Missing required source identity/);
+
+  assert.throws(() => sanitizeVenue({
+    source: 'vwa',
+    source_id: '1',
+    coordinates: { lat: -31.95, lng: 115.86 }
+  }), /Missing required field: name/);
+
+  assert.throws(() => sanitizeVenue({
+    source: 'vwa',
+    source_id: '1',
+    name: 'No Coords Venue'
+  }), /Missing valid coordinates/);
+});
+
+test('Seam 1: extractCanonicalEntities enriches Organizer and Venue documents with region_id, coordinates, geohash, subcategories, and verification fields', () => {
+  const rawInput = {
+    source: 'stirling',
+    source_id: 'event-1092',
+    title: 'Scarborough Sunset Beach Volleyball',
+    description: 'Weekly sunset social volleyball match on the beach.',
+    sport: 'Beach Volleyball',
+    venue_name: 'Scarborough Beach Amphitheatre',
+    address: 'The Esplanade, Scarborough WA 6019',
+    coordinates: { lat: -31.8942, lng: 115.7571 },
+    cost_description: 'Free',
+    external_url: 'https://www.stirling.wa.gov.au/events/volleyball-1092',
+    club_name: 'Scarborough Beach Sports Club',
+    website: 'https://scarboroughbeachsports.com.au',
+    demographics: { gender: 'all', age: 'adults' }
+  };
+
+  const activity = sanitizeActivity(rawInput);
+  const entities = extractCanonicalEntities(activity, rawInput);
+
+  assert.equal(entities.organizer.region_id, 'perth');
+  assert.deepEqual(entities.organizer.coordinates, { lat: -31.8942, lng: 115.7571 });
+  assert.equal(entities.organizer.geohash.length, 9);
+  assert.equal(entities.organizer.category, 'sports');
+  assert.equal(entities.organizer.subcategory, 'volleyball');
+  assert.deepEqual(entities.organizer.subcategories, ['volleyball']);
+  assert.equal(entities.organizer.address, 'The Esplanade, Scarborough WA 6019');
+  assert.equal(entities.organizer.cost_description, 'Free');
+  assert.deepEqual(entities.organizer.demographics, { gender: 'all', age: 'adults' });
+  assert.equal(entities.organizer.website, 'https://scarboroughbeachsports.com.au');
+  assert.equal(entities.organizer.source_url, 'https://www.stirling.wa.gov.au/events/volleyball-1092');
+  assert.equal(entities.organizer.raw_source_url, 'https://www.stirling.wa.gov.au/events/volleyball-1092');
+  assert.equal(entities.organizer.verified, true);
+
+  assert.equal(entities.venue.region_id, 'perth');
+  assert.deepEqual(entities.venue.coordinates, { lat: -31.8942, lng: 115.7571 });
+  assert.equal(entities.venue.geohash.length, 9);
+  assert.equal(entities.venue.category, 'sports');
+  assert.equal(entities.venue.subcategory, 'volleyball');
+  assert.deepEqual(entities.venue.subcategories, ['volleyball']);
+  assert.equal(entities.venue.source_url, 'https://www.stirling.wa.gov.au/events/volleyball-1092');
+  assert.equal(entities.venue.raw_source_url, 'https://www.stirling.wa.gov.au/events/volleyball-1092');
+  assert.equal(entities.venue.verified, true);
 });

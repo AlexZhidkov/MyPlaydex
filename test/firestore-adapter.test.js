@@ -375,4 +375,317 @@ test('Seam 1: batchUpdateActivityUrls updates verified status, source_url, raw_s
   assert.equal(typeof firstOp.data.updated_at, 'string');
 });
 
+test('Seam 2: batchUpsertActivities merges subcategories arrays for shared organizer.id and venue.id', async () => {
+  const writtenDocs = new Map();
+  const mockDb = {
+    collection(colName) {
+      return {
+        doc(id) {
+          return { id, colName, path: `${colName}/${id}` };
+        }
+      };
+    },
+    batch() {
+      const ops = [];
+      return {
+        set(docRef, data, options) {
+          ops.push({ docRef, data, options });
+        },
+        async commit() {
+          for (const op of ops) {
+            writtenDocs.set(op.docRef.path, op.data);
+          }
+        }
+      };
+    }
+  };
+
+  const adapter = createFirestoreAdapter({ db: mockDb, dryRun: false });
+
+  const activities = [
+    {
+      id: 'stirling_1',
+      region_id: 'perth',
+      title: 'Loftus Futsal',
+      category: 'sports',
+      subcategory: 'soccer',
+      source_url: 'https://loftus.example.com/futsal',
+      raw_source_url: 'https://loftus.example.com/futsal',
+      verified: true,
+      venue: {
+        id: 'venue_loftus_qd66hd',
+        name: 'Loftus Centre',
+        coordinates: { lat: -31.93, lng: 115.84 },
+        geohash: 'qd66hd16e'
+      },
+      organizer: {
+        id: 'org_loftus_rec',
+        name: 'Loftus Recreation'
+      },
+      updated_at: '2026-11-13T00:00:00.000Z'
+    },
+    {
+      id: 'stirling_2',
+      region_id: 'perth',
+      title: 'Loftus Basketball',
+      category: 'sports',
+      subcategory: 'basketball',
+      source_url: 'https://loftus.example.com/basketball',
+      raw_source_url: 'https://loftus.example.com/basketball',
+      verified: true,
+      venue: {
+        id: 'venue_loftus_qd66hd',
+        name: 'Loftus Centre',
+        coordinates: { lat: -31.93, lng: 115.84 },
+        geohash: 'qd66hd16e'
+      },
+      organizer: {
+        id: 'org_loftus_rec',
+        name: 'Loftus Recreation'
+      },
+      updated_at: '2026-11-13T01:00:00.000Z'
+    }
+  ];
+
+  const result = await adapter.batchUpsertActivities(activities);
+  assert.equal(result.upserted, 2);
+
+  const venueDoc = writtenDocs.get('venues/venue_loftus_qd66hd');
+  assert.ok(venueDoc);
+  assert.deepEqual(venueDoc.subcategories, ['soccer', 'basketball']);
+  assert.equal(venueDoc.subcategory, 'soccer');
+
+  const orgDoc = writtenDocs.get('organizers/org_loftus_rec');
+  assert.ok(orgDoc);
+  assert.deepEqual(orgDoc.subcategories, ['soccer', 'basketball']);
+  assert.equal(orgDoc.subcategory, 'soccer');
+});
+
+test('Seam 2: batchUpsertOrganizers, batchUpsertVenues, and batchUpsertListings upsert canonical records and merge subcategories', async () => {
+  const writtenDocs = new Map();
+  const mockDb = {
+    collection(colName) {
+      return {
+        doc(id) {
+          return { id, colName, path: `${colName}/${id}` };
+        }
+      };
+    },
+    batch() {
+      const ops = [];
+      return {
+        set(docRef, data, options) {
+          ops.push({ docRef, data, options });
+        },
+        async commit() {
+          for (const op of ops) {
+            writtenDocs.set(op.docRef.path, op.data);
+          }
+        }
+      };
+    }
+  };
+
+  const adapter = createFirestoreAdapter({ db: mockDb, dryRun: false });
+
+  await adapter.batchUpsertOrganizers([
+    {
+      id: 'org_multi_club',
+      region_id: 'perth',
+      name: 'Multi Sport Club',
+      category: 'sports',
+      subcategory: 'tennis',
+      subcategories: ['tennis'],
+      coordinates: { lat: -31.95, lng: 115.86 },
+      geohash: 'qd66h1234',
+      verified: true,
+      source_url: 'https://multisport.org.au',
+      raw_source_url: 'https://multisport.org.au',
+      updated_at: '2026-11-13T00:00:00.000Z'
+    },
+    {
+      id: 'org_multi_club',
+      region_id: 'perth',
+      name: 'Multi Sport Club',
+      category: 'sports',
+      subcategory: 'pickleball',
+      subcategories: ['pickleball'],
+      coordinates: { lat: -31.95, lng: 115.86 },
+      geohash: 'qd66h1234',
+      verified: true,
+      source_url: 'https://multisport.org.au',
+      raw_source_url: 'https://multisport.org.au',
+      updated_at: '2026-11-13T01:00:00.000Z'
+    }
+  ]);
+
+  const orgDoc = writtenDocs.get('organizers/org_multi_club');
+  assert.deepEqual(orgDoc.subcategories, ['tennis', 'pickleball']);
+
+  await adapter.batchUpsertVenues([
+    {
+      id: 'venue_arena_qd66h1',
+      region_id: 'perth',
+      name: 'Perth Arena',
+      category: 'sports',
+      subcategory: 'volleyball',
+      subcategories: ['volleyball'],
+      coordinates: { lat: -31.95, lng: 115.86 },
+      geohash: 'qd66h1234',
+      verified: true,
+      source_url: 'https://arena.org.au',
+      raw_source_url: 'https://arena.org.au',
+      updated_at: '2026-11-13T00:00:00.000Z'
+    },
+    {
+      id: 'venue_arena_qd66h1',
+      region_id: 'perth',
+      name: 'Perth Arena',
+      category: 'sports',
+      subcategory: 'basketball',
+      subcategories: ['basketball'],
+      coordinates: { lat: -31.95, lng: 115.86 },
+      geohash: 'qd66h1234',
+      verified: true,
+      source_url: 'https://arena.org.au',
+      raw_source_url: 'https://arena.org.au',
+      updated_at: '2026-11-13T01:00:00.000Z'
+    }
+  ]);
+
+  const venueDoc = writtenDocs.get('venues/venue_arena_qd66h1');
+  assert.deepEqual(venueDoc.subcategories, ['volleyball', 'basketball']);
+
+  // Mixed batchUpsertListings handles organizer, venue, and activity together
+  const mixedRes = await adapter.batchUpsertListings([
+    {
+      id: 'org_mixed_club',
+      region_id: 'perth',
+      name: 'Mixed Club',
+      subcategory: 'running',
+      subcategories: ['running'],
+      coordinates: { lat: -31.95, lng: 115.86 },
+      geohash: 'qd66h1234'
+    },
+    {
+      id: 'venue_mixed_qd66h1',
+      region_id: 'perth',
+      name: 'Mixed Venue',
+      subcategory: 'walking',
+      subcategories: ['walking'],
+      coordinates: { lat: -31.95, lng: 115.86 },
+      geohash: 'qd66h1234'
+    }
+  ]);
+  assert.equal(mixedRes.upserted, 2);
+  assert.ok(writtenDocs.has('organizers/org_mixed_club'));
+  assert.ok(writtenDocs.has('venues/venue_mixed_qd66h1'));
+});
+
+test('Seam 2: getListings, scanOrganizers, scanVenues, and batchUpdateListingUrls route across activities, organizers, and venues', async () => {
+  const store = {
+    activities: new Map([
+      ['stirling_1', { id: 'stirling_1', title: 'Tennis', verified: true, source_url: 'https://tennis.org' }]
+    ]),
+    organizers: new Map([
+      ['org_club_a', { id: 'org_club_a', name: 'Club A', verified: false, source_url: null, raw_source_url: 'http://cluba.org' }]
+    ]),
+    venues: new Map([
+      ['venue_park_qd66h1', { id: 'venue_park_qd66h1', name: 'Park Venue', verified: true, source_url: 'https://park.org' }]
+    ])
+  };
+
+  const mockDb = {
+    collection(colName) {
+      return {
+        doc(id) {
+          return { id, colName, path: `${colName}/${id}` };
+        },
+        async get() {
+          const map = store[colName] || new Map();
+          return {
+            docs: Array.from(map.values()).map(d => ({
+              id: d.id,
+              data: () => d
+            }))
+          };
+        }
+      };
+    },
+    async getAll(...docRefs) {
+      return docRefs.map(ref => {
+        const doc = store[ref.colName]?.get(ref.id);
+        return {
+          id: ref.id,
+          exists: Boolean(doc),
+          data: () => doc
+        };
+      });
+    },
+    batch() {
+      const ops = [];
+      return {
+        set(docRef, data, options) {
+          ops.push({ docRef, data, options });
+        },
+        async commit() {
+          for (const op of ops) {
+            const colMap = store[op.docRef.colName];
+            if (colMap) {
+              const existing = colMap.get(op.docRef.id) || {};
+              colMap.set(op.docRef.id, { ...existing, ...op.data });
+            }
+          }
+        }
+      };
+    }
+  };
+
+  const adapter = createFirestoreAdapter({ db: mockDb, dryRun: false });
+
+  const docs = await adapter.getListings(['stirling_1', 'org_club_a', 'venue_park_qd66h1']);
+  assert.equal(docs.size, 3);
+  assert.equal(docs.get('org_club_a').name, 'Club A');
+  assert.equal(docs.get('venue_park_qd66h1').name, 'Park Venue');
+
+  const orgs = await adapter.scanOrganizers({ onlyUnverified: true });
+  assert.equal(orgs.length, 1);
+  assert.equal(orgs[0].id, 'org_club_a');
+
+  const venues = await adapter.scanVenues();
+  assert.equal(venues.length, 1);
+  assert.equal(venues[0].id, 'venue_park_qd66h1');
+
+  const updateRes = await adapter.batchUpdateListingUrls([
+    { id: 'org_club_a', verified: true, source_url: 'https://cluba.org', raw_source_url: 'http://cluba.org' },
+    { id: 'venue_park_qd66h1', verified: false, source_url: null, raw_source_url: 'https://park.org' }
+  ]);
+  assert.equal(updateRes.updated, 2);
+  assert.equal(store.organizers.get('org_club_a').verified, true);
+  assert.equal(store.organizers.get('org_club_a').source_url, 'https://cluba.org');
+  assert.equal(store.venues.get('venue_park_qd66h1').verified, false);
+  assert.equal(store.venues.get('venue_park_qd66h1').source_url, null);
+
+  // Separate batchUpsertOrganizers call merges subcategories with the existing Firestore doc
+  await adapter.batchUpsertOrganizers([
+    {
+      id: 'org_club_a',
+      region_id: 'perth',
+      name: 'Club A',
+      subcategory: 'volleyball',
+      subcategories: ['volleyball']
+    }
+  ]);
+  await adapter.batchUpsertOrganizers([
+    {
+      id: 'org_club_a',
+      region_id: 'perth',
+      name: 'Club A',
+      subcategory: 'basketball',
+      subcategories: ['basketball']
+    }
+  ]);
+  assert.deepEqual(store.organizers.get('org_club_a').subcategories, ['volleyball', 'basketball']);
+});
+
 

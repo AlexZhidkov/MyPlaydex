@@ -28,25 +28,45 @@ rules_version = '2';
 //   - created_at: string (required, immutable) - ISO 8601 creation timestamp
 //   - updated_at: string (required) - ISO 8601 last update timestamp
 //
-// Collection: venues
-// Document ID: venue_{slug}_{geohash6}
-// Fields:
-//   - id: string (required, immutable) - Deterministic venue ID
-//   - name: string (required) - Venue name
-//   - address: string (optional) - Street address
-//   - coordinates: map (required) - { lat: number, lng: number }
-//   - geohash: string (required) - Precision-9 Base32 geohash
-//   - region_id: string (required) - Region identifier
-//   - updated_at: string (required) - ISO 8601 timestamp
-//
 // Collection: organizers
 // Document ID: org_{slug}
 // Fields:
 //   - id: string (required, immutable) - Deterministic organizer ID
+//   - region_id: string (required) - Partition identifier (e.g., "perth")
 //   - name: string (required) - Organizer name
+//   - description: string (optional) - Organizer description
+//   - address: string (optional) - Street or club address
+//   - coordinates: map (required) - { lat: number, lng: number }
+//   - geohash: string (required) - Precision-9 Base32 geohash
+//   - category: string (required) - Top-level category ("sports")
+//   - subcategory: string (required) - Primary normalized sport slug
+//   - subcategories: list<string> (required) - Normalized sport slugs (string[])
 //   - website: string | null (optional) - Official website URL
-//   - contact: map (optional, internal/PII) - { email: string | null, phone: string | null }
-//   - updated_at: string (required) - ISO 8601 timestamp
+//   - contact: map (optional) - Public directory contact details { email: string | null, phone: string | null }
+//   - cost_description: string (optional) - Cost or membership fee summary
+//   - demographics: map (optional) - Target demographics { gender, age }
+//   - source_url: string | null (optional) - Verified outbound referral URL
+//   - raw_source_url: string | null (optional) - Original candidate referral URL
+//   - verified: bool (required) - Whether source_url has been verified reachable
+//   - updated_at: string (required) - ISO 8601 last update timestamp
+//
+// Collection: venues
+// Document ID: venue_{slug}_{geohash6}
+// Fields:
+//   - id: string (required, immutable) - Deterministic venue ID
+//   - region_id: string (required) - Partition identifier (e.g., "perth")
+//   - name: string (required) - Venue name
+//   - description: string (optional) - Venue description
+//   - address: string (optional) - Street address
+//   - coordinates: map (required) - { lat: number, lng: number }
+//   - geohash: string (required) - Precision-9 Base32 geohash
+//   - category: string (required) - Top-level category ("sports")
+//   - subcategory: string (required) - Primary normalized sport slug
+//   - subcategories: list<string> (required) - Normalized sport slugs (string[])
+//   - source_url: string | null (optional) - Verified outbound referral URL
+//   - raw_source_url: string | null (optional) - Original candidate referral URL
+//   - verified: bool (required) - Whether source_url has been verified reachable
+//   - updated_at: string (required) - ISO 8601 last update timestamp
 //
 // Collection: regions
 // Document ID: {regionId} (e.g., "perth")
@@ -58,36 +78,41 @@ rules_version = '2';
 //   - updated_at: string (required) - ISO 8601 timestamp
 //
 // Access Model:
-//   - Public unauthenticated read access (get, list) is permitted ONLY on
-//     /activities/{activityId} so the browser discovery client can fetch
-//     sanitized activity listings via the Cloud Firestore REST API.
+//   - Public unauthenticated read access (get, list) is permitted on
+//     /activities/{activityId}, /organizers/{organizerId}, and /venues/{venueId}
+//     so the browser discovery client can fetch sanitized discovery listings
+//     across all three tabs via the Cloud Firestore REST API.
 //   - All writes across all collections are performed exclusively by backend
 //     ingestion and verification pipelines using the privileged Firebase Admin
 //     SDK (which bypasses Firestore Security Rules).
 //   - Client writes are strictly denied across the entire database.
-//   - Client reads on /venues, /organizers (which may store contact PII),
-//     and /regions are strictly denied.
+//   - Client reads and writes on /regions and all other paths remain strictly denied
+//     (backend-only).
 //
 // ===============================================================
 
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Public discovery feed: read-only for browser clients (including unauthenticated REST queries).
+    // Public discovery feed (scheduled activities): read-only for browser clients.
     // All writes are restricted to backend firebase-admin pipelines.
     match /activities/{activityId} {
       allow read: if true;
       allow write: if false;
     }
 
-    // Canonical venues collection: backend-only access.
-    match /venues/{venueId} {
-      allow read, write: if false;
+    // Public discovery directory (canonical organizers with public directory contact details):
+    // read-only for browser clients; all writes restricted to backend firebase-admin pipelines.
+    match /organizers/{organizerId} {
+      allow read: if true;
+      allow write: if false;
     }
 
-    // Canonical organizers collection (contains contact details): backend-only access.
-    match /organizers/{organizerId} {
-      allow read, write: if false;
+    // Public discovery directory (canonical venues): read-only for browser clients.
+    // All writes are restricted to backend firebase-admin pipelines.
+    match /venues/{venueId} {
+      allow read: if true;
+      allow write: if false;
     }
 
     // Canonical regions collection: backend-only access.

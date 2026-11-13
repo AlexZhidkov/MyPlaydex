@@ -6,7 +6,7 @@
 
 import { pathToFileURL } from 'node:url';
 import { createUrlVerifier } from './url-verifier.js';
-import { createFirestoreAdapter, initFirestoreFromEnv } from './firestore-adapter.js';
+import { createFirestoreAdapter, initFirestoreFromEnv, resolveCollectionForListingId } from './firestore-adapter.js';
 
 /**
  * Runs the standalone verifier pipeline against an activities collection.
@@ -30,18 +30,35 @@ export async function runVerifier({
   const isDryRun = Boolean(options.dryRun || adapter?.isDryRun?.());
   const force = Boolean(options.force);
   const onlyUnverified = Boolean(options.onlyUnverified);
+  const collections = Array.isArray(options.collections) && options.collections.length > 0
+    ? new Set(options.collections)
+    : new Set(['activities', 'organizers', 'venues']);
 
-  logger.log?.(`[Verifier] Scanning /activities collection (onlyUnverified: ${onlyUnverified}, force: ${force}, dryRun: ${isDryRun})...`);
+  const scanTasks = [];
+  if (collections.has('activities') && typeof adapter.scanActivities === 'function') {
+    logger.log?.(`[Verifier] Scanning /activities collection (onlyUnverified: ${onlyUnverified}, force: ${force}, dryRun: ${isDryRun})...`);
+    scanTasks.push(adapter.scanActivities({ onlyUnverified }));
+  }
+  if (collections.has('organizers') && typeof adapter.scanOrganizers === 'function') {
+    logger.log?.(`[Verifier] Scanning /organizers collection (onlyUnverified: ${onlyUnverified}, force: ${force}, dryRun: ${isDryRun})...`);
+    scanTasks.push(adapter.scanOrganizers({ onlyUnverified }));
+  }
+  if (collections.has('venues') && typeof adapter.scanVenues === 'function') {
+    logger.log?.(`[Verifier] Scanning /venues collection (onlyUnverified: ${onlyUnverified}, force: ${force}, dryRun: ${isDryRun})...`);
+    scanTasks.push(adapter.scanVenues({ onlyUnverified }));
+  }
 
-  const activities = await adapter.scanActivities({ onlyUnverified });
-  const scannedCount = activities.length;
+  const scannedBatches = await Promise.all(scanTasks);
+  const listings = scannedBatches.flat();
+  const scannedCount = listings.length;
 
   const originalSnapshots = new Map(
-    activities.map(a => [a.id, {
+    listings.map(a => [a.id, {
       verified: a.verified,
       source_url: a.source_url,
       raw_source_url: a.raw_source_url,
-      external_url: a.external_url
+      external_url: a.external_url,
+      website: a.website
     }])
   );
 
@@ -54,7 +71,7 @@ export async function runVerifier({
     timeoutMs: options.timeoutMs
   });
 
-  const verifiedActivities = await urlVerifier.verifyListings(activities);
+  const verifiedListings = await urlVerifier.verifyListings(listings);
 
   let skippedCount = 0;
   let repairedCount = 0;
@@ -62,13 +79,20 @@ export async function runVerifier({
   let verifiedCount = 0;
   const updatesToCommit = [];
 
-  for (const item of verifiedActivities) {
+  for (const item of verifiedListings) {
     const orig = originalSnapshots.get(item.id) || {};
-    const candidateUrl = item.source_url || item.raw_source_url || orig.external_url;
+    const candidateUrl = item.source_url || item.raw_source_url || orig.external_url || orig.website;
 
     if (item.verified === true) {
       verifiedCount++;
-      if (!force && orig.verified === true && (orig.source_url === item.source_url || orig.raw_source_url === candidateUrl || orig.external_url === candidateUrl)) {
+      if (
+        !force &&
+        orig.verified === true &&
+        (orig.source_url === item.source_url ||
+          orig.raw_source_url === candidateUrl ||
+          orig.external_url === candidateUrl ||
+          orig.website === candidateUrl)
+      ) {
         skippedCount++;
       }
       const wasRepaired = (orig.verified !== true) || (orig.source_url !== item.source_url);
@@ -97,8 +121,43 @@ export async function runVerifier({
 
   if (!isDryRun && updatesToCommit.length > 0) {
     logger.log?.(`[Verifier] Committing ${updatesToCommit.length} updates to Firestore in batches...`);
-    const updateResult = await adapter.batchUpdateActivityUrls(updatesToCommit);
-    updatedCount = updateResult.updated;
+
+    if (typeof adapter.batchUpdateListingUrls === 'function') {
+      const updateResult = await adapter.batchUpdateListingUrls(updatesToCommit);
+      updatedCount = updateResult.updated;
+    } else if (typeof adapter.batchUpdateOrganizerUrls === 'function' || typeof adapter.batchUpdateVenueUrls === 'function') {
+      const activityUpdates = [];
+      const organizerUpdates = [];
+      const venueUpdates = [];
+
+      for (const u of updatesToCommit) {
+        const col = resolveCollectionForListingId(u.id);
+        if (col === 'organizers' && typeof adapter.batchUpdateOrganizerUrls === 'function') {
+          organizerUpdates.push(u);
+        } else if (col === 'venues' && typeof adapter.batchUpdateVenueUrls === 'function') {
+          venueUpdates.push(u);
+        } else {
+          activityUpdates.push(u);
+        }
+      }
+
+      const updateCalls = [];
+      if (activityUpdates.length > 0 && typeof adapter.batchUpdateActivityUrls === 'function') {
+        updateCalls.push(adapter.batchUpdateActivityUrls(activityUpdates));
+      }
+      if (organizerUpdates.length > 0) {
+        updateCalls.push(adapter.batchUpdateOrganizerUrls(organizerUpdates));
+      }
+      if (venueUpdates.length > 0) {
+        updateCalls.push(adapter.batchUpdateVenueUrls(venueUpdates));
+      }
+
+      const results = await Promise.all(updateCalls);
+      updatedCount = results.reduce((sum, res) => sum + (res?.updated || 0), 0);
+    } else {
+      const updateResult = await adapter.batchUpdateActivityUrls(updatesToCommit);
+      updatedCount = updateResult.updated;
+    }
   }
 
   return {

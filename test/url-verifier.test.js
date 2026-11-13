@@ -313,4 +313,107 @@ test('Seam 3: verifyListings supports legacy external_url and url fields from ex
   assert.equal(results[1].raw_source_url, 'http://example.com/legacy-http');
 });
 
+test('Seam 3: verifyListings verifies Organizer and Venue Listings, deduplicates via db/adapter, and degrades unreachable links', async () => {
+  const probedUrls = [];
+  const mockFetch = async (url) => {
+    probedUrls.push(url);
+    if (url.includes('dead-club')) {
+      return { ok: false, status: 404, url, body: null };
+    }
+    return {
+      ok: true,
+      status: 200,
+      url: url.replace('http:', 'https:'),
+      body: null
+    };
+  };
+
+  const store = {
+    organizers: new Map([
+      ['org_already_ok', {
+        id: 'org_already_ok',
+        name: 'Already OK Club',
+        source_url: 'https://okclub.org.au',
+        raw_source_url: 'https://okclub.org.au',
+        verified: true
+      }]
+    ]),
+    venues: new Map([
+      ['venue_healed_qd66h1', {
+        id: 'venue_healed_qd66h1',
+        name: 'Healed Venue',
+        source_url: null,
+        raw_source_url: 'http://healedvenue.org.au',
+        verified: false
+      }]
+    ]),
+    activities: new Map()
+  };
+
+  const mockDb = {
+    collection(colName) {
+      return {
+        doc(id) {
+          return { id, colName };
+        }
+      };
+    },
+    async getAll(...docRefs) {
+      return docRefs.map(ref => {
+        const doc = store[ref.colName]?.get(ref.id);
+        return {
+          id: ref.id,
+          exists: Boolean(doc),
+          data: () => doc
+        };
+      });
+    }
+  };
+
+  const verifier = createUrlVerifier({ db: mockDb, fetch: mockFetch });
+  const results = await verifier.verifyListings([
+    {
+      id: 'org_already_ok',
+      name: 'Already OK Club',
+      source_url: 'https://okclub.org.au',
+      raw_source_url: 'https://okclub.org.au',
+      verified: true
+    },
+    {
+      id: 'org_website_only',
+      name: 'Website Only Club',
+      website: 'http://websiteonly.org.au'
+    },
+    {
+      id: 'org_dead',
+      name: 'Dead Club',
+      source_url: 'https://dead-club.org.au',
+      raw_source_url: 'https://dead-club.org.au'
+    },
+    {
+      id: 'venue_healed_qd66h1',
+      name: 'Healed Venue',
+      raw_source_url: 'http://healedvenue.org.au',
+      verified: false
+    }
+  ]);
+
+  assert.equal(probedUrls.includes('https://okclub.org.au'), false);
+
+  const websiteOrganizer = results.find(r => r.id === 'org_website_only');
+  assert.equal(websiteOrganizer.verified, true);
+  assert.equal(websiteOrganizer.source_url, 'https://websiteonly.org.au/');
+  assert.equal(websiteOrganizer.raw_source_url, 'http://websiteonly.org.au');
+
+  const deadOrganizer = results.find(r => r.id === 'org_dead');
+  assert.equal(deadOrganizer.verified, false);
+  assert.equal(deadOrganizer.source_url, null);
+  assert.equal(deadOrganizer.raw_source_url, 'https://dead-club.org.au');
+
+  const healedVenue = results.find(r => r.id === 'venue_healed_qd66h1');
+  assert.equal(healedVenue.verified, true);
+  assert.equal(healedVenue.source_url, 'https://healedvenue.org.au/');
+  assert.equal(healedVenue.raw_source_url, 'http://healedvenue.org.au');
+});
+
 

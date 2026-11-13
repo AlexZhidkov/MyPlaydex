@@ -384,6 +384,113 @@ test('Seam 2: runVerifier detects and updates legacy external_url documents in F
   assert.equal(updateCalls[0][0].raw_source_url, 'https://stirling.wa.gov.au/market');
 });
 
+test('Seam 2: runVerifier scans and updates Organizer and Venue Listings alongside Activities', async () => {
+  const activities = [
+    {
+      id: 'stirling_1',
+      title: 'Activity 1',
+      verified: true,
+      source_url: 'https://stirling.wa.gov.au/ok',
+      raw_source_url: 'https://stirling.wa.gov.au/ok'
+    }
+  ];
+  const organizers = [
+    {
+      id: 'org_broken_club',
+      name: 'Broken Club',
+      verified: true,
+      source_url: 'https://dead.club.org.au',
+      raw_source_url: 'https://dead.club.org.au'
+    },
+    {
+      id: 'org_website_club',
+      name: 'Website Club',
+      verified: false,
+      source_url: null,
+      website: 'http://repairedclub.org.au'
+    }
+  ];
+  const venues = [
+    {
+      id: 'venue_park_qd66h1',
+      name: 'Park Venue',
+      verified: false,
+      source_url: null,
+      raw_source_url: 'http://parkvenue.org.au'
+    }
+  ];
+
+  const activityUpdates = [];
+  const organizerUpdates = [];
+  const venueUpdates = [];
+
+  const mockAdapter = {
+    isDryRun: () => false,
+    async scanActivities() {
+      return activities.map(a => ({ ...a }));
+    },
+    async scanOrganizers() {
+      return organizers.map(o => ({ ...o }));
+    },
+    async scanVenues() {
+      return venues.map(v => ({ ...v }));
+    },
+    async batchUpdateActivityUrls(updates) {
+      activityUpdates.push(...updates);
+      return { total: updates.length, updated: updates.length, failed: 0, dryRun: false };
+    },
+    async batchUpdateOrganizerUrls(updates) {
+      organizerUpdates.push(...updates);
+      return { total: updates.length, updated: updates.length, failed: 0, dryRun: false };
+    },
+    async batchUpdateVenueUrls(updates) {
+      venueUpdates.push(...updates);
+      return { total: updates.length, updated: updates.length, failed: 0, dryRun: false };
+    }
+  };
+
+  const mockProber = {
+    async probeAll(urls) {
+      return urls.map(url => {
+        if (url.includes('dead.club')) {
+          return { reachable: false, status: 404, url: null };
+        }
+        return { reachable: true, status: 200, url };
+      });
+    }
+  };
+
+  const summary = await runVerifier({
+    adapter: mockAdapter,
+    prober: mockProber,
+    options: { force: true, dryRun: false },
+    logger: { log: () => {} }
+  });
+
+  assert.equal(summary.scannedCount, 4);
+  assert.equal(summary.verifiedCount, 3);
+  assert.equal(summary.unverifiedCount, 1);
+  assert.equal(summary.updatedCount, 3);
+
+  assert.equal(activityUpdates.length, 0);
+  assert.equal(organizerUpdates.length, 2);
+  assert.equal(venueUpdates.length, 1);
+
+  const deadOrg = organizerUpdates.find(u => u.id === 'org_broken_club');
+  assert.equal(deadOrg.verified, false);
+  assert.equal(deadOrg.source_url, null);
+  assert.equal(deadOrg.raw_source_url, 'https://dead.club.org.au');
+
+  const repairedOrg = organizerUpdates.find(u => u.id === 'org_website_club');
+  assert.equal(repairedOrg.verified, true);
+  assert.equal(repairedOrg.source_url, 'https://repairedclub.org.au/');
+  assert.equal(repairedOrg.raw_source_url, 'http://repairedclub.org.au');
+
+  assert.equal(venueUpdates[0].id, 'venue_park_qd66h1');
+  assert.equal(venueUpdates[0].verified, true);
+  assert.equal(venueUpdates[0].source_url, 'https://parkvenue.org.au/');
+});
+
 
 
 

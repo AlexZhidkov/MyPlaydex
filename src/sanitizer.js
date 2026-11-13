@@ -63,6 +63,61 @@ export function normalizeSport(rawSport = '') {
 }
 
 /**
+ * Normalizes an array or delimited string of sport values into deduplicated canonical sport slugs.
+ * Drops fallback `'other'` entries when concrete sports are present.
+ *
+ * @param {object | Array<string> | string} [rawOrInput={}]
+ * @param {string} [fallbackSubcategory='']
+ * @returns {string[]}
+ */
+export function normalizeSubcategories(rawOrInput = {}, fallbackSubcategory = '') {
+  const candidates = [];
+  const pushValues = (val) => {
+    if (Array.isArray(val)) {
+      for (const item of val) {
+        if (typeof item === 'string' && item.trim()) {
+          candidates.push(item.trim());
+        }
+      }
+    } else if (typeof val === 'string' && val.trim()) {
+      for (const part of val.split(/[,;|/]+/)) {
+        if (part.trim()) {
+          candidates.push(part.trim());
+        }
+      }
+    }
+  };
+
+  if (Array.isArray(rawOrInput) || typeof rawOrInput === 'string') {
+    pushValues(rawOrInput);
+  } else if (rawOrInput && typeof rawOrInput === 'object') {
+    pushValues(rawOrInput.subcategories);
+    pushValues(rawOrInput.sports);
+    pushValues(rawOrInput.subcategory);
+    pushValues(rawOrInput.sport);
+  }
+
+  const normalized = [];
+  for (const candidate of candidates) {
+    const slug = normalizeSport(candidate);
+    if (!normalized.includes(slug)) {
+      normalized.push(slug);
+    }
+  }
+
+  const concrete = normalized.filter(s => s !== 'other');
+  if (concrete.length > 0) {
+    return concrete;
+  }
+
+  if (normalized.length > 0) {
+    return normalized;
+  }
+
+  return [normalizeSport(fallbackSubcategory)];
+}
+
+/**
  * Determines whether an activity is free based on explicit flag or cost description text.
  *
  * @param {string} costDescription
@@ -435,6 +490,155 @@ export function getCanonicalRegion(regionId = 'perth', updatedAt = new Date().to
 }
 
 /**
+ * Validates and extracts numeric `{ lat, lng }` coordinates from a raw record.
+ *
+ * @param {object} raw
+ * @param {string} [errorMessage]
+ * @returns {{ lat: number, lng: number }}
+ */
+function extractValidCoordinates(raw, errorMessage = 'Missing valid coordinates: { lat, lng } are required') {
+  const coords = raw.coordinates || raw.venue?.coordinates || (raw.lat !== undefined && raw.lng !== undefined ? { lat: raw.lat, lng: raw.lng } : null);
+  if (!coords || typeof coords.lat !== 'number' || typeof coords.lng !== 'number' || Number.isNaN(coords.lat) || Number.isNaN(coords.lng)) {
+    throw new SanitizationError(errorMessage, { raw });
+  }
+  return { lat: coords.lat, lng: coords.lng };
+}
+
+/**
+ * Resolves verification status, canonical `source_url`, and preserved `raw_source_url`.
+ *
+ * @param {object} raw
+ * @param {string} [fallbackUrl='']
+ * @returns {{ source_url: string | null, raw_source_url: string | null, verified: boolean }}
+ */
+function resolveVerificationFields(raw, fallbackUrl = '') {
+  const candidateUrl = raw.source_url || raw.external_url || raw.url || fallbackUrl || '';
+  const trimmedUrl = typeof candidateUrl === 'string' ? candidateUrl.trim() : '';
+  const rawSourceUrl = typeof raw.raw_source_url === 'string' && raw.raw_source_url.trim()
+    ? raw.raw_source_url.trim()
+    : (trimmedUrl || null);
+  const hasValidUrl = Boolean(trimmedUrl);
+  const verified = raw.verified !== undefined ? (Boolean(raw.verified) && hasValidUrl) : hasValidUrl;
+  const sourceUrl = verified ? trimmedUrl : null;
+  return {
+    source_url: sourceUrl,
+    raw_source_url: rawSourceUrl,
+    verified
+  };
+}
+
+/**
+ * Extracts normalized demographics `{ gender, age }` from a raw record.
+ *
+ * @param {object} raw
+ * @returns {{ gender: "all" | "women_only" | "men_only", age: "all" | "adults" | "juniors" | "masters" }}
+ */
+function extractDemographics(raw) {
+  const rawGender = raw.demographics?.gender || raw.gender || 'all';
+  const rawAge = raw.demographics?.age || raw.age || 'all';
+  return {
+    gender: normalizeGender(rawGender),
+    age: normalizeAge(rawAge)
+  };
+}
+
+/**
+ * Resolves verification fields for an extracted Organizer or Venue entity,
+ * avoiding marking unprobed website links as verified unless explicitly verified
+ * or matching the already-verified Activity referral URL.
+ *
+ * @param {object} entityInput
+ * @param {string | null} verifiedReferralUrl
+ * @param {string | null} rawReferralUrl
+ * @param {boolean} activityVerified
+ * @param {string | null} [fallbackRawUrl=null]
+ * @returns {{ source_url: string | null, raw_source_url: string | null, verified: boolean }}
+ */
+function resolveExtractedEntityVerification(entityInput = {}, verifiedReferralUrl, rawReferralUrl, activityVerified, fallbackRawUrl = null) {
+  const entitySourceUrl = typeof entityInput.source_url === 'string' && entityInput.source_url.trim()
+    ? entityInput.source_url.trim()
+    : null;
+  const entityRawUrl = typeof entityInput.raw_source_url === 'string' && entityInput.raw_source_url.trim()
+    ? entityInput.raw_source_url.trim()
+    : null;
+
+  if (entityInput.verified === false) {
+    return {
+      source_url: null,
+      raw_source_url: entityRawUrl || entitySourceUrl || fallbackRawUrl || rawReferralUrl || null,
+      verified: false
+    };
+  }
+
+  if (entityInput.verified === true) {
+    const resolvedUrl = entitySourceUrl || (activityVerified ? verifiedReferralUrl : null);
+    return {
+      source_url: resolvedUrl,
+      raw_source_url: entityRawUrl || resolvedUrl || fallbackRawUrl || rawReferralUrl || null,
+      verified: Boolean(resolvedUrl)
+    };
+  }
+
+  // Inherit verification strictly from the Activity's verified referral URL (never mark an unprobed website verified)
+  const resolvedUrl = activityVerified ? (entitySourceUrl || verifiedReferralUrl || null) : null;
+  return {
+    source_url: resolvedUrl,
+    raw_source_url: entityRawUrl || entitySourceUrl || rawReferralUrl || fallbackRawUrl || null,
+    verified: Boolean(resolvedUrl)
+  };
+}
+
+/**
+ * Merges two canonical Organizer or Venue documents referencing the same deterministic ID,
+ * combining `subcategories` arrays and preserving populated metadata.
+ *
+ * @param {object} prevDoc
+ * @param {object} nextDoc
+ * @returns {object}
+ */
+export function mergeEntityDocuments(prevDoc, nextDoc) {
+  const rawSports = [
+    ...(Array.isArray(prevDoc.subcategories) ? prevDoc.subcategories : []),
+    ...(prevDoc.subcategory ? [prevDoc.subcategory] : []),
+    ...(Array.isArray(nextDoc.subcategories) ? nextDoc.subcategories : []),
+    ...(nextDoc.subcategory ? [nextDoc.subcategory] : [])
+  ];
+  const mergedSubcategories = normalizeSubcategories(rawSports);
+  const primarySubcategory = mergedSubcategories[0] || nextDoc.subcategory || prevDoc.subcategory || 'other';
+
+  const sourceUrl = nextDoc.source_url || prevDoc.source_url || null;
+  const rawSourceUrl = nextDoc.raw_source_url || prevDoc.raw_source_url || null;
+  const verified = Boolean(sourceUrl) && Boolean(nextDoc.verified || prevDoc.verified);
+
+  const merged = {
+    ...prevDoc,
+    ...nextDoc,
+    description: nextDoc.description || prevDoc.description || '',
+    address: nextDoc.address || prevDoc.address || '',
+    subcategory: primarySubcategory,
+    subcategories: mergedSubcategories,
+    source_url: sourceUrl,
+    raw_source_url: rawSourceUrl,
+    verified
+  };
+
+  if ('website' in prevDoc || 'website' in nextDoc) {
+    merged.website = nextDoc.website || prevDoc.website || null;
+  }
+  if ('cost_description' in prevDoc || 'cost_description' in nextDoc) {
+    merged.cost_description = nextDoc.cost_description || prevDoc.cost_description || '';
+  }
+  if (prevDoc.contact || nextDoc.contact) {
+    merged.contact = {
+      email: nextDoc.contact?.email || prevDoc.contact?.email || null,
+      phone: nextDoc.contact?.phone || prevDoc.contact?.phone || null
+    };
+  }
+
+  return merged;
+}
+
+/**
  * Extracts canonical multi-collection entity documents (/activities, /venues, /organizers, /regions).
  *
  * @param {object} activity - Canonical ActivityDocument
@@ -442,42 +646,209 @@ export function getCanonicalRegion(regionId = 'perth', updatedAt = new Date().to
  * @returns {{ activity: object, venue: object, organizer: object, region: object }}
  */
 export function extractCanonicalEntities(activity, raw = {}) {
-  const venueAddress = raw.address || raw.venue?.address || activity.venue?.address || activity.venue?.name;
-  const verifiedReferralUrl = activity.verified !== false ? (activity.source_url || raw.external_url || null) : null;
-  const organizerWebsite = raw.website || raw.organizer?.website || raw.club_website || verifiedReferralUrl || null;
+  const regionId = activity.region_id || raw.region_id || 'perth';
+  const updatedAt = activity.updated_at || new Date().toISOString();
+  const venueCoords = activity.venue?.coordinates || raw.coordinates || raw.venue?.coordinates || { lat: 0, lng: 0 };
+  const venueGeohash = activity.venue?.geohash || raw.venue?.geohash || encodeGeohash(venueCoords.lat, venueCoords.lng, 9);
+  const venueAddress = raw.address || raw.venue?.address || activity.venue?.address || activity.venue?.name || '';
+
+  const activitySubcategory = activity.subcategory || normalizeSport(raw.subcategory || raw.sport || raw.category || '');
+  const subcategories = normalizeSubcategories(
+    {
+      subcategories: raw.subcategories || activity.subcategories,
+      sports: raw.sports,
+      subcategory: activitySubcategory
+    },
+    activitySubcategory
+  );
+  const primarySubcategory = subcategories[0] || activitySubcategory || 'other';
+  const category = activity.category || (typeof raw.category === 'string' && raw.category.trim() ? raw.category.trim().toLowerCase() : 'sports');
+
+  const activityVerified = activity.verified !== false;
+  const verifiedReferralUrl = activityVerified ? (activity.source_url || raw.external_url || null) : null;
+  const rawReferralUrl = activity.raw_source_url ?? raw.raw_source_url ?? activity.source_url ?? raw.source_url ?? raw.external_url ?? null;
+
+  const explicitWebsite = raw.website || raw.organizer?.website || raw.club_website || null;
+  const organizerWebsite = explicitWebsite || verifiedReferralUrl || null;
+  const organizerVerification = resolveExtractedEntityVerification(
+    raw.organizer,
+    verifiedReferralUrl,
+    rawReferralUrl,
+    activityVerified,
+    explicitWebsite
+  );
+
+  const venueVerification = resolveExtractedEntityVerification(
+    raw.venue,
+    verifiedReferralUrl,
+    rawReferralUrl,
+    activityVerified
+  );
+
   const organizerContact = raw.contact || raw.organizer?.contact || {
     email: raw.email || raw.organizer?.email || null,
     phone: raw.phone || raw.organizer?.phone || null
   };
 
   const venue = {
-    id: activity.venue.id,
-    name: activity.venue.name,
+    id: activity.venue?.id,
+    region_id: regionId,
+    name: activity.venue?.name || raw.venue_name || '',
+    description: typeof raw.venue?.description === 'string' ? raw.venue.description.trim() : '',
     address: venueAddress,
     coordinates: {
-      lat: activity.venue.coordinates.lat,
-      lng: activity.venue.coordinates.lng
+      lat: venueCoords.lat,
+      lng: venueCoords.lng
     },
-    geohash: activity.venue.geohash,
-    region_id: activity.region_id,
-    updated_at: activity.updated_at
+    geohash: venueGeohash,
+    category,
+    subcategory: primarySubcategory,
+    subcategories,
+    source_url: venueVerification.source_url,
+    raw_source_url: venueVerification.raw_source_url,
+    verified: venueVerification.verified,
+    updated_at: updatedAt
   };
 
   const organizer = {
-    id: activity.organizer.id,
-    name: activity.organizer.name,
+    id: activity.organizer?.id,
+    region_id: regionId,
+    name: activity.organizer?.name || '',
+    description: typeof (raw.organizer?.description ?? raw.description ?? activity.description) === 'string'
+      ? String(raw.organizer?.description ?? raw.description ?? activity.description).trim()
+      : '',
+    address: raw.organizer?.address || venueAddress || '',
+    coordinates: {
+      lat: venueCoords.lat,
+      lng: venueCoords.lng
+    },
+    geohash: venueGeohash,
+    category,
+    subcategory: primarySubcategory,
+    subcategories,
     website: organizerWebsite,
     contact: organizerContact,
-    updated_at: activity.updated_at
+    cost_description: raw.organizer?.cost_description || raw.cost_description || activity.cost?.display_price || '',
+    demographics: raw.organizer?.demographics || activity.demographics || extractDemographics(raw),
+    source_url: organizerVerification.source_url,
+    raw_source_url: organizerVerification.raw_source_url,
+    verified: organizerVerification.verified,
+    updated_at: updatedAt
   };
 
-  const region = getCanonicalRegion(activity.region_id, activity.updated_at);
+  const region = getCanonicalRegion(regionId, updatedAt);
 
   return {
     activity,
     venue,
     organizer,
     region
+  };
+}
+
+/**
+ * Shared validation and normalization for standalone Organizer and Venue Listings.
+ *
+ * @param {object} raw
+ * @param {object} options
+ * @param {'organizer' | 'venue'} kind
+ * @returns {object}
+ */
+function sanitizeEntityListingBase(raw = {}, options = {}, kind) {
+  const hasSourceIdentity = Boolean(raw.source && raw.source_id);
+  const explicitId = typeof raw.id === 'string' ? raw.id.trim() : '';
+  if (!hasSourceIdentity && !explicitId) {
+    throw new SanitizationError('Missing required source identity (source and source_id, or id required)', { raw });
+  }
+
+  const rawName = typeof raw.name === 'string' ? raw.name.trim() : (typeof raw.title === 'string' ? raw.title.trim() : '');
+  if (!rawName) {
+    throw new SanitizationError('Missing required field: name', { raw });
+  }
+
+  const coords = extractValidCoordinates(raw, `Missing valid coordinates: ${kind} coordinates { lat, lng } are required`);
+  const geohash = encodeGeohash(coords.lat, coords.lng, 9);
+  const geohash6 = geohash.slice(0, 6);
+  const slug = slugify(rawName) || (kind === 'organizer' ? 'unknown' : 'venue');
+  const prefix = kind === 'organizer' ? 'org_' : 'venue_';
+  let id;
+  if (explicitId) {
+    id = explicitId.startsWith(prefix)
+      ? explicitId
+      : (kind === 'organizer' ? `org_${slugify(explicitId) || slug}` : `venue_${slugify(explicitId) || slug}_${geohash6}`);
+  } else {
+    id = kind === 'organizer' ? `org_${slug}` : `venue_${slug}_${geohash6}`;
+  }
+
+  const regionId = raw.region_id || options.regionId || 'perth';
+  const category = typeof raw.category === 'string' && raw.category.trim() ? raw.category.trim().toLowerCase() : 'sports';
+  const subcategories = normalizeSubcategories(raw);
+  const subcategory = subcategories[0] || 'other';
+  const updatedAt = raw.updated_at || new Date().toISOString();
+
+  return {
+    id,
+    region_id: regionId,
+    name: rawName,
+    description: typeof raw.description === 'string' ? raw.description.trim() : '',
+    coordinates: coords,
+    geohash,
+    category,
+    subcategory,
+    subcategories,
+    updated_at: updatedAt
+  };
+}
+
+/**
+ * Sanitizes a raw crawled record into a canonical Organizer Listing document.
+ *
+ * @param {object} [raw={}]
+ * @param {object} [options={}]
+ * @returns {object} Canonical Organizer Listing
+ */
+export function sanitizeOrganizer(raw = {}, options = {}) {
+  const base = sanitizeEntityListingBase(raw, options, 'organizer');
+  const website = typeof raw.website === 'string' && raw.website.trim() ? raw.website.trim() : null;
+  const verification = resolveVerificationFields(raw, website || '');
+
+  const contactInput = raw.contact || {};
+  const contact = {
+    email: contactInput.email || raw.email || null,
+    phone: contactInput.phone || raw.phone || null
+  };
+
+  return {
+    ...base,
+    address: typeof raw.address === 'string' ? raw.address.trim() : '',
+    website: verification.verified ? (website || verification.source_url) : website,
+    contact,
+    cost_description: typeof raw.cost_description === 'string' ? raw.cost_description.trim() : '',
+    demographics: extractDemographics(raw),
+    source_url: verification.source_url,
+    raw_source_url: verification.raw_source_url,
+    verified: verification.verified
+  };
+}
+
+/**
+ * Sanitizes a raw crawled record into a canonical Venue Listing document.
+ *
+ * @param {object} [raw={}]
+ * @param {object} [options={}]
+ * @returns {object} Canonical Venue Listing
+ */
+export function sanitizeVenue(raw = {}, options = {}) {
+  const base = sanitizeEntityListingBase(raw, options, 'venue');
+  const verification = resolveVerificationFields(raw);
+  const address = typeof raw.address === 'string' && raw.address.trim() ? raw.address.trim() : base.name;
+
+  return {
+    ...base,
+    address,
+    source_url: verification.source_url,
+    raw_source_url: verification.raw_source_url,
+    verified: verification.verified
   };
 }
 
@@ -498,24 +869,14 @@ export function sanitizeActivity(raw = {}, options = {}) {
     throw new SanitizationError('Missing required field: title', { raw });
   }
 
-  const coords = raw.coordinates || raw.venue?.coordinates || (raw.lat !== undefined && raw.lng !== undefined ? { lat: raw.lat, lng: raw.lng } : null);
-  if (!coords || typeof coords.lat !== 'number' || typeof coords.lng !== 'number' || Number.isNaN(coords.lat) || Number.isNaN(coords.lng)) {
-    throw new SanitizationError('Missing valid coordinates: venue coordinates { lat, lng } are required', { raw });
-  }
+  const coords = extractValidCoordinates(raw, 'Missing valid coordinates: venue coordinates { lat, lng } are required');
 
   const cleanSource = String(raw.source).toLowerCase().replace(/[^a-z0-9_-]/g, '');
   const cleanSourceId = String(raw.source_id).replace(/[^a-zA-Z0-9_-]/g, '_');
   const id = `${cleanSource}_${cleanSourceId}`;
 
   const regionId = raw.region_id || options.regionId || 'perth';
-  const candidateUrl = raw.source_url || raw.external_url || raw.url || '';
-  const trimmedUrl = typeof candidateUrl === 'string' ? candidateUrl.trim() : '';
-  const rawSourceUrl = typeof raw.raw_source_url === 'string' && raw.raw_source_url.trim()
-    ? raw.raw_source_url.trim()
-    : (trimmedUrl || null);
-  const hasValidUrl = Boolean(trimmedUrl);
-  const verified = raw.verified !== undefined ? (Boolean(raw.verified) && hasValidUrl) : hasValidUrl;
-  const sourceUrl = verified ? trimmedUrl : null;
+  const { source_url: sourceUrl, raw_source_url: rawSourceUrl, verified } = resolveVerificationFields(raw);
   const description = typeof raw.description === 'string' ? raw.description.trim() : '';
 
   const category = 'sports';
@@ -539,10 +900,7 @@ export function sanitizeActivity(raw = {}, options = {}) {
   const displayPrice = costDescription || (isFree ? 'Free' : '');
 
   // Demographics extraction
-  const rawGender = raw.demographics?.gender || raw.gender || 'all';
-  const rawAge = raw.demographics?.age || raw.age || 'all';
-  const gender = normalizeGender(rawGender);
-  const age = normalizeAge(rawAge);
+  const demographics = extractDemographics(raw);
 
   const nowIso = new Date().toISOString();
   const schedule = parseSchedule(raw, nowIso);
@@ -579,10 +937,7 @@ export function sanitizeActivity(raw = {}, options = {}) {
       is_free: isFree,
       display_price: displayPrice
     },
-    demographics: {
-      gender,
-      age
-    },
+    demographics,
     verified,
     created_at: createdAt,
     updated_at: updatedAt

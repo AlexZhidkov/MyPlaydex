@@ -5,18 +5,36 @@
  * and zero-network dry-run capabilities.
  */
 
-import { extractCanonicalEntities } from './sanitizer.js';
+import { extractCanonicalEntities, mergeEntityDocuments } from './sanitizer.js';
 
 const FIRESTORE_MAX_BATCH_SIZE = 500;
 
 /**
- * Creates a clean copy of an activity document without internal private properties.
+ * Resolves the target Firestore collection name from a listing document ID prefix.
  *
- * @param {object} activity
+ * @param {string} id
+ * @param {string} [defaultCollection='activities']
+ * @param {object} [collections]
+ * @returns {string}
+ */
+export function resolveCollectionForListingId(id, defaultCollection = 'activities', collections = {}) {
+  const organizersCol = collections.organizersCollectionName || 'organizers';
+  const venuesCol = collections.venuesCollectionName || 'venues';
+  if (typeof id === 'string') {
+    if (id.startsWith('org_')) return organizersCol;
+    if (id.startsWith('venue_')) return venuesCol;
+  }
+  return defaultCollection;
+}
+
+/**
+ * Creates a clean copy of a listing document without internal private properties.
+ *
+ * @param {object} doc
  * @returns {object}
  */
-function getCleanActivity(activity) {
-  const clean = { ...activity };
+function getCleanDocument(doc) {
+  const clean = { ...doc };
   for (const key of Object.keys(clean)) {
     if (key.startsWith('_')) {
       delete clean[key];
@@ -52,305 +70,377 @@ export function createFirestoreAdapter(options = {}) {
   // Minimum batch size of 4 ensures atomic write of activity + venue + organizer + region
   const effectiveBatchSize = Math.min(Math.max(4, batchSize), FIRESTORE_MAX_BATCH_SIZE);
 
+  /**
+   * Resolves the target Firestore collection name from a document ID prefix.
+   *
+   * @param {string} id
+   * @param {string} [defaultCollection=collectionName]
+   * @returns {string}
+   */
+  function resolveCollectionForId(id, defaultCollection = collectionName) {
+    return resolveCollectionForListingId(id, defaultCollection, {
+      organizersCollectionName,
+      venuesCollectionName
+    });
+  }
+
+  /**
+   * Batch-retrieves existing records from Firestore by ID, routing `org_*` and `venue_*`
+   * prefixes to their respective collections.
+   *
+   * @param {Array<string>} ids
+   * @param {string} [defaultCollection=collectionName]
+   * @returns {Promise<Map<string, object>>}
+   */
+  async function getRecordsByIds(ids = [], defaultCollection = collectionName) {
+    if (!ids.length || dryRun || !db) {
+      return new Map();
+    }
+
+    const result = new Map();
+    const chunkSize = 500;
+
+    for (let i = 0; i < ids.length; i += chunkSize) {
+      const chunkIds = ids.slice(i, i + chunkSize);
+      const docRefs = chunkIds.map(id => db.collection(resolveCollectionForId(id, defaultCollection)).doc(id));
+
+      try {
+        const snapshots = typeof db.getAll === 'function'
+          ? await db.getAll(...docRefs)
+          : await Promise.all(docRefs.map(ref => ref.get()));
+
+        for (const snap of snapshots) {
+          if (snap && snap.exists) {
+            result.set(snap.id, snap.data());
+          }
+        }
+      } catch {
+        // If retrieval fails, return partial or empty map
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Scans documents from a specified Firestore collection.
+   *
+   * @param {string} targetCollection
+   * @param {object} [scanOptions={}]
+   * @returns {Promise<Array<object>>}
+   */
+  async function scanCollection(targetCollection, scanOptions = {}) {
+    if (!db) {
+      return [];
+    }
+
+    const { onlyUnverified = false } = scanOptions;
+    const snapshot = await db.collection(targetCollection).get();
+    const records = [];
+    const docs = snapshot && snapshot.docs ? snapshot.docs : [];
+
+    for (const doc of docs) {
+      const data = typeof doc.data === 'function' ? doc.data() : doc;
+      const record = { id: doc.id, ...data };
+      if (!onlyUnverified || record.verified !== true) {
+        records.push(record);
+      }
+    }
+
+    return records;
+  }
+
+  /**
+   * Batch-updates URL verification state across target collection(s).
+   *
+   * @param {Array<object>} updates
+   * @param {string} [defaultCollection=collectionName]
+   * @returns {Promise<{ total: number, updated: number, failed: number, batches: number, errors: Array<Error>, dryRun: boolean }>}
+   */
+  async function batchUpdateUrls(updates = [], defaultCollection = collectionName) {
+    const total = updates.length;
+    if (total === 0) {
+      return { total: 0, updated: 0, failed: 0, batches: 0, errors: [], dryRun };
+    }
+
+    const updateBatchSize = Math.min(Math.max(1, batchSize), FIRESTORE_MAX_BATCH_SIZE);
+    const chunks = [];
+    for (let i = 0; i < total; i += updateBatchSize) {
+      chunks.push(updates.slice(i, i + updateBatchSize));
+    }
+
+    if (dryRun || !db) {
+      return { total, updated: total, failed: 0, batches: chunks.length, errors: [], dryRun };
+    }
+
+    let updated = 0;
+    let failed = 0;
+    const errors = [];
+    const nowIso = new Date().toISOString();
+
+    for (const chunk of chunks) {
+      try {
+        const batch = db.batch();
+        for (const item of chunk) {
+          const targetCol = resolveCollectionForId(item.id, defaultCollection);
+          const docRef = db.collection(targetCol).doc(item.id);
+          const updatePayload = {
+            verified: Boolean(item.verified),
+            source_url: item.verified ? (item.source_url || null) : null,
+            raw_source_url: item.raw_source_url !== undefined ? item.raw_source_url : (item.source_url || null),
+            updated_at: item.updated_at || nowIso
+          };
+          batch.set(docRef, updatePayload, { merge: true });
+        }
+
+        await batch.commit();
+        updated += chunk.length;
+      } catch (err) {
+        failed += chunk.length;
+        errors.push(err);
+      }
+    }
+
+    return { total, updated, failed, batches: chunks.length, errors, dryRun };
+  }
+
+  /**
+   * Builds candidate write operations for a single Activity, Organizer, or Venue listing.
+   *
+   * @param {object} item
+   * @param {'activity' | 'organizer' | 'venue'} [explicitType]
+   * @returns {Array<{ col: string, id: string, data: object, mergeable?: boolean }>}
+   */
+  function buildCandidateOps(item, explicitType) {
+    const cleanItem = getCleanDocument(item);
+    const resolvedType = explicitType || (
+      typeof cleanItem.id === 'string' && cleanItem.id.startsWith('org_') && !cleanItem.venue && !cleanItem.schedule
+        ? 'organizer'
+        : (typeof cleanItem.id === 'string' && cleanItem.id.startsWith('venue_') && !cleanItem.organizer && !cleanItem.schedule
+            ? 'venue'
+            : 'activity')
+    );
+
+    const ops = [];
+
+    if (resolvedType === 'organizer') {
+      if (cleanItem.id) {
+        ops.push({ col: organizersCollectionName, id: cleanItem.id, data: cleanItem, mergeable: true });
+      }
+      return ops;
+    }
+
+    if (resolvedType === 'venue') {
+      if (cleanItem.id) {
+        ops.push({ col: venuesCollectionName, id: cleanItem.id, data: cleanItem, mergeable: true });
+      }
+      return ops;
+    }
+
+    const entities = item._canonicalEntities || extractCanonicalEntities(item);
+    const cleanActivity = getCleanDocument(entities.activity || item);
+
+    if (cleanActivity.id) {
+      ops.push({ col: collectionName, id: cleanActivity.id, data: cleanActivity });
+    }
+    if (entities.venue && entities.venue.id) {
+      ops.push({ col: venuesCollectionName, id: entities.venue.id, data: entities.venue, mergeable: true });
+    }
+    if (entities.organizer && entities.organizer.id) {
+      ops.push({ col: organizersCollectionName, id: entities.organizer.id, data: entities.organizer, mergeable: true });
+    }
+    if (entities.region && entities.region.id) {
+      ops.push({ col: regionsCollectionName, id: entities.region.id, data: entities.region });
+    }
+
+    return ops;
+  }
+
+  /**
+   * Upserts an array of canonical records in atomic Firestore batches,
+   * merging `subcategories` across records referencing the same Organizer or Venue ID.
+   *
+   * @param {Array<object>} items
+   * @param {'activity' | 'organizer' | 'venue'} [explicitType]
+   * @returns {Promise<{ total: number, upserted: number, failed: number, batches: number, errors: Array<Error>, dryRun: boolean }>}
+   */
+  async function batchUpsertRecords(items = [], explicitType) {
+    const total = items.length;
+    if (total === 0) {
+      return { total: 0, upserted: 0, failed: 0, batches: 0, errors: [], dryRun };
+    }
+
+    const itemOpsList = items.map(item => buildCandidateOps(item, explicitType));
+    const accumulatedEntityDocs = new Map();
+
+    // Pre-fetch existing Organizer/Venue records when live db.getAll is available
+    // so subcategories merge persistently across separate ingestion runs.
+    if (!dryRun && db && typeof db.getAll === 'function') {
+      const mergeableIds = new Set();
+      for (const ops of itemOpsList) {
+        for (const op of ops) {
+          if (op.mergeable) {
+            mergeableIds.add(op.id);
+          }
+        }
+      }
+
+      if (mergeableIds.size > 0) {
+        const existingMap = await getRecordsByIds(Array.from(mergeableIds));
+        for (const [id, data] of existingMap.entries()) {
+          const col = resolveCollectionForId(id);
+          accumulatedEntityDocs.set(`${col}/${id}`, data);
+        }
+      }
+    }
+
+    const batches = [];
+    let currentBatchOps = new Map();
+    let currentBatchItems = [];
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const candidateOps = itemOpsList[i];
+
+      let newOpsCount = 0;
+      for (const op of candidateOps) {
+        const key = `${op.col}/${op.id}`;
+        if (!currentBatchOps.has(key)) {
+          newOpsCount += 1;
+        }
+      }
+
+      if (currentBatchOps.size > 0 && currentBatchOps.size + newOpsCount > effectiveBatchSize) {
+        batches.push({
+          ops: Array.from(currentBatchOps.values()),
+          items: currentBatchItems
+        });
+        currentBatchOps = new Map();
+        currentBatchItems = [];
+      }
+
+      for (const op of candidateOps) {
+        const key = `${op.col}/${op.id}`;
+        if (op.mergeable) {
+          const prevDoc = accumulatedEntityDocs.get(key);
+          const mergedData = prevDoc ? mergeEntityDocuments(prevDoc, op.data) : op.data;
+          accumulatedEntityDocs.set(key, mergedData);
+          currentBatchOps.set(key, { col: op.col, id: op.id, data: mergedData });
+        } else {
+          currentBatchOps.set(key, { col: op.col, id: op.id, data: op.data });
+        }
+      }
+      currentBatchItems.push(item);
+    }
+
+    if (currentBatchOps.size > 0) {
+      batches.push({
+        ops: Array.from(currentBatchOps.values()),
+        items: currentBatchItems
+      });
+    }
+
+    const batchCount = batches.length;
+
+    if (dryRun || !db) {
+      return { total, upserted: total, failed: 0, batches: batchCount, errors: [], dryRun };
+    }
+
+    let upserted = 0;
+    let failed = 0;
+    const errors = [];
+
+    for (const batchPlan of batches) {
+      try {
+        const batch = db.batch();
+        for (const op of batchPlan.ops) {
+          const docRef = db.collection(op.col).doc(op.id);
+          batch.set(docRef, op.data, { merge: true });
+        }
+
+        await batch.commit();
+        upserted += batchPlan.items.length;
+      } catch (err) {
+        failed += batchPlan.items.length;
+        errors.push(err);
+      }
+    }
+
+    return { total, upserted, failed, batches: batchCount, errors, dryRun };
+  }
+
   return {
     isDryRun() {
       return dryRun;
     },
 
-    /**
-     * Batch-retrieves existing activity records from Firestore for deduplication.
-     *
-     * @param {Array<string>} ids - Array of activity IDs
-     * @returns {Promise<Map<string, object>>} Map of id -> document data
-     */
-    async getActivities(ids = []) {
-      if (!ids.length || dryRun || !db) {
-        return new Map();
-      }
-
-      const result = new Map();
-      const chunkSize = 500;
-
-      for (let i = 0; i < ids.length; i += chunkSize) {
-        const chunkIds = ids.slice(i, i + chunkSize);
-        const docRefs = chunkIds.map(id => db.collection(collectionName).doc(id));
-
-        try {
-          if (typeof db.getAll === 'function') {
-            const snapshots = await db.getAll(...docRefs);
-            for (const snap of snapshots) {
-              if (snap && snap.exists) {
-                result.set(snap.id, snap.data());
-              }
-            }
-          } else {
-            const snapshots = await Promise.all(docRefs.map(ref => ref.get()));
-            for (const snap of snapshots) {
-              if (snap && snap.exists) {
-                result.set(snap.id, snap.data());
-              }
-            }
-          }
-        } catch {
-          // If retrieval fails, return partial or empty map
-        }
-      }
-
-      return result;
+    getActivities(ids = []) {
+      return getRecordsByIds(ids, collectionName);
     },
 
-    /**
-     * Scans existing activity documents from Firestore.
-     *
-     * @param {object} [options]
-     * @param {boolean} [options.onlyUnverified=false]
-     * @returns {Promise<Array<object>>}
-     */
-    async scanActivities(options = {}) {
-      if (!db) {
-        return [];
-      }
-
-      const { onlyUnverified = false } = options;
-      const colRef = db.collection(collectionName);
-      const snapshot = await colRef.get();
-
-      const activities = [];
-      const docs = snapshot && snapshot.docs ? snapshot.docs : [];
-      for (const doc of docs) {
-        const data = typeof doc.data === 'function' ? doc.data() : doc;
-        const activity = { id: doc.id, ...data };
-        if (onlyUnverified) {
-          if (activity.verified !== true) {
-            activities.push(activity);
-          }
-        } else {
-          activities.push(activity);
-        }
-      }
-
-      return activities;
+    getOrganizers(ids = []) {
+      return getRecordsByIds(ids, organizersCollectionName);
     },
 
-    /**
-     * Batch-updates URL verification state for an array of activities.
-     * Updates verified, source_url, raw_source_url, and updated_at with { merge: true }.
-     *
-     * @param {Array<{ id: string, verified: boolean, source_url: string|null, raw_source_url?: string|null, updated_at?: string }>} updates
-     * @returns {Promise<{ total: number, updated: number, failed: number, batches: number, errors: Array<Error>, dryRun: boolean }>}
-     */
-    async batchUpdateActivityUrls(updates = []) {
-      const total = updates.length;
-      if (total === 0) {
-        return {
-          total: 0,
-          updated: 0,
-          failed: 0,
-          batches: 0,
-          errors: [],
-          dryRun
-        };
-      }
-
-      const updateBatchSize = Math.min(Math.max(1, batchSize), FIRESTORE_MAX_BATCH_SIZE);
-      const chunks = [];
-      for (let i = 0; i < total; i += updateBatchSize) {
-        chunks.push(updates.slice(i, i + updateBatchSize));
-      }
-
-      if (dryRun || !db) {
-        return {
-          total,
-          updated: total,
-          failed: 0,
-          batches: chunks.length,
-          errors: [],
-          dryRun
-        };
-      }
-
-      let updated = 0;
-      let failed = 0;
-      const errors = [];
-      const nowIso = new Date().toISOString();
-
-      for (const chunk of chunks) {
-        try {
-          const batch = db.batch();
-          for (const item of chunk) {
-            const docRef = db.collection(collectionName).doc(item.id);
-            const updatePayload = {
-              verified: Boolean(item.verified),
-              source_url: item.verified ? (item.source_url || null) : null,
-              raw_source_url: item.raw_source_url !== undefined ? item.raw_source_url : (item.source_url || null),
-              updated_at: item.updated_at || nowIso
-            };
-            batch.set(docRef, updatePayload, { merge: true });
-          }
-
-          await batch.commit();
-          updated += chunk.length;
-        } catch (err) {
-          failed += chunk.length;
-          errors.push(err);
-        }
-      }
-
-      return {
-        total,
-        updated,
-        failed,
-        batches: chunks.length,
-        errors,
-        dryRun
-      };
+    getVenues(ids = []) {
+      return getRecordsByIds(ids, venuesCollectionName);
     },
 
+    getListings(ids = []) {
+      return getRecordsByIds(ids, collectionName);
+    },
 
-    /**
-     * Upserts an array of activity documents and their canonical entities in batches.
-     * Atomically updates /activities, /venues, /organizers, and /regions collections.
-     *
-     * @param {Array<object>} activities
-     * @returns {Promise<{ total: number, upserted: number, failed: number, batches: number, errors: Array<Error>, dryRun: boolean }>}
-     */
-    async batchUpsertActivities(activities = []) {
-      const total = activities.length;
-      if (total === 0) {
-        return {
-          total: 0,
-          upserted: 0,
-          failed: 0,
-          batches: 0,
-          errors: [],
-          dryRun
-        };
-      }
+    scanActivities(scanOptions = {}) {
+      return scanCollection(collectionName, scanOptions);
+    },
 
-      // Group activities into multi-collection batches where operations count <= effectiveBatchSize
-      // and each activity's related entities are committed in the same atomic batch write
-      const batches = [];
-      let currentBatchOps = new Map();
-      let currentBatchActivities = [];
+    scanOrganizers(scanOptions = {}) {
+      return scanCollection(organizersCollectionName, scanOptions);
+    },
 
-      for (const item of activities) {
-        const entities = item._canonicalEntities || extractCanonicalEntities(item);
-        const cleanActivity = getCleanActivity(entities.activity || item);
+    scanVenues(scanOptions = {}) {
+      return scanCollection(venuesCollectionName, scanOptions);
+    },
 
-        // Candidate operations for this activity
-        const candidateOps = [];
+    async scanListings(scanOptions = {}) {
+      const [activities, organizers, venues] = await Promise.all([
+        scanCollection(collectionName, scanOptions),
+        scanCollection(organizersCollectionName, scanOptions),
+        scanCollection(venuesCollectionName, scanOptions)
+      ]);
+      return [...activities, ...organizers, ...venues];
+    },
 
-        // 1. Activity doc
-        if (cleanActivity.id) {
-          candidateOps.push({
-            col: collectionName,
-            id: cleanActivity.id,
-            data: cleanActivity
-          });
-        }
+    batchUpdateActivityUrls(updates = []) {
+      return batchUpdateUrls(updates, collectionName);
+    },
 
-        // 2. Venue doc
-        if (entities.venue && entities.venue.id) {
-          candidateOps.push({
-            col: venuesCollectionName,
-            id: entities.venue.id,
-            data: entities.venue
-          });
-        }
+    batchUpdateOrganizerUrls(updates = []) {
+      return batchUpdateUrls(updates, organizersCollectionName);
+    },
 
-        // 3. Organizer doc
-        if (entities.organizer && entities.organizer.id) {
-          candidateOps.push({
-            col: organizersCollectionName,
-            id: entities.organizer.id,
-            data: entities.organizer
-          });
-        }
+    batchUpdateVenueUrls(updates = []) {
+      return batchUpdateUrls(updates, venuesCollectionName);
+    },
 
-        // 4. Region doc
-        if (entities.region && entities.region.id) {
-          candidateOps.push({
-            col: regionsCollectionName,
-            id: entities.region.id,
-            data: entities.region
-          });
-        }
+    batchUpdateListingUrls(updates = []) {
+      return batchUpdateUrls(updates, collectionName);
+    },
 
-        // Calculate how many new ops would be added
-        let newOpsCount = 0;
-        for (const op of candidateOps) {
-          const key = `${op.col}/${op.id}`;
-          if (!currentBatchOps.has(key)) {
-            newOpsCount += 1;
-          }
-        }
+    batchUpsertActivities(activities = []) {
+      return batchUpsertRecords(activities, 'activity');
+    },
 
-        // If adding these operations would exceed effectiveBatchSize, flush current batch
-        if (currentBatchOps.size > 0 && currentBatchOps.size + newOpsCount > effectiveBatchSize) {
-          batches.push({
-            ops: Array.from(currentBatchOps.values()),
-            activities: currentBatchActivities
-          });
-          currentBatchOps = new Map();
-          currentBatchActivities = [];
-        }
+    batchUpsertOrganizers(organizers = []) {
+      return batchUpsertRecords(organizers, 'organizer');
+    },
 
-        // Add all candidate operations atomically to the current batch
-        for (const op of candidateOps) {
-          const key = `${op.col}/${op.id}`;
-          currentBatchOps.set(key, op);
-        }
-        currentBatchActivities.push(item);
-      }
+    batchUpsertVenues(venues = []) {
+      return batchUpsertRecords(venues, 'venue');
+    },
 
-      if (currentBatchOps.size > 0) {
-        batches.push({
-          ops: Array.from(currentBatchOps.values()),
-          activities: currentBatchActivities
-        });
-      }
-
-      const batchCount = batches.length;
-
-      if (dryRun || !db) {
-        return {
-          total,
-          upserted: total,
-          failed: 0,
-          batches: batchCount,
-          errors: [],
-          dryRun
-        };
-      }
-
-      let upserted = 0;
-      let failed = 0;
-      const errors = [];
-
-      for (const batchPlan of batches) {
-        try {
-          const batch = db.batch();
-          for (const op of batchPlan.ops) {
-            const docRef = db.collection(op.col).doc(op.id);
-            batch.set(docRef, op.data, { merge: true });
-          }
-
-          await batch.commit();
-          upserted += batchPlan.activities.length;
-        } catch (err) {
-          failed += batchPlan.activities.length;
-          errors.push(err);
-        }
-      }
-
-      return {
-        total,
-        upserted,
-        failed,
-        batches: batchCount,
-        errors,
-        dryRun
-      };
+    batchUpsertListings(listings = []) {
+      return batchUpsertRecords(listings);
     }
   };
 }

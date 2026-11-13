@@ -112,3 +112,27 @@ test('Seam 4: Responsive header hides Suggest and Filter text labels on small sc
     'Small screen media query must set display: none on .filter-btn-text'
   );
 });
+
+test('Seam 4: firestore.rules grants public read and denies client write on activities, organizers, and venues while denying regions', () => {
+  const rulesPath = path.join(REPO_ROOT, 'firestore.rules');
+  const rules = fs.readFileSync(rulesPath, 'utf8');
+
+  for (const collectionMatch of [
+    /match \/activities\/\{activityId\}\s*\{[^}]*allow read:\s*if true;\s*allow write:\s*if false;\s*\}/s,
+    /match \/organizers\/\{organizerId\}\s*\{[^}]*allow read:\s*if true;\s*allow write:\s*if false;\s*\}/s,
+    /match \/venues\/\{venueId\}\s*\{[^}]*allow read:\s*if true;\s*allow write:\s*if false;\s*\}/s
+  ]) {
+    assert.match(rules, collectionMatch, `Missing public read / deny write rule for ${collectionMatch}`);
+  }
+
+  assert.match(
+    rules,
+    /match \/regions\/\{regionId\}\s*\{[^}]*allow read,\s*write:\s*if false;\s*\}/s,
+    '/regions must remain denied to client reads and writes'
+  );
+  assert.match(
+    rules,
+    /match \/\{document=\*\*\}\s*\{[^}]*allow read,\s*write:\s*if false;\s*\}/s,
+    'Default catch-all rule must deny read and write'
+  );
+});
