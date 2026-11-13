@@ -162,6 +162,16 @@ function getNextWeeklyOccurrence(targetDayOfWeek, startDateObj, referenceDate) {
 }
 
 /**
+ * Formats a Date object as "<DayName>, DD/MM/YYYY" in Australian locale (en-AU).
+ *
+ * @param {Date} date
+ * @returns {string}
+ */
+function formatDateWithDay(date) {
+  return `${DAY_NAMES[date.getDay()]}, ${date.toLocaleDateString(AUSTRALIAN_LOCALE)}`;
+}
+
+/**
  * Formats a schedule object into a readable date and time string in Australian format (en-AU).
  *
  * @param {object} [schedule={}]
@@ -197,7 +207,7 @@ export function formatScheduleText(schedule = {}, referenceDate = new Date()) {
     const targetDayOfWeek = resolveDayOfWeek(schedule, startDateObj);
     if (targetDayOfWeek !== null) {
       const nextDate = getNextWeeklyOccurrence(targetDayOfWeek, startDateObj, referenceDate);
-      const dateLabel = nextDate.toLocaleDateString(AUSTRALIAN_LOCALE);
+      const dateLabel = formatDateWithDay(nextDate);
       return timeStr ? `${dateLabel} • ${timeStr}` : dateLabel;
     }
     return timeStr ? `Weekly • ${timeStr}` : 'Weekly';
@@ -205,8 +215,8 @@ export function formatScheduleText(schedule = {}, referenceDate = new Date()) {
 
   // One-off activity
   if (startDateObj) {
-    const startDateLabel = startDateObj.toLocaleDateString(AUSTRALIAN_LOCALE);
-    const endDateLabel = endDateObj ? endDateObj.toLocaleDateString(AUSTRALIAN_LOCALE) : '';
+    const startDateLabel = formatDateWithDay(startDateObj);
+    const endDateLabel = endDateObj ? formatDateWithDay(endDateObj) : '';
     const dateLabel = endDateLabel && endDateLabel !== startDateLabel
       ? `${startDateLabel} – ${endDateLabel}`
       : startDateLabel;

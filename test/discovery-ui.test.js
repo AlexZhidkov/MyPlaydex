@@ -34,7 +34,7 @@ test('Seam 3: formatScheduleText formats weekly, one-off, and ISO timestamp date
     day_of_week: 0
   };
   const weeklySundayText = formatScheduleText(weeklySunday, fridayRef);
-  assert.equal(weeklySundayText, '15/11/2026 • 07:30 – 11:30');
+  assert.equal(weeklySundayText, 'Sunday, 15/11/2026 • 07:30 – 11:30');
   assert.ok(!weeklySundayText.includes('Weekly on Sundays'));
 
   const weeklyMonday = {
@@ -45,7 +45,7 @@ test('Seam 3: formatScheduleText formats weekly, one-off, and ISO timestamp date
     day_of_week: 1
   };
   const weeklyMondayText = formatScheduleText(weeklyMonday, fridayRef);
-  assert.equal(weeklyMondayText, '16/11/2026 • 18:30 – 20:00');
+  assert.equal(weeklyMondayText, 'Monday, 16/11/2026 • 18:30 – 20:00');
 
   const weeklyNoDay = {
     recurrence: 'weekly'
@@ -62,8 +62,13 @@ test('Seam 3: formatScheduleText formats weekly, one-off, and ISO timestamp date
   const oneOffText = formatScheduleText(oneOff);
   const expectedAuDate = new Date(2026, 11, 5).toLocaleDateString('en-AU');
   assert.ok(oneOffText.includes(expectedAuDate), `Expected "${oneOffText}" to include Australian date "${expectedAuDate}"`);
-  assert.ok(oneOffText.includes('05/12/2026'), `Expected DD/MM/YYYY format "05/12/2026" in "${oneOffText}"`);
-  assert.ok(oneOffText.includes('09:00'));
+  assert.equal(oneOffText, 'Saturday, 05/12/2026 • 09:00 – 11:00');
+
+  assert.equal(formatScheduleText({ start_date: '2026-11-18', recurrence: 'none' }), 'Wednesday, 18/11/2026');
+  assert.equal(
+    formatScheduleText({ start_date: '2026-11-18', start_time: '09:30', end_time: '11:30', recurrence: 'none' }),
+    'Wednesday, 18/11/2026 • 09:30 – 11:30'
+  );
 
   const isoSchedule = {
     start_time: '2026-11-08T12:12:05.553Z',
