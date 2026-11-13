@@ -10,18 +10,18 @@ _Avoid_: Event, Gig, Happening
 
 **Organizer**:
 The club, association, promoter, business, or group that hosts and organizes activities.
-_Avoid_: Host, Vendor, Provider
+_Avoid_: Club, Organization, Host, Vendor, Provider
 
 **Venue**:
 The physical location (park, court, leisure centre, hall, theatre, stadium) where an activity takes place, with geo-coordinates.
 _Avoid_: Place, Facility, Ground
 
 **Region**:
-A distinct geographical metropolitan area or administrative territory used to partition activities and queries.
+A distinct geographical metropolitan area or administrative territory used to partition listings and queries.
 _Avoid_: City, Area, Market
 
 **Listing**:
-The published record on the platform representing an Activity, with schedule, venue, and optional external referral link.
+The published discovery record on the platform representing an Activity, Organizer, or Venue, with geo-coordinates and an optional external referral link.
 _Avoid_: Post, Entry, Ad, Submission
 
 **Unverified Listing**:
