@@ -220,6 +220,7 @@ export async function runCrawlerHarness({ crawlers = [], adapter, options = {} }
  * Returns default registered crawlers for production execution.
  *
  * @param {object} [options]
+ * @param {boolean} [options.includeEventbrite=false]
  * @param {boolean} [options.includeMock=false]
  * @returns {Array<object>}
  */
@@ -228,9 +229,11 @@ export function getDefaultCrawlers(options = {}) {
     createStirlingCrawler(),
     createDlgscCrawler(),
     createVolleyballWaCrawler(),
-    createEventbriteCrawler(),
     createMeetupCrawler()
   ];
+  if (options.includeEventbrite) {
+    crawlers.push(createEventbriteCrawler());
+  }
   if (options.includeMock) {
     crawlers.push(createMockCrawler());
   }
@@ -274,7 +277,8 @@ async function main() {
   }
 
   const includeMock = targetCrawler === 'mock' || isSeed || args.includes('--include-mock');
-  const crawlers = getDefaultCrawlers({ includeMock });
+  const includeEventbrite = targetCrawler.toLowerCase() === 'eventbrite' || args.includes('--include-eventbrite');
+  const crawlers = getDefaultCrawlers({ includeMock, includeEventbrite });
 
   const summary = await runCrawlerHarness({
     crawlers,

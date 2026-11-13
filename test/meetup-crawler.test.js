@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {
   createMeetupCrawler,
   MEETUP_PERTH_SPORTS_URL,
-  extractMeetupEventsFromNextData
+  extractMeetupEventsFromNextData,
+  resolveMeetupVenueCoordinates
 } from '../src/crawlers/meetup-crawler.js';
 import { sanitizeActivity } from '../src/sanitizer.js';
 
@@ -306,4 +307,210 @@ test('Seam 9: Meetup Crawler throws descriptive error on HTTP failure', async ()
     () => crawler.fetchListings(),
     /Meetup responded with HTTP 502: Bad Gateway/
   );
+});
+
+test('Seam 9 Regression: Meetup Crawler targets categoryId=482, resolves venues without lat/lng, and filters stubs/online/non-Perth events', async () => {
+  assert.ok(MEETUP_PERTH_SPORTS_URL.includes('categoryId=482'), 'MEETUP_PERTH_SPORTS_URL must target Sports & Fitness (482)');
+
+  const liveShapeHtml = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <script id="__NEXT_DATA__" type="application/json">
+        {
+          "props": {
+            "pageProps": {
+              "userLocation": {
+                "city": "Perth",
+                "country": "au",
+                "lat": -31.96,
+                "lon": 115.84
+              },
+              "__APOLLO_STATE__": {
+                "Event:401001": {
+                  "__typename": "Event",
+                  "id": "401001",
+                  "title": "Perth WA Friday Indoor Soccer and Futsal",
+                  "description": "Social indoor soccer at AH Sport.",
+                  "dateTime": "2026-11-13T19:30:00+08:00",
+                  "eventType": "PHYSICAL",
+                  "eventUrl": "https://www.meetup.com/social-soccer-perth/events/401001/",
+                  "group": {
+                    "__typename": "Group",
+                    "name": "Social Soccer Perth - AH Sport",
+                    "urlname": "social-soccer-perth",
+                    "timezone": "Australia/Perth"
+                  },
+                  "venue": {
+                    "__typename": "Venue",
+                    "name": "AH Sport",
+                    "address": "6 Lucca Street, Churchlands",
+                    "city": "Perth",
+                    "state": "",
+                    "country": "AU"
+                  }
+                },
+                "Event:401002": {
+                  "__typename": "Event",
+                  "id": "401002",
+                  "title": "Victoria Park Social Run",
+                  "description": "Casual evening run.",
+                  "dateTime": "2026-11-15T18:00:00+08:00",
+                  "eventType": "PHYSICAL",
+                  "eventUrl": "https://www.meetup.com/vic-park-runners/events/401002/",
+                  "group": {
+                    "__typename": "Group",
+                    "name": "Vic Park Runners",
+                    "urlname": "vic-park-runners",
+                    "timezone": "Australia/Perth"
+                  },
+                  "venue": {
+                    "__typename": "Venue",
+                    "name": "McCallum Park",
+                    "address": "901 Albany Hwy",
+                    "city": "Victoria Park",
+                    "state": "WA",
+                    "country": "au"
+                  }
+                },
+                "Event:401003": {
+                  "__typename": "Event",
+                  "id": "401003",
+                  "title": "Lathlain Social Basketball",
+                  "description": "Pickup basketball.",
+                  "dateTime": "2026-11-16T19:00:00+08:00",
+                  "eventType": "PHYSICAL",
+                  "eventUrl": "https://www.meetup.com/lathlain-hoops/events/401003/",
+                  "group": {
+                    "__typename": "Group",
+                    "name": "Lathlain Hoops",
+                    "urlname": "lathlain-hoops",
+                    "timezone": "Australia/Perth"
+                  },
+                  "venue": {
+                    "__typename": "Venue",
+                    "name": "Lathlain Court",
+                    "address": "220 Great Eastern Hwy, Lathlain",
+                    "city": "",
+                    "state": "WA",
+                    "country": "au"
+                  }
+                },
+                "Event:401004-stub": {
+                  "__typename": "Event",
+                  "id": "401004-stub",
+                  "dateTime": "2026-11-20T19:30:00+08:00"
+                },
+                "Event:401005-online": {
+                  "__typename": "Event",
+                  "id": "401005-online",
+                  "title": "Online Stretching Session",
+                  "dateTime": "2026-11-15T10:00:00+08:00",
+                  "eventType": "ONLINE",
+                  "group": {
+                    "name": "Perth Fitness",
+                    "timezone": "Australia/Perth"
+                  },
+                  "venue": {
+                    "name": "Online event",
+                    "address": "",
+                    "city": "",
+                    "state": "",
+                    "country": ""
+                  }
+                },
+                "Event:401006-melbourne": {
+                  "__typename": "Event",
+                  "id": "401006-melbourne",
+                  "title": "Melbourne Run Club",
+                  "dateTime": "2026-11-15T10:00:00+11:00",
+                  "eventType": "PHYSICAL",
+                  "group": {
+                    "name": "Melbourne Runners",
+                    "timezone": "Australia/Melbourne"
+                  },
+                  "venue": {
+                    "name": "Tan Track",
+                    "address": "Birdwood Ave",
+                    "city": "Melbourne",
+                    "state": "VIC",
+                    "country": "AU"
+                  }
+                },
+                "Event:401007-hobart": {
+                  "__typename": "Event",
+                  "id": "401007-hobart",
+                  "title": "Hobart Social Walk",
+                  "dateTime": "2026-11-15T10:00:00+08:00",
+                  "eventType": "PHYSICAL",
+                  "group": {
+                    "name": "Hobart Walkers"
+                  },
+                  "venue": {
+                    "name": "Bierhalle",
+                    "address": "124 Davey st",
+                    "city": "hobart",
+                    "state": "",
+                    "country": "AU"
+                  }
+                }
+              }
+            }
+          }
+        }
+        </script>
+      </head>
+      <body>Meetup Live Shape</body>
+    </html>
+  `;
+
+  const mockFetch = async (url) => {
+    assert.equal(url, MEETUP_PERTH_SPORTS_URL);
+    return {
+      ok: true,
+      status: 200,
+      async text() {
+        return liveShapeHtml;
+      }
+    };
+  };
+
+  const crawler = createMeetupCrawler({ fetchFn: mockFetch });
+  const listings = await crawler.fetchListings();
+
+  assert.equal(listings.length, 3, 'Should extract only the 3 physical Perth events');
+
+  const soccer = listings.find(l => l.source_id === '401001');
+  assert.ok(soccer);
+  assert.equal(soccer.subcategory, 'soccer');
+  assert.equal(soccer.coordinates.lat, -31.9505);
+  assert.equal(soccer.coordinates.lng, 115.8605);
+
+  const vicPark = listings.find(l => l.source_id === '401002');
+  assert.ok(vicPark);
+  assert.equal(vicPark.coordinates.lat, -31.9753);
+  assert.equal(vicPark.coordinates.lng, 115.8978);
+
+  const lathlain = listings.find(l => l.source_id === '401003');
+  assert.ok(lathlain);
+  assert.equal(lathlain.coordinates.lat, -31.9694);
+  assert.equal(lathlain.coordinates.lng, 115.9039);
+
+  for (const listing of listings) {
+    const sanitized = sanitizeActivity(listing);
+    assert.equal(sanitized.region_id, 'perth');
+    assert.equal(sanitized.venue.geohash.length, 9);
+  }
+
+  // Direct helper assertions for postcode and fallback behavior
+  assert.deepEqual(
+    resolveMeetupVenueCoordinates({ name: 'Venue 6018', address: '123 Street, 6018', city: '' }),
+    { lat: -31.8967, lng: 115.7956 } // first 6018 suburb (Innaloo)
+  );
+  assert.deepEqual(
+    resolveMeetupVenueCoordinates({ name: 'Mystery Park', address: '10 Nowhere Rd', city: '' }, { lat: -31.96, lng: 115.84 }),
+    { lat: -31.96, lng: 115.84 }
+  );
+  assert.equal(resolveMeetupVenueCoordinates({ name: 'Online event', city: 'Perth' }), null);
+  assert.equal(resolveMeetupVenueCoordinates({ name: 'Bierhalle', city: 'hobart' }), null);
 });

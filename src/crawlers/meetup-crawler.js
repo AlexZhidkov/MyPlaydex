@@ -5,8 +5,22 @@
  */
 
 import { slugify, normalizeSport, determineIsFree } from '../sanitizer.js';
+import { PERTH_SUBURB_CENTROIDS, getSuburbByPostcodeOrName } from '../perth-centroids.js';
 
-export const MEETUP_PERTH_SPORTS_URL = 'https://www.meetup.com/find/?location=au--perth&categoryId=652';
+export const MEETUP_PERTH_SPORTS_URL = 'https://www.meetup.com/find/?location=au--perth&categoryId=482';
+export const DEFAULT_PERTH_COORDINATES = { lat: -31.9505, lng: 115.8605 };
+
+const NON_PERTH_CITIES = new Set([
+  'hobart',
+  'melbourne',
+  'sydney',
+  'brisbane',
+  'adelaide',
+  'canberra',
+  'darwin'
+]);
+
+const SUBURBS_BY_LENGTH = [...PERTH_SUBURB_CENTROIDS].sort((a, b) => b.name.length - a.name.length);
 
 /**
  * Dereferences an Apollo Client entity reference ({ __ref: 'TypeName:id' }) against cache state.
@@ -93,6 +107,7 @@ export function extractMeetupEventsFromNextData(nextData, reduxState = null) {
 
   const addEvent = (item) => {
     if (!item || typeof item !== 'object') return;
+    if (!item.title && !item.name) return;
     const id = String(item.id || item.eventId || '');
     if (id && seenIds.has(id)) return;
     if (id) seenIds.add(id);
@@ -110,7 +125,7 @@ export function extractMeetupEventsFromNextData(nextData, reduxState = null) {
       const isEventKey = key.startsWith('Event:') || value.__typename === 'Event';
       const hasEventShape = value.dateTime && (value.title || value.name);
 
-      if (isEventKey || hasEventShape) {
+      if ((isEventKey || hasEventShape) && Boolean(value.title || value.name)) {
         const id = String(value.id || key.replace(/^Event:/, ''));
         if (seenIds.has(id)) continue;
         seenIds.add(id);
@@ -213,6 +228,85 @@ export function formatMeetupAddress(venue) {
 }
 
 /**
+ * Resolves coordinates for a Meetup venue, falling back to Greater Perth suburb centroid lookup
+ * when SSR Apollo state omits explicit lat/lng fields.
+ *
+ * @param {object|null|undefined} venue
+ * @param {{ lat: number, lng: number }} [fallbackCoords=DEFAULT_PERTH_COORDINATES]
+ * @returns {{ lat: number, lng: number } | null}
+ */
+export function resolveMeetupVenueCoordinates(venue, fallbackCoords = DEFAULT_PERTH_COORDINATES) {
+  if (!venue || typeof venue !== 'object') {
+    return null;
+  }
+
+  if (String(venue.name || '').trim().toLowerCase() === 'online event') {
+    return null;
+  }
+
+  if (typeof venue.state === 'string' && venue.state.trim() !== '') {
+    const stateLower = venue.state.trim().toLowerCase();
+    if (stateLower !== 'wa' && stateLower !== 'western australia') {
+      return null;
+    }
+  }
+
+  const rawLat = venue.lat ?? venue.latitude;
+  const rawLng = venue.lng ?? venue.lon ?? venue.longitude;
+  if (
+    rawLat !== undefined && rawLng !== undefined &&
+    rawLat !== null && rawLng !== null &&
+    rawLat !== '' && rawLng !== ''
+  ) {
+    const lat = typeof rawLat === 'number' ? rawLat : parseFloat(rawLat);
+    const lng = typeof rawLng === 'number' ? rawLng : parseFloat(rawLng);
+    if (!Number.isNaN(lat) && !Number.isNaN(lng)) {
+      return { lat, lng };
+    }
+  }
+
+  const hasPhysicalLocation = [venue.name, venue.address, venue.address_1, venue.city]
+    .some(val => typeof val === 'string' && val.trim() !== '');
+  if (!hasPhysicalLocation) {
+    return null;
+  }
+
+  if (typeof venue.city === 'string' && venue.city.trim() !== '') {
+    const cityMatch = getSuburbByPostcodeOrName(venue.city);
+    if (cityMatch) {
+      return { lat: cityMatch.lat, lng: cityMatch.lng };
+    }
+  }
+
+  const combinedText = [venue.address, venue.address_1, venue.name, venue.city]
+    .filter(Boolean)
+    .join(' ');
+
+  const postcodeMatch = combinedText.match(/\b(6\d{3})\b/);
+  if (postcodeMatch) {
+    const postcodeSuburb = getSuburbByPostcodeOrName(postcodeMatch[1]);
+    if (postcodeSuburb) {
+      return { lat: postcodeSuburb.lat, lng: postcodeSuburb.lng };
+    }
+  }
+
+  const combinedLower = combinedText.toLowerCase();
+  for (const suburb of SUBURBS_BY_LENGTH) {
+    const escapedName = suburb.name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const boundaryRegex = new RegExp(`\\b${escapedName}\\b`, 'i');
+    if (boundaryRegex.test(combinedLower)) {
+      return { lat: suburb.lat, lng: suburb.lng };
+    }
+  }
+
+  if (typeof venue.city === 'string' && NON_PERTH_CITIES.has(venue.city.trim().toLowerCase())) {
+    return null;
+  }
+
+  return fallbackCoords || DEFAULT_PERTH_COORDINATES;
+}
+
+/**
  * Creates a Meetup Perth Sports Crawler instance.
  *
  * @param {object} [options]
@@ -255,26 +349,39 @@ export function createMeetupCrawler(options = {}) {
       const reduxState = extractReduxState(html);
       const rawEvents = extractMeetupEventsFromNextData(nextData, reduxState);
 
+      const userLoc = nextData?.props?.pageProps?.userLocation;
+      const userLat = typeof userLoc?.lat === 'number' ? userLoc.lat : parseFloat(userLoc?.lat);
+      const userLng = typeof (userLoc?.lon ?? userLoc?.lng) === 'number'
+        ? (userLoc?.lon ?? userLoc?.lng)
+        : parseFloat(userLoc?.lon ?? userLoc?.lng);
+      const hasValidPerthUserLoc =
+        !Number.isNaN(userLat) && !Number.isNaN(userLng) &&
+        userLat < -31.4 && userLat > -32.8 &&
+        userLng > 115.5 && userLng < 116.4;
+      const fallbackCoords = hasValidPerthUserLoc
+        ? { lat: userLat, lng: userLng }
+        : DEFAULT_PERTH_COORDINATES;
+
       const listings = [];
 
       for (let i = 0; i < rawEvents.length; i++) {
         const item = rawEvents[i];
 
-        // Coordinate extraction (must have valid coordinates)
+        if (String(item.eventType || '').toUpperCase() === 'ONLINE') {
+          continue;
+        }
+
+        if (item.group?.timezone && item.group.timezone !== 'Australia/Perth') {
+          continue;
+        }
+
+        // Coordinate extraction / suburb centroid resolution (must resolve to physical Perth coordinates)
         const venue = item.venue;
-        const rawLat = venue?.lat ?? venue?.latitude;
-        const rawLng = venue?.lng ?? venue?.longitude;
-
-        if (rawLat === undefined || rawLng === undefined || rawLat === null || rawLng === null || rawLat === '') {
+        const coords = resolveMeetupVenueCoordinates(venue, fallbackCoords);
+        if (!coords) {
           continue;
         }
-
-        const lat = typeof rawLat === 'number' ? rawLat : parseFloat(rawLat);
-        const lng = typeof rawLng === 'number' ? rawLng : parseFloat(rawLng);
-
-        if (Number.isNaN(lat) || Number.isNaN(lng)) {
-          continue;
-        }
+        const { lat, lng } = coords;
 
         const title = (item.title || item.name || 'Meetup Sports Activity').trim();
         const description = (item.description || '').trim();
