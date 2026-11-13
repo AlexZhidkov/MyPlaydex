@@ -113,12 +113,62 @@ export function createOutboundDirectionsUrl(venue = {}) {
 }
 
 /**
- * Formats a schedule object into a readable date and time string in Australian format (en-AU).
+ * Resolves a numeric day of week (0 = Sunday .. 6 = Saturday) from a schedule object or start date.
  *
  * @param {object} schedule
+ * @param {Date | null} startDateObj
+ * @returns {number | null}
+ */
+function resolveDayOfWeek(schedule, startDateObj) {
+  const rawDay = schedule.day_of_week;
+  if (typeof rawDay === 'number' && Number.isInteger(rawDay) && rawDay >= 0 && rawDay <= 6) {
+    return rawDay;
+  }
+  if (typeof rawDay === 'string') {
+    const normalized = rawDay.trim().toLowerCase().replace(/s$/, '');
+    if (/^[0-6]$/.test(normalized)) {
+      return Number(normalized);
+    }
+    const idx = DAY_NAMES.findIndex((name) => name.toLowerCase() === normalized);
+    if (idx !== -1) {
+      return idx;
+    }
+  }
+  if (startDateObj) {
+    return startDateObj.getDay();
+  }
+  return null;
+}
+
+/**
+ * Computes the next occurrence Date (local calendar date) for a weekly schedule.
+ *
+ * @param {number} targetDayOfWeek
+ * @param {Date | null} startDateObj
+ * @param {Date} referenceDate
+ * @returns {Date}
+ */
+function getNextWeeklyOccurrence(targetDayOfWeek, startDateObj, referenceDate) {
+  const ref = referenceDate instanceof Date && !Number.isNaN(referenceDate.getTime())
+    ? referenceDate
+    : new Date();
+  const today = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate());
+  const startDay = startDateObj
+    ? new Date(startDateObj.getFullYear(), startDateObj.getMonth(), startDateObj.getDate())
+    : null;
+  const baseDate = startDay && startDay > today ? startDay : today;
+  const daysUntil = (targetDayOfWeek - baseDate.getDay() + 7) % 7;
+  return new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate() + daysUntil);
+}
+
+/**
+ * Formats a schedule object into a readable date and time string in Australian format (en-AU).
+ *
+ * @param {object} [schedule={}]
+ * @param {Date} [referenceDate=new Date()]
  * @returns {string}
  */
-export function formatScheduleText(schedule = {}) {
+export function formatScheduleText(schedule = {}, referenceDate = new Date()) {
   if (!schedule || typeof schedule !== 'object') return 'Schedule details on club page';
 
   const recurrence = schedule.recurrence || 'none';
@@ -144,14 +194,13 @@ export function formatScheduleText(schedule = {}) {
     : '';
 
   if (recurrence === 'weekly') {
-    let dayName = '';
-    if (typeof schedule.day_of_week === 'number' && schedule.day_of_week >= 0 && schedule.day_of_week <= 6) {
-      dayName = DAY_NAMES[schedule.day_of_week];
-    } else if (startDateObj) {
-      dayName = DAY_NAMES[startDateObj.getDay()];
+    const targetDayOfWeek = resolveDayOfWeek(schedule, startDateObj);
+    if (targetDayOfWeek !== null) {
+      const nextDate = getNextWeeklyOccurrence(targetDayOfWeek, startDateObj, referenceDate);
+      const dateLabel = nextDate.toLocaleDateString(AUSTRALIAN_LOCALE);
+      return timeStr ? `${dateLabel} • ${timeStr}` : dateLabel;
     }
-    const dayLabel = dayName ? `Weekly on ${dayName}s` : 'Weekly';
-    return timeStr ? `${dayLabel} • ${timeStr}` : dayLabel;
+    return timeStr ? `Weekly • ${timeStr}` : 'Weekly';
   }
 
   // One-off activity

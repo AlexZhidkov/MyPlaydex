@@ -25,16 +25,32 @@ test('Seam 3: createOutboundDirectionsUrl generates valid Google Maps query URL 
 });
 
 test('Seam 3: formatScheduleText formats weekly, one-off, and ISO timestamp dates in Australian format (en-AU)', () => {
-  const weekly = {
+  const fridayRef = new Date(2026, 10, 13); // Friday, 13 Nov 2026
+
+  const weeklySunday = {
+    start_time: '07:30',
+    end_time: '11:30',
+    recurrence: 'weekly',
+    day_of_week: 0
+  };
+  const weeklySundayText = formatScheduleText(weeklySunday, fridayRef);
+  assert.equal(weeklySundayText, '15/11/2026 • 07:30 – 11:30');
+  assert.ok(!weeklySundayText.includes('Weekly on Sundays'));
+
+  const weeklyMonday = {
     start_date: '2026-11-09',
     start_time: '18:30',
     end_time: '20:00',
     recurrence: 'weekly',
     day_of_week: 1
   };
-  const weeklyText = formatScheduleText(weekly);
-  assert.ok(weeklyText.includes('Monday') || weeklyText.includes('Weekly'));
-  assert.ok(weeklyText.includes('18:30'));
+  const weeklyMondayText = formatScheduleText(weeklyMonday, fridayRef);
+  assert.equal(weeklyMondayText, '16/11/2026 • 18:30 – 20:00');
+
+  const weeklyNoDay = {
+    recurrence: 'weekly'
+  };
+  assert.equal(formatScheduleText(weeklyNoDay, fridayRef), 'Weekly');
 
   const oneOff = {
     start_date: '2026-12-05',
