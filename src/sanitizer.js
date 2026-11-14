@@ -852,6 +852,41 @@ export function sanitizeVenue(raw = {}, options = {}) {
   };
 }
 
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Computes the expiration Date for an Activity schedule.
+ * Weekly recurring activities return `null` to remain perpetual.
+ * Non-recurring activities expire 24 hours after the conclusion of `end_date`
+ * (or `start_date` if `end_date` is omitted) in AWST (UTC+08:00).
+ *
+ * @param {object} [schedule={}]
+ * @returns {Date | null}
+ */
+export function computeActivityExpireAt(schedule = {}) {
+  if (!schedule || typeof schedule !== 'object') {
+    return null;
+  }
+
+  const recurrence = schedule.recurrence || 'none';
+  if (recurrence === 'weekly') {
+    return null;
+  }
+
+  const targetDate = schedule.end_date || schedule.start_date;
+  if (typeof targetDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(targetDate.trim())) {
+    return null;
+  }
+
+  // End of targetDate in AWST (start of next day) + 24h grace = +2 days from 00:00:00+08:00
+  const startOfDayMs = Date.parse(`${targetDate.trim()}T00:00:00+08:00`);
+  if (Number.isNaN(startOfDayMs)) {
+    return null;
+  }
+
+  return new Date(startOfDayMs + 2 * ONE_DAY_MS);
+}
+
 /**
  * Sanitizes a raw crawled record into a canonical ActivityDocument.
  *
@@ -904,6 +939,7 @@ export function sanitizeActivity(raw = {}, options = {}) {
 
   const nowIso = new Date().toISOString();
   const schedule = parseSchedule(raw, nowIso);
+  const expireAt = computeActivityExpireAt(schedule);
 
   const createdAt = raw.created_at || nowIso;
   const updatedAt = raw.updated_at || nowIso;
@@ -933,6 +969,7 @@ export function sanitizeActivity(raw = {}, options = {}) {
       geohash
     },
     schedule,
+    expire_at: expireAt,
     cost: {
       is_free: isFree,
       display_price: displayPrice

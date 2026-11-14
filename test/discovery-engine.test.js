@@ -721,5 +721,53 @@ test('Seam 4 (Activity Ordering): Discovery store delivers activities in chronol
   assert.equal(state.filteredActivities[1].id, 'act_monday');
 });
 
+test('Seam 1: In-memory expiration filtering enforces 24-hour AWST grace window and honors expire_at', () => {
+  const perthCbd = { lat: -31.9505, lng: 115.8605 };
+  const activities = [
+    {
+      id: 'ended_yesterday_no_expire_at',
+      title: 'Late Night Badminton',
+      subcategory: 'other',
+      venue: { coordinates: perthCbd },
+      schedule: { start_date: '2026-11-10', end_date: '2026-11-10', recurrence: 'none' }
+    },
+    {
+      id: 'ended_yesterday_with_expire_at',
+      title: 'Evening Futsal',
+      subcategory: 'soccer',
+      venue: { coordinates: perthCbd },
+      schedule: { start_date: '2026-11-10', end_date: null, recurrence: 'none' },
+      expire_at: '2026-11-11T16:00:00.000Z' // 2026-11-12T00:00:00+08:00
+    },
+    {
+      id: 'weekly_with_null_expire_at',
+      title: 'Weekly Social Volleyball',
+      subcategory: 'volleyball',
+      venue: { coordinates: perthCbd },
+      schedule: { start_date: '2025-01-01', end_date: null, recurrence: 'weekly' },
+      expire_at: null
+    }
+  ];
+
+  // Within 24h AWST grace window (2026-11-11 23:59:59 AWST) -> both non-recurring activities remain visible
+  const duringGrace = filterAndRankActivities(activities, {
+    location: perthCbd,
+    radiusKm: 25,
+    referenceDate: new Date('2026-11-11T23:59:59+08:00')
+  });
+  assert.deepEqual(
+    duringGrace.map(a => a.id),
+    ['ended_yesterday_no_expire_at', 'ended_yesterday_with_expire_at', 'weekly_with_null_expire_at']
+  );
+
+  // After 24h AWST grace window (2026-11-12 00:00:00 AWST) -> expired non-recurring activities are filtered out
+  const afterGrace = filterAndRankActivities(activities, {
+    location: perthCbd,
+    radiusKm: 25,
+    referenceDate: new Date('2026-11-12T00:00:00+08:00')
+  });
+  assert.deepEqual(afterGrace.map(a => a.id), ['weekly_with_null_expire_at']);
+});
+
 
 

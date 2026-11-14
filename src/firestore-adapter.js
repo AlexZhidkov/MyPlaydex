@@ -5,7 +5,8 @@
  * and zero-network dry-run capabilities.
  */
 
-import { extractCanonicalEntities, mergeEntityDocuments, resolveListingType } from './sanitizer.js';
+import { Timestamp } from 'firebase-admin/firestore';
+import { computeActivityExpireAt, extractCanonicalEntities, mergeEntityDocuments, resolveListingType } from './sanitizer.js';
 
 const FIRESTORE_MAX_BATCH_SIZE = 500;
 
@@ -233,6 +234,12 @@ export function createFirestoreAdapter(options = {}) {
 
     const entities = item._canonicalEntities || extractCanonicalEntities(item);
     const cleanActivity = getCleanDocument(entities.activity || item);
+    const rawExpireAt = cleanActivity.expire_at !== undefined
+      ? cleanActivity.expire_at
+      : computeActivityExpireAt(cleanActivity.schedule || cleanActivity);
+    cleanActivity.expire_at = rawExpireAt instanceof Date
+      ? Timestamp.fromDate(rawExpireAt)
+      : (rawExpireAt ?? null);
 
     if (cleanActivity.id) {
       ops.push({ col: collectionName, id: cleanActivity.id, data: cleanActivity });

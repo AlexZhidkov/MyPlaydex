@@ -490,3 +490,46 @@ test('Seam 1: resolveListingType and sanitizeListing route organizer, venue, and
   assert.equal(sanitizedAct.id, 'stirling_a-1');
   assert.equal(sanitizedAct.schedule.start_date, '2026-11-20');
 });
+
+test('Seam 1: sanitizeActivity computes expire_at as Date (end_date or start_date + 24h AWST grace) and null for weekly recurring', () => {
+  const withEndDate = sanitizeActivity({
+    source: 'stirling',
+    source_id: 'oneoff-end',
+    title: 'Weekend Pickleball Tournament',
+    sport: 'pickleball',
+    coordinates: { lat: -31.9505, lng: 115.8605 },
+    start_date: '2026-11-10',
+    end_date: '2026-11-12',
+    recurrence: 'none'
+  });
+
+  assert.ok(withEndDate.expire_at instanceof Date, 'expire_at should be a Date');
+  // End of 2026-11-12 AWST (2026-11-13T00:00:00+08:00) + 24h grace = 2026-11-14T00:00:00+08:00 = 2026-11-13T16:00:00.000Z
+  assert.equal(withEndDate.expire_at.toISOString(), '2026-11-13T16:00:00.000Z');
+
+  const withStartDateOnly = sanitizeActivity({
+    source: 'stirling',
+    source_id: 'oneoff-start',
+    title: 'Single Day Tennis Clinic',
+    sport: 'tennis',
+    coordinates: { lat: -31.9505, lng: 115.8605 },
+    start_date: '2026-11-10',
+    recurrence: 'none'
+  });
+
+  assert.ok(withStartDateOnly.expire_at instanceof Date, 'expire_at should be a Date when end_date omitted');
+  // End of 2026-11-10 AWST (2026-11-11T00:00:00+08:00) + 24h grace = 2026-11-12T00:00:00+08:00 = 2026-11-11T16:00:00.000Z
+  assert.equal(withStartDateOnly.expire_at.toISOString(), '2026-11-11T16:00:00.000Z');
+
+  const weeklyRecurring = sanitizeActivity({
+    source: 'stirling',
+    source_id: 'weekly-1',
+    title: 'Weekly Social Volleyball',
+    sport: 'volleyball',
+    coordinates: { lat: -31.9505, lng: 115.8605 },
+    start_date: '2026-11-10',
+    recurrence: 'weekly'
+  });
+
+  assert.equal(weeklyRecurring.expire_at, null);
+});

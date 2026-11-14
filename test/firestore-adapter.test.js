@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { Timestamp } from 'firebase-admin/firestore';
 import { createFirestoreAdapter } from '../src/firestore-adapter.js';
 
 test('Seam 2: batchUpsertActivities runs safely in dryRun mode without Firestore instance', async () => {
@@ -686,6 +687,65 @@ test('Seam 2: getListings, scanOrganizers, scanVenues, and batchUpdateListingUrl
     }
   ]);
   assert.deepEqual(store.organizers.get('org_club_a').subcategories, ['volleyball', 'basketball']);
+});
+
+test('Seam 2: batchUpsertActivities persists expire_at on /activities documents for one-off and weekly recurring activities', async () => {
+  const writtenActivities = new Map();
+
+  const mockDb = {
+    collection(colName) {
+      return {
+        doc(id) {
+          return { id, colName };
+        }
+      };
+    },
+    batch() {
+      const ops = [];
+      return {
+        set(docRef, data) {
+          ops.push({ docRef, data });
+        },
+        async commit() {
+          for (const op of ops) {
+            if (op.docRef.colName === 'activities') {
+              writtenActivities.set(op.docRef.id, op.data);
+            }
+          }
+        }
+      };
+    }
+  };
+
+  const adapter = createFirestoreAdapter({ db: mockDb, dryRun: false });
+
+  await adapter.batchUpsertActivities([
+    {
+      id: 'stirling_oneoff',
+      region_id: 'perth',
+      title: 'One-off Tournament',
+      subcategory: 'tennis',
+      venue: { id: 'venue_1_qd66h1', name: 'Court 1', coordinates: { lat: -31.95, lng: 115.86 }, geohash: 'qd66h1234' },
+      organizer: { id: 'org_1', name: 'Club 1' },
+      schedule: { start_date: '2026-11-15', end_date: '2026-11-16', recurrence: 'none' }
+    },
+    {
+      id: 'stirling_weekly',
+      region_id: 'perth',
+      title: 'Weekly Social Hit',
+      subcategory: 'tennis',
+      venue: { id: 'venue_1_qd66h1', name: 'Court 1', coordinates: { lat: -31.95, lng: 115.86 }, geohash: 'qd66h1234' },
+      organizer: { id: 'org_1', name: 'Club 1' },
+      schedule: { start_date: '2026-11-15', end_date: null, recurrence: 'weekly' }
+    }
+  ]);
+
+  const oneOffDoc = writtenActivities.get('stirling_oneoff');
+  assert.ok(oneOffDoc.expire_at instanceof Timestamp, 'non-recurring activity should persist expire_at Timestamp');
+  assert.equal(oneOffDoc.expire_at.toDate().toISOString(), '2026-11-17T16:00:00.000Z');
+
+  const weeklyDoc = writtenActivities.get('stirling_weekly');
+  assert.equal(weeklyDoc.expire_at, null, 'weekly recurring activity should persist expire_at: null');
 });
 
 

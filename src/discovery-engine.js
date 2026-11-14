@@ -344,32 +344,84 @@ export function getTodayAwstDate(date = new Date()) {
   }).format(date);
 }
 
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+const AWST_END_OF_DAY_PLUS_GRACE_MS = 2 * ONE_DAY_MS;
+
 /**
- * Checks whether an activity is expired based on AWST date comparison.
+ * Parses a Date, YYYY-MM-DD (interpreted as AWST 00:00:00+08:00), ISO string,
+ * or Firestore Timestamp-like object into epoch milliseconds.
+ *
+ * @param {Date | string | number | object | null | undefined} value
+ * @returns {number | null}
+ */
+function parseTimestampMs(value) {
+  if (value === null || value === undefined) return null;
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value.getTime();
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+      const ms = Date.parse(`${trimmed}T00:00:00+08:00`);
+      return Number.isNaN(ms) ? null : ms;
+    }
+    const ms = Date.parse(trimmed);
+    return Number.isNaN(ms) ? null : ms;
+  }
+  if (typeof value === 'object') {
+    if (typeof value.toDate === 'function') {
+      const d = value.toDate();
+      return d instanceof Date && !Number.isNaN(d.getTime()) ? d.getTime() : null;
+    }
+    if (typeof value.seconds === 'number') {
+      return value.seconds * 1000 + Math.floor((value.nanoseconds || 0) / 1e6);
+    }
+  }
+  return null;
+}
+
+/**
+ * Checks whether an activity is expired based on its `expire_at` timestamp or
+ * 24-hour AWST grace window past `end_date` (or `start_date` if `end_date` is omitted).
  * Weekly recurring activities are retained indefinitely.
- * Non-recurring activities with end_date (or start_date) < today in AWST are expired.
  *
  * @param {object} activity
- * @param {string} [todayAwst=getTodayAwstDate()]
+ * @param {string | Date} [referenceTime=new Date()]
  * @returns {boolean}
  */
-export function isActivityExpired(activity, todayAwst = getTodayAwstDate()) {
-  const schedule = activity?.schedule;
-  if (!schedule) return false;
+export function isActivityExpired(activity, referenceTime = new Date()) {
+  if (!activity || typeof activity !== 'object') return false;
 
-  const recurrence = schedule.recurrence || activity.recurrence || 'none';
+  const schedule = activity.schedule;
+  const recurrence = schedule?.recurrence || activity.recurrence || 'none';
   if (recurrence === 'weekly') {
     return false;
   }
 
-  const endDate = schedule.end_date || activity.end_date;
-  if (endDate && endDate < todayAwst) {
-    return true;
+  const refMs = parseTimestampMs(referenceTime) ?? Date.now();
+
+  if (activity.expire_at !== undefined && activity.expire_at !== null) {
+    const expireAtMs = parseTimestampMs(activity.expire_at);
+    if (expireAtMs !== null) {
+      return refMs >= expireAtMs;
+    }
   }
 
-  const startDate = schedule.start_date || activity.start_date;
-  if (!endDate && startDate && startDate < todayAwst) {
-    return true;
+  const targetDate =
+    schedule?.end_date ||
+    activity.end_date ||
+    schedule?.start_date ||
+    activity.start_date;
+
+  if (typeof targetDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(targetDate.trim())) {
+    const startOfDayMs = Date.parse(`${targetDate.trim()}T00:00:00+08:00`);
+    if (!Number.isNaN(startOfDayMs)) {
+      return refMs >= startOfDayMs + AWST_END_OF_DAY_PLUS_GRACE_MS;
+    }
   }
 
   return false;
@@ -383,17 +435,18 @@ export function isActivityExpired(activity, todayAwst = getTodayAwstDate()) {
  * @param {{ sport?: string, sports?: string[], freeOnly?: boolean, gender?: string, age?: string }} [filters={}]
  * @param {object} [options={}]
  * @param {string} [options.todayAwst]
+ * @param {Date | string} [options.referenceDate]
  * @param {boolean} [options.applyExpiration=true]
  * @returns {Array<object>} Filtered listings
  */
 export function filterListings(listings = [], filters = {}, options = {}) {
   const { sport, sports, freeOnly, gender, age } = filters;
-  const todayAwst = options.todayAwst || getTodayAwstDate();
+  const expirationRef = options.referenceDate || options.todayAwst || new Date();
   const applyExpiration = options.applyExpiration !== false;
 
   return listings.filter((item) => {
     // Expiration check (applied strictly to Activities, never Organizers/Venues)
-    if (applyExpiration && isActivityExpired(item, todayAwst)) {
+    if (applyExpiration && isActivityExpired(item, expirationRef)) {
       return false;
     }
 
@@ -510,7 +563,11 @@ export function filterAndRankListings(listings = [], options = {}) {
     : (options.type !== 'organizer' && options.type !== 'organizers' && options.type !== 'venue' && options.type !== 'venues');
 
   // Step 1: Filter by categorical facets and optional expiration
-  const facetMatched = filterListings(listings, filters, { todayAwst, applyExpiration });
+  const facetMatched = filterListings(listings, filters, {
+    todayAwst: options.todayAwst,
+    referenceDate: options.referenceDate,
+    applyExpiration
+  });
 
   // Step 2: Compute distance for each and filter by radius (unless radiusKm === 'all')
   const isAllRadius = radiusKm === 'all' || radiusKm === Infinity;
