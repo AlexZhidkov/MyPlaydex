@@ -401,6 +401,7 @@ test('Seam 2 (Issue #13): renderVenueCard outputs 4-tier layout with verified UR
   assert.ok(verifiedHtml.includes('Indoor court centre'), 'Should render description');
   assert.ok(verifiedHtml.includes('Mon-Sun 06:00 - 22:00'), 'Should render hours summary');
   assert.ok(verifiedHtml.includes('data-directions-url="https://www.google.com/maps/search/?api=1'), 'Tier 3 should include Google Maps link');
+  assert.ok(!verifiedHtml.includes('class="card-address"'), 'Venue card must not repeat street address in Tier 2 (deduplicated to Tier 3 maps link)');
   assert.ok(verifiedHtml.includes('Suggest an edit'), 'Tier 4 should include Suggest an edit link');
   assert.ok(verifiedHtml.includes('data-url="https://loftusrecreationcentre.com.au"'), 'Whole-card click opens verified URL');
   assert.ok(verifiedHtml.includes('tabindex="0"'), 'Venue card should be focusable');

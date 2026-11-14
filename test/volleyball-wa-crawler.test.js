@@ -239,3 +239,75 @@ test('Seam 6: Volleyball WA Crawler throws descriptive error on HTTP failure', a
     /Volleyball WA API responded with HTTP 502: Bad Gateway/
   );
 });
+
+test('Seam 6: Volleyball WA Crawler classifies multi-venue clubs (e.g. Fremantle Volleyball Club) into single Organizer and distinct school Venues', async () => {
+  const multiVenuePayload = [
+    {
+      id: 40001,
+      store: 'Fremantle Volleyball Club',
+      address: 'Methodist Ladies College, 356 Stirling Hwy',
+      address2: '',
+      city: 'Claremont',
+      state: 'WA',
+      zip: '6010',
+      country: 'Australia',
+      lat: '-31.983000',
+      lng: '115.779000',
+      phone: '08 9430 0000',
+      email: 'info@fremantlevolley.com',
+      url: 'https://volleyballwa.com.au/places/fremantle-volleyball-club/',
+      terms: 'Social Volley Centre, WA Volleyball Junior League',
+      hours: '<table class="wpsl-opening-hours"><tr><td>Monday</td><td>9:00 AM – 5:00 PM</td></tr></table>'
+    },
+    {
+      id: 40002,
+      store: 'Fremantle Volleyball Club',
+      address: 'Iona Presentation College, 33 Palmerston St',
+      address2: '',
+      city: 'Mosman Park',
+      state: 'WA',
+      zip: '6012',
+      country: 'Australia',
+      lat: '-32.012000',
+      lng: '115.762000',
+      phone: '08 9430 0000',
+      email: 'info@fremantlevolley.com',
+      url: 'https://volleyballwa.com.au/places/fremantle-volleyball-club/',
+      terms: 'WA Volleyball Junior League, WA Volleyball League',
+      hours: '<table class="wpsl-opening-hours"><tr><td>Monday</td><td>9:00 AM – 5:00 PM</td></tr></table>'
+    }
+  ];
+
+  const crawler = createVolleyballWaCrawler({
+    fetchFn: async () => ({
+      ok: true,
+      async json() {
+        return multiVenuePayload;
+      }
+    })
+  });
+
+  const listings = await crawler.fetchListings();
+
+  // Single deduplicated Organizer + 2 distinct school Venues = 3 total listings
+  assert.equal(listings.length, 3);
+
+  const organizers = listings.filter((item) => item.entity_type === 'organizer');
+  const venues = listings.filter((item) => item.entity_type === 'venue');
+
+  assert.equal(organizers.length, 1);
+  assert.equal(organizers[0].id, 'org_fremantle_volleyball_club');
+  assert.equal(organizers[0].name, 'Fremantle Volleyball Club');
+
+  assert.equal(venues.length, 2);
+  const mlcVenue = venues.find((v) => v.name === 'Methodist Ladies College');
+  const ionaVenue = venues.find((v) => v.name === 'Iona Presentation College');
+
+  assert.ok(mlcVenue, 'Must extract Methodist Ladies College as distinct venue');
+  assert.ok(mlcVenue.id.startsWith('venue_methodist_ladies_college_'));
+  assert.equal(mlcVenue.address, 'Methodist Ladies College, 356 Stirling Hwy, Claremont, WA 6010');
+
+  assert.ok(ionaVenue, 'Must extract Iona Presentation College as distinct venue');
+  assert.ok(ionaVenue.id.startsWith('venue_iona_presentation_college_'));
+  assert.equal(ionaVenue.address, 'Iona Presentation College, 33 Palmerston St, Mosman Park, WA 6012');
+});

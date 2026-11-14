@@ -156,3 +156,43 @@ test('Seam 2 (Issue #13): index.html renders 3-tab switcher (Activities | Organi
   assert.match(css, /\.discovery-tab/, 'styles.css must style .discovery-tab');
   assert.match(css, /border-block-end:\s*3px solid/, 'styles.css must draw non-color underline indicator for selected tab');
 });
+
+test('Seam 5: styles.css delivers responsive filter views and location gate for mobile screens', () => {
+  const css = fs.readFileSync(path.join(REPO_ROOT, 'src', 'styles.css'), 'utf8');
+
+  // Verify body overflow-x guard and modal-open lock
+  assert.match(css, /overflow-x:\s*hidden/, 'CSS must protect against horizontal overflow');
+  assert.match(css, /body\.modal-open\s*\{[^}]*overflow:\s*hidden/, 'CSS must support modal-open scroll lock');
+
+  // Verify location-gate-overlay and location-gate-card responsive scrollability
+  assert.match(css, /\.location-gate-overlay\s*\{[^}]*overflow-y:\s*auto/, 'location-gate-overlay must be scrollable on small screens');
+  assert.match(css, /\.location-gate-card\s*\{[^}]*margin:\s*auto/, 'location-gate-card must use margin: auto to prevent negative overflow');
+  assert.match(css, /\.location-gate-card\s*\{[^}]*max-height:/, 'location-gate-card must constrain max-height');
+
+  // Verify small screen media queries for filters and overlays
+  assert.ok(
+    css.includes('@media (max-width: 640px)') &&
+      css.includes('.location-gate-card') &&
+      css.includes('.location-switcher-btn') &&
+      css.includes('.filter-view-footer'),
+    'Must adapt location-gate-card, location-switcher-btn, and filter-view-footer for small screens'
+  );
+});
+
+test('Seam 6: styles.css delivers responsive venue cards and feed container without horizontal blowout', () => {
+  const css = fs.readFileSync(path.join(REPO_ROOT, 'src', 'styles.css'), 'utf8');
+
+  // Verify grid tracks use minmax(0, 1fr) to prevent blowout from unwrapped content
+  assert.match(css, /grid-template-columns:\s*minmax\(0,\s*1fr\)/, 'feed-container must use minmax(0, 1fr) to prevent overflow');
+
+  // Verify cards and tiers enforce min-width: 0 and box-sizing
+  assert.match(css, /\.activity-card\s*\{[^}]*min-width:\s*0/, 'activity-card must specify min-width: 0');
+  assert.match(css, /\.activity-card\s*\{[^}]*max-width:\s*100%/, 'activity-card must specify max-width: 100%');
+  assert.match(css, /\.card-venue-row[^{]*\{[^}]*min-width:\s*0/, 'card-venue-row must specify min-width: 0');
+  assert.match(css, /\.venue-name\s*\{[^}]*min-width:\s*0/, 'venue-name must specify min-width: 0');
+
+  // Verify venue and organizer cards wrap full addresses on mobile
+  assert.match(css, /\.venue-card\s+\.card-venue-row\s+\.venue-name[^{]*\{[^}]*white-space:\s*normal/, 'venue-card address must wrap cleanly');
+  assert.match(css, /\.venue-card\s+\.card-venue-row\s+\.venue-name[^{]*\{[^}]*word-break:\s*break-word/, 'venue-card address must break words to fit screen');
+});
+

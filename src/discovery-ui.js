@@ -612,10 +612,9 @@ export function renderVenueCard(venue = {}) {
         ${distanceBadge}
       </div>
 
-      <!-- Tier 2: Venue name, formatted street address, and description/hours summary -->
+      <!-- Tier 2: Venue name and description/hours summary -->
       <div class="card-tier card-tier-2">
         <h3 class="card-title">${escapeHtml(name)}</h3>
-        <p class="card-address"><span class="venue-icon" aria-hidden="true">📍</span> <span>${escapeHtml(addressText)}</span></p>
         ${summaryText ? `<p class="card-description">${escapeHtml(summaryText)}</p>` : ''}
       </div>
 

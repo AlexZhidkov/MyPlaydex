@@ -24,12 +24,21 @@
   padding: 0;
 }
 
+html, body {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   color: var(--text);
   background-color: var(--bg);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+}
+
+body.modal-open {
+  overflow: hidden;
 }
 
 .visually-hidden {
@@ -362,20 +371,22 @@ body {
 /* Feed Container */
 .feed-container {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.65rem;
+  width: 100%;
+  min-width: 0;
 }
 
 @media (min-width: 640px) {
   .feed-container {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.75rem;
   }
 }
 
 @media (min-width: 1024px) {
   .feed-container {
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 0.75rem;
   }
 }
@@ -393,6 +404,9 @@ body {
   transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
   height: 100%;
   cursor: pointer;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .activity-card:hover {
@@ -442,6 +456,8 @@ body {
   align-items: center;
   flex-wrap: wrap;
   gap: 0.3rem;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .badge {
@@ -491,6 +507,8 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0.2rem;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .card-title {
@@ -498,6 +516,9 @@ body {
   font-weight: 700;
   color: var(--text);
   line-height: 1.25;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  min-width: 0;
 }
 
 .card-schedule {
@@ -507,6 +528,7 @@ body {
   align-items: center;
   gap: 0.3rem;
   line-height: 1.2;
+  min-width: 0;
 }
 
 .card-description {
@@ -517,6 +539,9 @@ body {
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  min-width: 0;
 }
 
 .card-contact {
@@ -524,6 +549,8 @@ body {
   color: var(--text);
   line-height: 1.3;
   word-break: break-word;
+  overflow-wrap: break-word;
+  min-width: 0;
 }
 
 .card-address {
@@ -533,6 +560,9 @@ body {
   align-items: flex-start;
   gap: 0.3rem;
   line-height: 1.3;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  min-width: 0;
 }
 
 /* Tier 3 */
@@ -545,6 +575,8 @@ body {
   border-radius: var(--radius-sm);
   font-size: 0.8rem;
   line-height: 1.25;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .card-venue-row, .card-organizer-row {
@@ -552,6 +584,14 @@ body {
   align-items: center;
   gap: 0.3rem;
   overflow: hidden;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.venue-icon,
+.schedule-icon,
+.organizer-icon {
+  flex-shrink: 0;
 }
 
 .card-venue-row {
@@ -574,6 +614,8 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
   transition: color 0.15s ease;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .venue-name:hover,
@@ -583,11 +625,31 @@ body {
   text-decoration: underline;
 }
 
+/* On venue and organizer cards, the location is a full address that wraps cleanly */
+.venue-card .card-venue-row,
+.organizer-card .card-venue-row {
+  align-items: flex-start;
+}
+
+.venue-card .card-venue-row .venue-name,
+.organizer-card .card-venue-row .venue-name {
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.35;
+}
+
+.venue-card .card-venue-row .venue-icon,
+.organizer-card .card-venue-row .venue-icon {
+  margin-top: 0.1rem;
+}
+
 .organizer-name {
   color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 /* Tier 4 */
@@ -598,6 +660,8 @@ body {
   align-items: center;
   justify-content: flex-end;
   gap: 0.5rem;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .suggest-edit-link {
@@ -609,6 +673,7 @@ body {
   cursor: pointer;
   white-space: nowrap;
   flex-shrink: 0;
+  max-width: 100%;
   transition: color 0.15s ease;
 }
 
@@ -694,14 +759,25 @@ body {
 /* Location Gate Modal / Overlay */
 .location-gate-overlay {
   position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
   inset: 0;
+  width: 100%;
+  height: 100%;
+  height: 100dvh;
   background: rgba(15, 23, 42, 0.65);
   backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
   z-index: 1000;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 1rem;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
 }
 
 .location-gate-overlay.hidden {
@@ -709,10 +785,14 @@ body {
 }
 
 .location-gate-card {
+  margin: auto;
   background: var(--surface);
   border-radius: var(--radius-lg);
   max-width: 440px;
   width: 100%;
+  max-height: calc(100dvh - 2rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 1.75rem 1.5rem;
   box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.15);
   display: flex;
@@ -908,11 +988,19 @@ body {
 /* Dedicated Multi-Category Sport Filter View (/#filters) */
 .filter-view-overlay {
   position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
   inset: 0;
+  width: 100%;
+  height: 100%;
+  height: 100dvh;
   background: var(--surface);
   z-index: 1000;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .filter-view-overlay.hidden {
@@ -935,6 +1023,7 @@ body {
   flex-direction: column;
   height: 100%;
   width: 100%;
+  overflow: hidden;
 }
 
 .filter-view-header {
@@ -943,6 +1032,7 @@ body {
   justify-content: space-between;
   padding: 1.25rem 1.5rem;
   border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
 
 .filter-view-title {
@@ -973,9 +1063,12 @@ body {
 .filter-view-body {
   padding: 1.25rem 1.5rem;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   gap: 1rem;
+  flex: 1 1 auto;
 }
 
 .filter-instructions {
@@ -1033,6 +1126,7 @@ body {
   border-top: 1px solid var(--border);
   background: #f8fafc;
   gap: 0.75rem;
+  flex-shrink: 0;
 }
 
 .filter-view-footer .btn {
@@ -1046,9 +1140,33 @@ body {
     display: none;
   }
 
+  .header-container {
+    padding: 0.4rem 0.65rem;
+    gap: 0.4rem;
+  }
+
+  .header-actions {
+    min-width: 0;
+    gap: 0.3rem;
+    flex-shrink: 1;
+  }
+
   .suggest-header-link,
   .filter-header-btn {
-    padding: 0.35rem 0.6rem;
+    padding: 0.35rem 0.55rem;
+    flex-shrink: 0;
+  }
+
+  .location-switcher-btn {
+    max-width: 140px;
+    padding: 0.35rem 0.55rem;
+    font-size: 0.75rem;
+    gap: 0.25rem;
+    flex-shrink: 1;
+  }
+
+  .location-name-text {
+    min-width: 0;
   }
 
   .main-layout {
@@ -1056,9 +1174,182 @@ body {
     gap: 0.5rem;
   }
 
+  .discovery-tabs-section {
+    max-width: 100%;
+  }
+
+  .discovery-tab {
+    padding: 0.45rem 0.5rem;
+    font-size: 0.8rem;
+  }
+
+  .radius-bar-section {
+    max-width: 100%;
+    gap: 0.25rem;
+  }
+
+  .radius-pill {
+    min-width: 50px;
+    padding: 0.3rem 0.4rem;
+    font-size: 0.75rem;
+  }
+
+  .feed-container {
+    gap: 0.5rem;
+  }
+
   .activity-card {
-    padding: 0.65rem;
+    padding: 0.65rem 0.65rem 0.55rem;
+    gap: 0.35rem;
+  }
+
+  .card-title {
+    font-size: 0.9rem;
+  }
+
+  .card-description {
+    font-size: 0.775rem;
+    line-height: 1.3;
+  }
+
+  .card-tier-3 {
+    padding: 0.35rem 0.5rem;
+    font-size: 0.775rem;
+  }
+
+  .venue-card .card-venue-row .venue-name,
+  .organizer-card .card-venue-row .venue-name {
+    font-size: 0.775rem;
+  }
+
+  .suggest-edit-link {
+    font-size: 0.7rem;
+  }
+
+  /* Location Gate Responsive */
+  .location-gate-overlay {
+    padding: 0.5rem;
+  }
+
+  .location-gate-card {
+    padding: 1.25rem 1rem;
+    gap: 0.75rem;
+    max-height: calc(100dvh - 1rem);
+    border-radius: var(--radius-md);
+  }
+
+  .gate-hero-icon {
+    font-size: 2rem;
+  }
+
+  .gate-title {
+    font-size: 1.15rem;
+  }
+
+  .gate-subtitle {
+    font-size: 0.8rem;
+    line-height: 1.35;
+  }
+
+  .btn-gps {
+    font-size: 0.85rem;
+    padding: 0.5rem 0.75rem;
+  }
+
+  .gate-divider {
+    font-size: 0.75rem;
+    margin: 0.15rem 0;
+  }
+
+  .input-with-icon {
+    padding: 0 0.6rem;
+  }
+
+  .input-with-icon input {
+    font-size: 0.85rem;
+    padding: 0.55rem 0;
+  }
+
+  .suburb-suggestions-list {
+    max-height: 180px;
+  }
+
+  .suggestion-item {
+    padding: 0.5rem 0.65rem;
+    font-size: 0.8rem;
+  }
+
+  .preset-chips {
+    gap: 0.3rem;
+  }
+
+  .chip-preset {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.75rem;
+  }
+
+  /* Sport Filter Modal Responsive */
+  .filter-view-header {
+    padding: 0.85rem 1rem;
+  }
+
+  .filter-view-title {
+    font-size: 1.1rem;
+  }
+
+  .filter-view-body {
+    padding: 0.85rem 1rem;
+    gap: 0.75rem;
+  }
+
+  .filter-instructions {
+    font-size: 0.8rem;
+  }
+
+  .sport-chips-grid {
     gap: 0.4rem;
+  }
+
+  .sport-filter-chip {
+    padding: 0.4rem 0.65rem;
+    font-size: 0.8rem;
+    gap: 0.35rem;
+  }
+
+  .filter-view-footer {
+    padding: 0.75rem 1rem;
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+    gap: 0.5rem;
+  }
+
+  .filter-view-footer .btn {
+    padding: 0.5rem 0.75rem;
+    font-size: 0.85rem;
+  }
+}
+
+@media (max-width: 360px) {
+  .brand-name {
+    font-size: 1rem;
+  }
+
+  .brand-badge {
+    display: none;
+  }
+
+  .location-switcher-btn {
+    max-width: 110px;
+    padding: 0.3rem 0.45rem;
+    font-size: 0.72rem;
+  }
+
+  .location-gate-card {
+    padding: 1rem 0.75rem;
+    gap: 0.6rem;
+  }
+
+  .gate-title {
+    font-size: 1.05rem;
   }
 }
 

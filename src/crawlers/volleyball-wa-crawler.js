@@ -179,6 +179,7 @@ export function createVolleyballWaCrawler(options = {}) {
 
       const listings = [];
       const seenVenueIds = new Set();
+      const seenOrgIds = new Set();
       const subcategories = normalizeSubcategories({ subcategory: 'volleyball' }, 'volleyball');
 
       for (let i = 0; i < records.length; i++) {
@@ -200,7 +201,7 @@ export function createVolleyballWaCrawler(options = {}) {
         const geohash = encodeGeohash(itemLat, itemLng, 9);
 
         const terms = (item.terms || '').trim();
-        const isClub = /\bclubs?\b/i.test(terms);
+        const isClub = /\bclubs?\b/i.test(terms) || /\bclubs?\b/i.test(directoryName);
         const isBeach = directoryName.toLowerCase().includes('beach') ||
           (item.address && item.address.toLowerCase().includes('beach')) ||
           terms.toLowerCase().includes('beach');
@@ -213,33 +214,37 @@ export function createVolleyballWaCrawler(options = {}) {
         const description = `${directoryName} (${terms || 'Volleyball Venue'}) - ${disciplineLabel} sessions and social competitions in Greater Perth.${hoursSuffix}`;
 
         if (isClub) {
-          listings.push({
-            id: `org_${slugify(directoryName) || 'volleyball_organizer'}`,
-            entity_type: 'organizer',
-            source: 'volleyball_wa',
-            source_id: sourceId,
-            source_url: urlLink,
-            raw_source_url: urlLink,
-            region_id: 'perth',
-            name: directoryName,
-            description,
-            address,
-            coordinates: { lat: itemLat, lng: itemLng },
-            geohash,
-            category: 'sports',
-            subcategory: 'volleyball',
-            subcategories,
-            website,
-            contact: {
-              phone: item.phone || null,
-              email: item.email || null
-            },
-            cost_description: costDescription,
-            demographics: {
-              gender: 'all',
-              age: 'all'
-            }
-          });
+          const orgId = `org_${slugify(directoryName) || 'volleyball_organizer'}`;
+          if (!seenOrgIds.has(orgId)) {
+            seenOrgIds.add(orgId);
+            listings.push({
+              id: orgId,
+              entity_type: 'organizer',
+              source: 'volleyball_wa',
+              source_id: sourceId,
+              source_url: urlLink,
+              raw_source_url: urlLink,
+              region_id: 'perth',
+              name: directoryName,
+              description,
+              address,
+              coordinates: { lat: itemLat, lng: itemLng },
+              geohash,
+              category: 'sports',
+              subcategory: 'volleyball',
+              subcategories,
+              website,
+              contact: {
+                phone: item.phone || null,
+                email: item.email || null
+              },
+              cost_description: costDescription,
+              demographics: {
+                gender: 'all',
+                age: 'all'
+              }
+            });
+          }
 
           const distinctVenueName = extractDistinctVenueName(item, directoryName);
           if (distinctVenueName) {

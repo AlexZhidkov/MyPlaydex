@@ -573,11 +573,25 @@ export function initApp(options = {}) {
     }
   }
 
+  function updateBodyScrollLock() {
+    if (typeof document === 'undefined' || !document.body || !document.body.classList) {
+      return;
+    }
+    const isGateOpen = gateOverlay && !gateOverlay.classList.contains('hidden');
+    const isFilterOpen = filterOverlay && !filterOverlay.classList.contains('hidden');
+    if (isGateOpen || isFilterOpen) {
+      document.body.classList.add('modal-open');
+    } else {
+      document.body.classList.remove('modal-open');
+    }
+  }
+
   function openFilterView() {
     if (!filterOverlay) return;
     stagedSports = new Set(store.getState().filters.sports);
     filterOverlay.innerHTML = renderFilterView(Array.from(stagedSports));
     filterOverlay.classList.remove('hidden');
+    updateBodyScrollLock();
     if (typeof window !== 'undefined' && window.location && window.location.hash !== '#filters') {
       if (window.history && typeof window.history.pushState === 'function') {
         window.history.pushState(null, '', '#filters');
@@ -590,6 +604,7 @@ export function initApp(options = {}) {
   function closeFilterView() {
     if (!filterOverlay) return;
     filterOverlay.classList.add('hidden');
+    updateBodyScrollLock();
   }
 
   function returnToFeed() {
@@ -615,6 +630,7 @@ export function initApp(options = {}) {
   function openLocationGate(canClose = false) {
     if (!gateOverlay) return;
     gateOverlay.classList.remove('hidden');
+    updateBodyScrollLock();
     if (gateCloseBtn) {
       gateCloseBtn.style.display = canClose ? 'flex' : 'none';
     }
@@ -627,6 +643,7 @@ export function initApp(options = {}) {
   function closeLocationGate() {
     if (!gateOverlay) return;
     gateOverlay.classList.add('hidden');
+    updateBodyScrollLock();
   }
 
   function handleLocationSelected(location) {
