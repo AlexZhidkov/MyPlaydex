@@ -4,6 +4,13 @@
  * Zero embedded map canvas per ADR 0002.
  */
 
+import {
+  DAY_NAMES,
+  parseDateInput,
+  resolveDayOfWeek,
+  getNextWeeklyOccurrence
+} from './discovery-engine.js';
+
 export const SPORT_ICONS = {
   soccer: '⚽',
   volleyball: '🏐',
@@ -32,49 +39,7 @@ export const CANONICAL_SPORTS = [
   { slug: 'other', name: 'Other Sports' }
 ].map((sport) => ({ ...sport, icon: SPORT_ICONS[sport.slug] }));
 
-const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 export const AUSTRALIAN_LOCALE = 'en-AU';
-
-/**
- * Parses a YYYY-MM-DD date string or ISO 8601 timestamp into a local Date object.
- *
- * @param {string | Date} value
- * @returns {{ date: Date, hasTime: boolean } | null}
- */
-function parseDateInput(value) {
-  if (!value) return null;
-
-  if (value instanceof Date) {
-    return Number.isNaN(value.getTime()) ? null : { date: value, hasTime: true };
-  }
-
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-
-  // Date-only string YYYY-MM-DD (interpreted as local calendar date)
-  const dateOnlyMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (dateOnlyMatch) {
-    const year = Number(dateOnlyMatch[1]);
-    const monthIdx = Number(dateOnlyMatch[2]) - 1;
-    const day = Number(dateOnlyMatch[3]);
-    const date = new Date(year, monthIdx, day);
-    if (!Number.isNaN(date.getTime())) {
-      return { date, hasTime: false };
-    }
-    return null;
-  }
-
-  // ISO timestamp or full date-time string (e.g. "2026-11-08T12:12:05.553Z")
-  if (trimmed.includes('T') || /^\d{4}-\d{2}-\d{2}[\sT]/.test(trimmed)) {
-    const date = new Date(trimmed);
-    if (!Number.isNaN(date.getTime())) {
-      return { date, hasTime: true };
-    }
-  }
-
-  return null;
-}
 
 /**
  * Escapes HTML characters to prevent XSS.
@@ -110,55 +75,6 @@ export function createOutboundDirectionsUrl(venue = {}) {
   }
 
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
-}
-
-/**
- * Resolves a numeric day of week (0 = Sunday .. 6 = Saturday) from a schedule object or start date.
- *
- * @param {object} schedule
- * @param {Date | null} startDateObj
- * @returns {number | null}
- */
-function resolveDayOfWeek(schedule, startDateObj) {
-  const rawDay = schedule.day_of_week;
-  if (typeof rawDay === 'number' && Number.isInteger(rawDay) && rawDay >= 0 && rawDay <= 6) {
-    return rawDay;
-  }
-  if (typeof rawDay === 'string') {
-    const normalized = rawDay.trim().toLowerCase().replace(/s$/, '');
-    if (/^[0-6]$/.test(normalized)) {
-      return Number(normalized);
-    }
-    const idx = DAY_NAMES.findIndex((name) => name.toLowerCase() === normalized);
-    if (idx !== -1) {
-      return idx;
-    }
-  }
-  if (startDateObj) {
-    return startDateObj.getDay();
-  }
-  return null;
-}
-
-/**
- * Computes the next occurrence Date (local calendar date) for a weekly schedule.
- *
- * @param {number} targetDayOfWeek
- * @param {Date | null} startDateObj
- * @param {Date} referenceDate
- * @returns {Date}
- */
-function getNextWeeklyOccurrence(targetDayOfWeek, startDateObj, referenceDate) {
-  const ref = referenceDate instanceof Date && !Number.isNaN(referenceDate.getTime())
-    ? referenceDate
-    : new Date();
-  const today = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate());
-  const startDay = startDateObj
-    ? new Date(startDateObj.getFullYear(), startDateObj.getMonth(), startDateObj.getDate())
-    : null;
-  const baseDate = startDay && startDay > today ? startDay : today;
-  const daysUntil = (targetDayOfWeek - baseDate.getDay() + 7) % 7;
-  return new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate() + daysUntil);
 }
 
 /**

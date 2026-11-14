@@ -10,7 +10,9 @@ import {
   filterAndRankVenues,
   filterAndRankListings,
   normalizeDiscoveryTab,
-  createDiscoveryStore
+  createDiscoveryStore,
+  resolveActivityDateTime,
+  compareActivitiesByDateTime
 } from '../src/discovery-engine.js';
 
 const mockActivities = [
@@ -534,5 +536,190 @@ test('Seam 1 (Issue #13): Discovery store tracks activeTab, shares location/radi
   store.setSelectedVenue('venue_new');
   assert.equal(store.getState().selectedVenueId, 'venue_new');
 });
+
+test('Seam 1 (Activity Ordering): resolveActivityDateTime accurately resolves one-off and weekly recurring dates and times', () => {
+  const refDate = new Date(2026, 10, 14); // Saturday, 14 Nov 2026
+
+  // 1. One-off event in the future
+  const oneOff = {
+    schedule: { start_date: '2026-11-18', start_time: '18:30', recurrence: 'none' }
+  };
+  const oneOffRes = resolveActivityDateTime(oneOff, refDate);
+  assert.equal(oneOffRes.date, '2026-11-18');
+  assert.equal(oneOffRes.time, '18:30');
+
+  // 2. Weekly event on Saturday (today relative to refDate)
+  const weeklySat = {
+    schedule: { recurrence: 'weekly', day_of_week: 6, start_time: '09:00' }
+  };
+  const satRes = resolveActivityDateTime(weeklySat, refDate);
+  assert.equal(satRes.date, '2026-11-14');
+  assert.equal(satRes.time, '09:00');
+
+  // 3. Weekly event on Sunday (tomorrow relative to refDate)
+  const weeklySun = {
+    schedule: { recurrence: 'weekly', day_of_week: 0, start_time: '08:00' }
+  };
+  const sunRes = resolveActivityDateTime(weeklySun, refDate);
+  assert.equal(sunRes.date, '2026-11-15');
+  assert.equal(sunRes.time, '08:00');
+
+  // 4. Weekly event on Monday (in 2 days)
+  const weeklyMon = {
+    schedule: { recurrence: 'weekly', day_of_week: 1, start_time: '19:30' }
+  };
+  const monRes = resolveActivityDateTime(weeklyMon, refDate);
+  assert.equal(monRes.date, '2026-11-16');
+  assert.equal(monRes.time, '19:30');
+
+  // 5. Undated activity
+  const undated = { title: 'Pickup game' };
+  const undatedRes = resolveActivityDateTime(undated, refDate);
+  assert.equal(undatedRes.date, null);
+  assert.equal(undatedRes.time, null);
+});
+
+test('Seam 2 (Activity Ordering): orders activities chronologically by date and time from earlier to later', () => {
+  const perthCbd = { lat: -31.9505, lng: 115.8605 };
+  const refDate = new Date(2026, 10, 14); // Saturday, 14 Nov 2026
+
+  const activities = [
+    {
+      id: 'act_tue_night',
+      title: 'Tuesday Futsal League',
+      subcategory: 'soccer',
+      venue: { coordinates: { lat: -31.9400, lng: 115.8500 } }, // ~1.5 km
+      schedule: { recurrence: 'weekly', day_of_week: 2, start_time: '19:30' } // Tue 17 Nov, 19:30
+    },
+    {
+      id: 'act_sun_afternoon',
+      title: 'Sunday Afternoon Tennis',
+      subcategory: 'tennis',
+      venue: { coordinates: { lat: -31.9450, lng: 115.8550 } }, // ~0.8 km
+      schedule: { recurrence: 'none', start_date: '2026-11-15', start_time: '14:00' } // Sun 15 Nov, 14:00
+    },
+    {
+      id: 'act_sat_night',
+      title: 'Saturday Night Social Volleyball',
+      subcategory: 'volleyball',
+      venue: { coordinates: { lat: -31.9366, lng: 115.8431 } }, // ~2.2 km
+      schedule: { recurrence: 'weekly', day_of_week: 6, start_time: '19:00' } // Sat 14 Nov (today), 19:00
+    },
+    {
+      id: 'act_sun_morn',
+      title: 'Sunday Morning Run Club',
+      subcategory: 'running',
+      venue: { coordinates: { lat: -31.9600, lng: 115.8400 } }, // ~2.1 km
+      schedule: { recurrence: 'weekly', day_of_week: 0, start_time: '08:30' } // Sun 15 Nov, 08:30
+    },
+    {
+      id: 'act_mon_night',
+      title: 'Monday Basketball Pick-up',
+      subcategory: 'basketball',
+      venue: { coordinates: { lat: -31.9500, lng: 115.8600 } }, // ~0.07 km (closest)
+      schedule: { recurrence: 'weekly', day_of_week: 1, start_time: '18:30' } // Mon 16 Nov, 18:30
+    },
+    {
+      id: 'act_undated',
+      title: 'Casual Open Court',
+      subcategory: 'pickleball',
+      venue: { coordinates: { lat: -31.9505, lng: 115.8605 } } // at CBD, but undated
+    }
+  ];
+
+  const ordered = filterAndRankActivities(activities, {
+    location: perthCbd,
+    radiusKm: 25,
+    referenceDate: refDate,
+    todayAwst: '2026-11-14'
+  });
+
+  const orderedIds = ordered.map((a) => a.id);
+  // Expected order:
+  // 1. act_sat_night: Sat 14 Nov 2026, 19:00 (earliest)
+  // 2. act_sun_morn: Sun 15 Nov 2026, 08:30
+  // 3. act_sun_afternoon: Sun 15 Nov 2026, 14:00
+  // 4. act_mon_night: Mon 16 Nov 2026, 18:30
+  // 5. act_tue_night: Tue 17 Nov 2026, 19:30
+  // 6. act_undated: undated, placed after dated activities
+  assert.deepEqual(orderedIds, [
+    'act_sat_night',
+    'act_sun_morn',
+    'act_sun_afternoon',
+    'act_mon_night',
+    'act_tue_night',
+    'act_undated'
+  ]);
+});
+
+test('Seam 3 (Activity Ordering): breaks ties by proximity (distanceKm) when activities have identical dates and times', () => {
+  const perthCbd = { lat: -31.9505, lng: 115.8605 };
+  const refDate = new Date(2026, 10, 14);
+
+  const activities = [
+    {
+      id: 'act_far',
+      title: 'Far Beach Volleyball',
+      subcategory: 'volleyball',
+      venue: { coordinates: { lat: -31.8942, lng: 115.7571 } }, // ~11.6 km away
+      schedule: { start_date: '2026-11-15', start_time: '09:00', recurrence: 'none' }
+    },
+    {
+      id: 'act_near',
+      title: 'Near Social Volleyball',
+      subcategory: 'volleyball',
+      venue: { coordinates: { lat: -31.9450, lng: 115.8580 } }, // ~0.65 km away
+      schedule: { start_date: '2026-11-15', start_time: '09:00', recurrence: 'none' }
+    }
+  ];
+
+  const ordered = filterAndRankActivities(activities, {
+    location: perthCbd,
+    radiusKm: 25,
+    referenceDate: refDate,
+    todayAwst: '2026-11-14'
+  });
+
+  assert.equal(ordered.length, 2);
+  assert.equal(ordered[0].id, 'act_near');
+  assert.equal(ordered[1].id, 'act_far');
+  assert.ok(ordered[0].distanceKm < ordered[1].distanceKm);
+});
+
+test('Seam 4 (Activity Ordering): Discovery store delivers activities in chronological date/time order to subscribers', () => {
+  const refDate = new Date(2026, 10, 14); // Sat 14 Nov 2026
+  const perthCbd = { lat: -31.9505, lng: 115.8605 };
+
+  const activities = [
+    {
+      id: 'act_monday',
+      title: 'Monday Soccer',
+      subcategory: 'soccer',
+      venue: { coordinates: { lat: -31.9400, lng: 115.8500 } },
+      schedule: { recurrence: 'weekly', day_of_week: 1, start_time: '18:00' } // Mon 16 Nov
+    },
+    {
+      id: 'act_sunday',
+      title: 'Sunday Soccer',
+      subcategory: 'soccer',
+      venue: { coordinates: { lat: -31.9600, lng: 115.8400 } },
+      schedule: { recurrence: 'weekly', day_of_week: 0, start_time: '10:00' } // Sun 15 Nov
+    }
+  ];
+
+  const store = createDiscoveryStore({
+    activities,
+    location: perthCbd,
+    radiusKm: 10,
+    referenceDate: refDate,
+    todayAwst: '2026-11-14'
+  });
+
+  const state = store.getState();
+  assert.equal(state.filteredActivities.length, 2);
+  assert.equal(state.filteredActivities[0].id, 'act_sunday');
+  assert.equal(state.filteredActivities[1].id, 'act_monday');
+});
+
 
 

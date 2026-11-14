@@ -7,6 +7,215 @@
 const EARTH_RADIUS_KM = 6371;
 
 export const DISCOVERY_TABS = ['activities', 'organizers', 'venues'];
+export const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+/**
+ * Parses a YYYY-MM-DD date string, ISO 8601 timestamp, or Date object into a local Date object.
+ *
+ * @param {string | Date} value
+ * @returns {{ date: Date, hasTime: boolean } | null}
+ */
+export function parseDateInput(value) {
+  if (!value) return null;
+
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : { date: value, hasTime: true };
+  }
+
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  // Date-only string YYYY-MM-DD (interpreted as local calendar date)
+  const dateOnlyMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dateOnlyMatch) {
+    const year = Number(dateOnlyMatch[1]);
+    const monthIdx = Number(dateOnlyMatch[2]) - 1;
+    const day = Number(dateOnlyMatch[3]);
+    const date = new Date(year, monthIdx, day);
+    if (!Number.isNaN(date.getTime())) {
+      return { date, hasTime: false };
+    }
+    return null;
+  }
+
+  // ISO timestamp or full date-time string (e.g. "2026-11-08T12:12:05.553Z")
+  if (trimmed.includes('T') || /^\d{4}-\d{2}-\d{2}[\sT]/.test(trimmed)) {
+    const date = new Date(trimmed);
+    if (!Number.isNaN(date.getTime())) {
+      return { date, hasTime: true };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Resolves a numeric day of week (0 = Sunday .. 6 = Saturday) from a schedule object or start date.
+ *
+ * @param {object} [schedule={}]
+ * @param {Date | null} [startDateObj=null]
+ * @returns {number | null}
+ */
+export function resolveDayOfWeek(schedule = {}, startDateObj = null) {
+  const rawDay = schedule?.day_of_week;
+  if (typeof rawDay === 'number' && Number.isInteger(rawDay) && rawDay >= 0 && rawDay <= 6) {
+    return rawDay;
+  }
+  if (typeof rawDay === 'string') {
+    const normalized = rawDay.trim().toLowerCase().replace(/s$/, '');
+    if (/^[0-6]$/.test(normalized)) {
+      return Number(normalized);
+    }
+    const idx = DAY_NAMES.findIndex((name) => name.toLowerCase() === normalized);
+    if (idx !== -1) {
+      return idx;
+    }
+  }
+  if (startDateObj) {
+    return startDateObj.getDay();
+  }
+  return null;
+}
+
+/**
+ * Computes the next occurrence Date (local calendar date) for a weekly schedule.
+ *
+ * @param {number} targetDayOfWeek
+ * @param {Date | null} [startDateObj=null]
+ * @param {Date} [referenceDate=new Date()]
+ * @returns {Date}
+ */
+export function getNextWeeklyOccurrence(targetDayOfWeek, startDateObj, referenceDate) {
+  const ref = referenceDate instanceof Date && !Number.isNaN(referenceDate.getTime())
+    ? referenceDate
+    : new Date();
+  const today = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate());
+  const startDay = startDateObj
+    ? new Date(startDateObj.getFullYear(), startDateObj.getMonth(), startDateObj.getDate())
+    : null;
+  const baseDate = startDay && startDay > today ? startDay : today;
+  const daysUntil = (targetDayOfWeek - baseDate.getDay() + 7) % 7;
+  return new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate() + daysUntil);
+}
+
+/**
+ * Resolves the next occurrence calendar date (YYYY-MM-DD) and normalized start time (HH:mm)
+ * for an Activity based on its schedule.
+ *
+ * @param {object} activity
+ * @param {Date | string} [referenceDate=new Date()]
+ * @returns {{ date: string | null, time: string | null }}
+ */
+export function resolveActivityDateTime(activity, referenceDate = new Date()) {
+  if (!activity || typeof activity !== 'object') {
+    return { date: null, time: null };
+  }
+
+  const schedule = activity.schedule || {};
+  const recurrence = schedule.recurrence || activity.recurrence || 'none';
+
+  const ref = typeof referenceDate === 'string'
+    ? (parseDateInput(referenceDate)?.date || new Date())
+    : (referenceDate instanceof Date && !Number.isNaN(referenceDate.getTime()) ? referenceDate : new Date());
+
+  const parsedStartTime = parseDateInput(schedule.start_time || activity.start_time);
+  const parsedStartDate = parseDateInput(schedule.start_date || activity.start_date);
+  const parsedEndDate = parseDateInput(schedule.end_date || activity.end_date);
+
+  const startDateObj = parsedStartDate?.date || parsedStartTime?.date || null;
+  const endDateObj = parsedEndDate?.date || null;
+
+  let timeStr = null;
+  if (parsedStartTime?.hasTime) {
+    const pad = (n) => String(n).padStart(2, '0');
+    timeStr = `${pad(parsedStartTime.date.getHours())}:${pad(parsedStartTime.date.getMinutes())}`;
+  } else if (typeof (schedule.start_time || activity.start_time) === 'string') {
+    const rawTime = (schedule.start_time || activity.start_time).trim();
+    const match = rawTime.match(/^(\d{1,2}):(\d{2})/);
+    if (match) {
+      timeStr = `${match[1].padStart(2, '0')}:${match[2]}`;
+    }
+  }
+
+  let dateStr = null;
+
+  if (recurrence === 'weekly') {
+    const targetDayOfWeek = resolveDayOfWeek(schedule, startDateObj);
+    if (targetDayOfWeek !== null) {
+      const nextDate = getNextWeeklyOccurrence(targetDayOfWeek, startDateObj, ref);
+      const pad = (n) => String(n).padStart(2, '0');
+      dateStr = `${nextDate.getFullYear()}-${pad(nextDate.getMonth() + 1)}-${pad(nextDate.getDate())}`;
+    } else if (startDateObj) {
+      const pad = (n) => String(n).padStart(2, '0');
+      dateStr = `${startDateObj.getFullYear()}-${pad(startDateObj.getMonth() + 1)}-${pad(startDateObj.getDate())}`;
+    }
+  } else {
+    // One-off activity
+    if (startDateObj) {
+      const pad = (n) => String(n).padStart(2, '0');
+      const startFormatted = `${startDateObj.getFullYear()}-${pad(startDateObj.getMonth() + 1)}-${pad(startDateObj.getDate())}`;
+      const todayFormatted = `${ref.getFullYear()}-${pad(ref.getMonth() + 1)}-${pad(ref.getDate())}`;
+
+      if (endDateObj && startFormatted < todayFormatted) {
+        const endFormatted = `${endDateObj.getFullYear()}-${pad(endDateObj.getMonth() + 1)}-${pad(endDateObj.getDate())}`;
+        dateStr = endFormatted >= todayFormatted ? todayFormatted : startFormatted;
+      } else {
+        dateStr = startFormatted;
+      }
+    } else if (typeof (schedule.start_date || activity.start_date) === 'string') {
+      const raw = (schedule.start_date || activity.start_date).trim();
+      const match = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+      if (match) {
+        dateStr = match[1];
+      }
+    }
+  }
+
+  return { date: dateStr, time: timeStr };
+}
+
+/**
+ * Comparator function to order Activities by date, time from earlier to later.
+ * Tie-breaks by proximity (distanceKm) and stable ID.
+ *
+ * @param {object} a
+ * @param {object} b
+ * @param {object} [options={}]
+ * @returns {number}
+ */
+export function compareActivitiesByDateTime(a, b, options = {}) {
+  const refDate = options.referenceDate || (options.todayAwst ? parseDateInput(options.todayAwst)?.date : null) || new Date();
+  const dtA = resolveActivityDateTime(a, refDate);
+  const dtB = resolveActivityDateTime(b, refDate);
+
+  // Both have dates
+  if (dtA.date && dtB.date) {
+    if (dtA.date !== dtB.date) {
+      return dtA.date.localeCompare(dtB.date);
+    }
+    // Same date, compare start times
+    const timeA = dtA.time || '00:00';
+    const timeB = dtB.time || '00:00';
+    if (timeA !== timeB) {
+      return timeA.localeCompare(timeB);
+    }
+  } else if (dtA.date && !dtB.date) {
+    return -1;
+  } else if (!dtA.date && dtB.date) {
+    return 1;
+  }
+
+  // Tie-breaker: proximity (nearest to furthest)
+  const distA = typeof a.distanceKm === 'number' ? a.distanceKm : Infinity;
+  const distB = typeof b.distanceKm === 'number' ? b.distanceKm : Infinity;
+  if (distA !== distB) {
+    return distA - distB;
+  }
+
+  // Deterministic tie-breaker
+  return String(a.id || '').localeCompare(String(b.id || ''));
+}
 
 /**
  * Normalizes a tab identifier to one of 'activities' | 'organizers' | 'venues'.
@@ -320,8 +529,17 @@ export function filterAndRankListings(listings = [], options = {}) {
     }
   }
 
-  // Step 3: Sort by proximity (nearest to furthest)
-  withDistance.sort((a, b) => a.distanceKm - b.distanceKm);
+  // Step 3: Sort listings
+  // Organizers and venues are ranked by proximity (nearest to furthest).
+  // Activities are ordered by date and time from earlier to later, with proximity tie-breaker.
+  const isOrganizerOrVenue = options.type === 'organizer' || options.type === 'organizers' || options.type === 'venue' || options.type === 'venues';
+  const sortBy = options.sortBy || (isOrganizerOrVenue ? 'distance' : 'datetime');
+
+  if (sortBy === 'datetime') {
+    withDistance.sort((a, b) => compareActivitiesByDateTime(a, b, { todayAwst, referenceDate: options.referenceDate }));
+  } else {
+    withDistance.sort((a, b) => a.distanceKm - b.distanceKm);
+  }
 
   // Step 4: Cap at maxResults if specified
   if (typeof maxResults === 'number' && maxResults > 0) {
@@ -332,14 +550,14 @@ export function filterAndRankListings(listings = [], options = {}) {
 }
 
 /**
- * Filter and rank activities by distance from location and selected facets.
+ * Filter and rank activities by date/time (earlier to later) and distance from location and selected facets.
  *
  * @param {Array<object>} activities
  * @param {object} [options={}]
  * @returns {Array<object>}
  */
 export function filterAndRankActivities(activities, options = {}) {
-  return filterAndRankListings(activities, { ...options, applyExpiration: true });
+  return filterAndRankListings(activities, { ...options, applyExpiration: true, type: 'activities' });
 }
 
 /**
@@ -350,7 +568,7 @@ export function filterAndRankActivities(activities, options = {}) {
  * @returns {Array<object>}
  */
 export function filterAndRankOrganizers(organizers = [], options = {}) {
-  return filterAndRankListings(organizers, { ...options, applyExpiration: false });
+  return filterAndRankListings(organizers, { ...options, applyExpiration: false, type: 'organizers' });
 }
 
 /**
@@ -361,7 +579,7 @@ export function filterAndRankOrganizers(organizers = [], options = {}) {
  * @returns {Array<object>}
  */
 export function filterAndRankVenues(venues = [], options = {}) {
-  return filterAndRankListings(venues, { ...options, applyExpiration: false });
+  return filterAndRankListings(venues, { ...options, applyExpiration: false, type: 'venues' });
 }
 
 /**
@@ -405,13 +623,19 @@ export function createDiscoveryStore(activitiesOrConfig = [], optionalConfig = {
 
   const listeners = new Set();
 
-  function computeFilteredForList(sourceList, selectedId, applyExpiration) {
+  const todayAwst = config.todayAwst || undefined;
+  const referenceDate = config.referenceDate || undefined;
+
+  function computeFilteredForList(sourceList, selectedId, applyExpiration, listingType) {
     const list = filterAndRankListings(sourceList, {
       location,
       radiusKm,
       filters,
       maxResults,
-      applyExpiration
+      applyExpiration,
+      type: listingType,
+      todayAwst,
+      referenceDate
     });
 
     if (selectedId && !list.some((item) => item.id === selectedId)) {
@@ -441,9 +665,9 @@ export function createDiscoveryStore(activitiesOrConfig = [], optionalConfig = {
   }
 
   function getState() {
-    const filteredActivities = computeFilteredForList(activities, selectedActivityId, true);
-    const filteredOrganizers = computeFilteredForList(organizers, selectedOrganizerId, false);
-    const filteredVenues = computeFilteredForList(venues, selectedVenueId, false);
+    const filteredActivities = computeFilteredForList(activities, selectedActivityId, true, 'activities');
+    const filteredOrganizers = computeFilteredForList(organizers, selectedOrganizerId, false, 'organizers');
+    const filteredVenues = computeFilteredForList(venues, selectedVenueId, false, 'venues');
     const filteredListings = activeTab === 'organizers'
       ? filteredOrganizers
       : (activeTab === 'venues' ? filteredVenues : filteredActivities);

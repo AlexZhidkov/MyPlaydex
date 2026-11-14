@@ -81,7 +81,7 @@ All system components, database schemas, API contracts, and user-facing copy str
 |  │  │ Cold-Start Location Gate    │           │ Responsive Activity Feed    │  |
 |  │  │ - "📍 Near Me" (GPS)        │           │ - Top Location & Filter Bar │  |
 |  │  │ - Searchable suburb/postcode│  Unlocks  │ - Radius pills (5,10,25,All)│  |
-|  │  │ - LocalStorage persistence  ├──────────►│ - Top 50 closest Activities │  |
+|  │  │ - LocalStorage persistence  ├──────────►│ - Top 50 chronological Acts │  |
 |  │  │ - Zero-cost Perth centroids │           │ - Outbound Google Maps link │  |
 |  │  └─────────────────────────────┘           └──────────────┬──────────────┘  |
 |  │                                                           │                 |
@@ -92,7 +92,7 @@ All system components, database schemas, API contracts, and user-facing copy str
 |  │  └─────────────────────────────┘                                            |
 |  │                                                                             │  |
 |  │  Reactive State Store (src/discovery-engine.js)                             │  |
-|  │  - In-memory Haversine distance ranking (<0.05ms execution time)            │  |
+|  │  - In-memory date/time ordering & Haversine proximity ranking (<0.05ms)    │  |
 |  │  - HTML5 Hash Navigation (/#filters) & Activity Deep-Linking (?activity=id) │  |
 |  └─────────────────────────────────────────────────────────────────────────────┘  |
 +-----------------------------------------------------------------------------------+
