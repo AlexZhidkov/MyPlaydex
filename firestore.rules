@@ -25,8 +25,8 @@ rules_version = '2';
 //   - cost: map (required) - Cost metadata { is_free, display_price }
 //   - demographics: map (required) - Target demographics { gender, age }
 //   - verified: bool (required) - Whether source_url has been verified reachable
-//   - created_at: string (required, immutable) - ISO 8601 creation timestamp
-//   - updated_at: string (required) - ISO 8601 last update timestamp
+//   - created_at: timestamp (required, immutable) - Native Firestore creation timestamp
+//   - updated_at: timestamp (required) - Native Firestore last update timestamp
 //
 // Collection: organizers
 // Document ID: org_{slug}
@@ -48,7 +48,8 @@ rules_version = '2';
 //   - source_url: string | null (optional) - Verified outbound referral URL
 //   - raw_source_url: string | null (optional) - Original candidate referral URL
 //   - verified: bool (required) - Whether source_url has been verified reachable
-//   - updated_at: string (required) - ISO 8601 last update timestamp
+//   - created_at: timestamp (required, immutable) - Native Firestore creation timestamp
+//   - updated_at: timestamp (required) - Native Firestore last update timestamp
 //
 // Collection: venues
 // Document ID: venue_{slug}_{geohash6}
@@ -66,7 +67,8 @@ rules_version = '2';
 //   - source_url: string | null (optional) - Verified outbound referral URL
 //   - raw_source_url: string | null (optional) - Original candidate referral URL
 //   - verified: bool (required) - Whether source_url has been verified reachable
-//   - updated_at: string (required) - ISO 8601 last update timestamp
+//   - created_at: timestamp (required, immutable) - Native Firestore creation timestamp
+//   - updated_at: timestamp (required) - Native Firestore last update timestamp
 //
 // Collection: regions
 // Document ID: {regionId} (e.g., "perth")
@@ -75,7 +77,8 @@ rules_version = '2';
 //   - name: string (required) - Display name
 //   - coordinates: map (required) - Centroid { lat: number, lng: number }
 //   - default_radius_km: number (required) - Default search radius
-//   - updated_at: string (required) - ISO 8601 timestamp
+//   - created_at: timestamp (required, immutable) - Native Firestore creation timestamp
+//   - updated_at: timestamp (required) - Native Firestore last update timestamp
 //
 // Access Model:
 //   - Public unauthenticated read access (get, list) is permitted on

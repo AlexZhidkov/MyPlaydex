@@ -221,6 +221,8 @@ test('Integration: MOCK_PERTH_ACTIVITIES conforms to canonical schema and integr
     assert.ok(['all', 'women_only', 'men_only'].includes(item.demographics.gender));
     assert.ok(['all', 'adults', 'juniors', 'masters'].includes(item.demographics.age));
     assert.equal(item.verified, true);
+    assert.ok(item.created_at instanceof Date, `Expected created_at to be Date for ${item.id}`);
+    assert.ok(item.updated_at instanceof Date, `Expected updated_at to be Date for ${item.id}`);
   }
 
   const store = createDiscoveryStore(MOCK_PERTH_ACTIVITIES, {

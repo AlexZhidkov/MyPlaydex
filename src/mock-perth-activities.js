@@ -53,8 +53,8 @@ export const MOCK_PERTH_ACTIVITIES = [
     },
     demographics: { gender: 'all', age: 'adults' },
     verified: true,
-    created_at: '2026-11-01T00:00:00.000Z',
-    updated_at: '2026-11-01T00:00:00.000Z'
+    created_at: new Date('2026-11-01T00:00:00.000Z'),
+    updated_at: new Date('2026-11-01T00:00:00.000Z')
   },
   {
     id: 'mock_beach_volleyball_scarborough',
@@ -90,8 +90,8 @@ export const MOCK_PERTH_ACTIVITIES = [
     },
     demographics: { gender: 'all', age: 'all' },
     verified: true,
-    created_at: '2026-11-01T00:00:00.000Z',
-    updated_at: '2026-11-01T00:00:00.000Z'
+    created_at: new Date('2026-11-01T00:00:00.000Z'),
+    updated_at: new Date('2026-11-01T00:00:00.000Z')
   },
   {
     id: 'mock_running_kings_park',
@@ -127,8 +127,8 @@ export const MOCK_PERTH_ACTIVITIES = [
     },
     demographics: { gender: 'all', age: 'adults' },
     verified: true,
-    created_at: '2026-11-01T00:00:00.000Z',
-    updated_at: '2026-11-01T00:00:00.000Z'
+    created_at: new Date('2026-11-01T00:00:00.000Z'),
+    updated_at: new Date('2026-11-01T00:00:00.000Z')
   },
   {
     id: 'mock_pickleball_south_perth',
@@ -164,8 +164,8 @@ export const MOCK_PERTH_ACTIVITIES = [
     },
     demographics: { gender: 'all', age: 'all' },
     verified: true,
-    created_at: '2026-11-01T00:00:00.000Z',
-    updated_at: '2026-11-01T00:00:00.000Z'
+    created_at: new Date('2026-11-01T00:00:00.000Z'),
+    updated_at: new Date('2026-11-01T00:00:00.000Z')
   },
   {
     id: 'mock_tennis_robertson_park',
@@ -201,8 +201,8 @@ export const MOCK_PERTH_ACTIVITIES = [
     },
     demographics: { gender: 'women_only', age: 'adults' },
     verified: true,
-    created_at: '2026-11-01T00:00:00.000Z',
-    updated_at: '2026-11-01T00:00:00.000Z'
+    created_at: new Date('2026-11-01T00:00:00.000Z'),
+    updated_at: new Date('2026-11-01T00:00:00.000Z')
   },
   {
     id: 'mock_basketball_jolimont',
@@ -238,8 +238,8 @@ export const MOCK_PERTH_ACTIVITIES = [
     },
     demographics: { gender: 'men_only', age: 'adults' },
     verified: true,
-    created_at: '2026-11-01T00:00:00.000Z',
-    updated_at: '2026-11-01T00:00:00.000Z'
+    created_at: new Date('2026-11-01T00:00:00.000Z'),
+    updated_at: new Date('2026-11-01T00:00:00.000Z')
   },
   {
     id: 'mock_afl9s_mount_claremont',
@@ -275,8 +275,8 @@ export const MOCK_PERTH_ACTIVITIES = [
     },
     demographics: { gender: 'all', age: 'all' },
     verified: true,
-    created_at: '2026-11-01T00:00:00.000Z',
-    updated_at: '2026-11-01T00:00:00.000Z'
+    created_at: new Date('2026-11-01T00:00:00.000Z'),
+    updated_at: new Date('2026-11-01T00:00:00.000Z')
   },
   {
     id: 'mock_walking_lake_monger',
@@ -312,8 +312,8 @@ export const MOCK_PERTH_ACTIVITIES = [
     },
     demographics: { gender: 'all', age: 'masters' },
     verified: true,
-    created_at: '2026-11-01T00:00:00.000Z',
-    updated_at: '2026-11-01T00:00:00.000Z'
+    created_at: new Date('2026-11-01T00:00:00.000Z'),
+    updated_at: new Date('2026-11-01T00:00:00.000Z')
   },
   {
     id: 'mock_cricket_fremantle',
@@ -349,8 +349,8 @@ export const MOCK_PERTH_ACTIVITIES = [
     },
     demographics: { gender: 'all', age: 'all' },
     verified: true,
-    created_at: '2026-11-01T00:00:00.000Z',
-    updated_at: '2026-11-01T00:00:00.000Z'
+    created_at: new Date('2026-11-01T00:00:00.000Z'),
+    updated_at: new Date('2026-11-01T00:00:00.000Z')
   },
   {
     id: 'mock_fitness_beatty_park',
@@ -386,8 +386,8 @@ export const MOCK_PERTH_ACTIVITIES = [
     },
     demographics: { gender: 'all', age: 'adults' },
     verified: true,
-    created_at: '2026-11-01T00:00:00.000Z',
-    updated_at: '2026-11-01T00:00:00.000Z'
+    created_at: new Date('2026-11-01T00:00:00.000Z'),
+    updated_at: new Date('2026-11-01T00:00:00.000Z')
   },
   {
     id: 'mock_multisport_manning',
@@ -423,8 +423,8 @@ export const MOCK_PERTH_ACTIVITIES = [
     },
     demographics: { gender: 'all', age: 'adults' },
     verified: true,
-    created_at: '2026-11-01T00:00:00.000Z',
-    updated_at: '2026-11-01T00:00:00.000Z'
+    created_at: new Date('2026-11-01T00:00:00.000Z'),
+    updated_at: new Date('2026-11-01T00:00:00.000Z')
   },
   {
     id: 'mock_junior_cricket_subiaco',
@@ -460,8 +460,8 @@ export const MOCK_PERTH_ACTIVITIES = [
     },
     demographics: { gender: 'all', age: 'juniors' },
     verified: true,
-    created_at: '2026-11-01T00:00:00.000Z',
-    updated_at: '2026-11-01T00:00:00.000Z'
+    created_at: new Date('2026-11-01T00:00:00.000Z'),
+    updated_at: new Date('2026-11-01T00:00:00.000Z')
   },
   {
     id: 'mock_beach_volleyball_citybeach',
@@ -497,7 +497,7 @@ export const MOCK_PERTH_ACTIVITIES = [
     },
     demographics: { gender: 'all', age: 'adults' },
     verified: true,
-    created_at: '2026-11-01T00:00:00.000Z',
-    updated_at: '2026-11-01T00:00:00.000Z'
+    created_at: new Date('2026-11-01T00:00:00.000Z'),
+    updated_at: new Date('2026-11-01T00:00:00.000Z')
   }
 ];

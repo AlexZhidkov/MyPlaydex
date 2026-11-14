@@ -45,6 +45,46 @@ function getCleanDocument(doc) {
 }
 
 /**
+ * Coerces a Date, ISO string, or Timestamp-like value into a native Firestore Timestamp.
+ *
+ * @param {*} value
+ * @param {Timestamp} [fallback]
+ * @returns {Timestamp}
+ */
+function toFirestoreTimestamp(value, fallback = Timestamp.now()) {
+  if (value instanceof Timestamp) {
+    return value;
+  }
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? fallback : Timestamp.fromDate(value);
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const ms = Date.parse(value);
+    if (!Number.isNaN(ms)) {
+      return Timestamp.fromDate(new Date(ms));
+    }
+  }
+  return fallback;
+}
+
+/**
+ * Ensures `created_at` and `updated_at` audit fields are native Firestore Timestamps.
+ *
+ * @param {object} doc
+ * @param {Timestamp} [now]
+ * @returns {object}
+ */
+function withAuditTimestamps(doc, now = Timestamp.now()) {
+  const updatedAt = toFirestoreTimestamp(doc.updated_at, now);
+  const createdAt = toFirestoreTimestamp(doc.created_at, updatedAt);
+  return {
+    ...doc,
+    created_at: createdAt,
+    updated_at: updatedAt
+  };
+}
+
+/**
  * Creates a Firestore Ingestion Adapter instance.
  *
  * @param {object} options
@@ -177,7 +217,7 @@ export function createFirestoreAdapter(options = {}) {
     let updated = 0;
     let failed = 0;
     const errors = [];
-    const nowIso = new Date().toISOString();
+    const now = Timestamp.now();
 
     for (const chunk of chunks) {
       try {
@@ -189,7 +229,7 @@ export function createFirestoreAdapter(options = {}) {
             verified: Boolean(item.verified),
             source_url: item.verified ? (item.source_url || null) : null,
             raw_source_url: item.raw_source_url !== undefined ? item.raw_source_url : (item.source_url || null),
-            updated_at: item.updated_at || nowIso
+            updated_at: toFirestoreTimestamp(item.updated_at, now)
           };
           batch.set(docRef, updatePayload, { merge: true });
         }
@@ -213,6 +253,7 @@ export function createFirestoreAdapter(options = {}) {
    * @returns {Array<{ col: string, id: string, data: object, mergeable?: boolean }>}
    */
   function buildCandidateOps(item, explicitType) {
+    const now = Timestamp.now();
     const cleanItem = getCleanDocument(item);
     const resolvedType = explicitType || resolveListingType(cleanItem);
 
@@ -220,20 +261,20 @@ export function createFirestoreAdapter(options = {}) {
 
     if (resolvedType === 'organizer') {
       if (cleanItem.id) {
-        ops.push({ col: organizersCollectionName, id: cleanItem.id, data: cleanItem, mergeable: true });
+        ops.push({ col: organizersCollectionName, id: cleanItem.id, data: withAuditTimestamps(cleanItem, now), mergeable: true });
       }
       return ops;
     }
 
     if (resolvedType === 'venue') {
       if (cleanItem.id) {
-        ops.push({ col: venuesCollectionName, id: cleanItem.id, data: cleanItem, mergeable: true });
+        ops.push({ col: venuesCollectionName, id: cleanItem.id, data: withAuditTimestamps(cleanItem, now), mergeable: true });
       }
       return ops;
     }
 
     const entities = item._canonicalEntities || extractCanonicalEntities(item);
-    const cleanActivity = getCleanDocument(entities.activity || item);
+    const cleanActivity = withAuditTimestamps(getCleanDocument(entities.activity || item), now);
     const rawExpireAt = cleanActivity.expire_at !== undefined
       ? cleanActivity.expire_at
       : computeActivityExpireAt(cleanActivity.schedule || cleanActivity);
@@ -245,13 +286,13 @@ export function createFirestoreAdapter(options = {}) {
       ops.push({ col: collectionName, id: cleanActivity.id, data: cleanActivity });
     }
     if (entities.venue && entities.venue.id) {
-      ops.push({ col: venuesCollectionName, id: entities.venue.id, data: entities.venue, mergeable: true });
+      ops.push({ col: venuesCollectionName, id: entities.venue.id, data: withAuditTimestamps(entities.venue, now), mergeable: true });
     }
     if (entities.organizer && entities.organizer.id) {
-      ops.push({ col: organizersCollectionName, id: entities.organizer.id, data: entities.organizer, mergeable: true });
+      ops.push({ col: organizersCollectionName, id: entities.organizer.id, data: withAuditTimestamps(entities.organizer, now), mergeable: true });
     }
     if (entities.region && entities.region.id) {
-      ops.push({ col: regionsCollectionName, id: entities.region.id, data: entities.region });
+      ops.push({ col: regionsCollectionName, id: entities.region.id, data: withAuditTimestamps(entities.region, now) });
     }
 
     return ops;
@@ -324,7 +365,7 @@ export function createFirestoreAdapter(options = {}) {
         const key = `${op.col}/${op.id}`;
         if (op.mergeable) {
           const prevDoc = accumulatedEntityDocs.get(key);
-          const mergedData = prevDoc ? mergeEntityDocuments(prevDoc, op.data) : op.data;
+          const mergedData = withAuditTimestamps(prevDoc ? mergeEntityDocuments(prevDoc, op.data) : op.data);
           accumulatedEntityDocs.set(key, mergedData);
           currentBatchOps.set(key, { col: op.col, id: op.id, data: mergedData });
         } else {

@@ -40,7 +40,12 @@ export function unwrapFirestoreValue(valObj) {
   if ('stringValue' in valObj) return String(valObj.stringValue);
   if ('integerValue' in valObj) return Number(valObj.integerValue);
   if ('doubleValue' in valObj) return Number(valObj.doubleValue);
-  if ('timestampValue' in valObj) return String(valObj.timestampValue);
+  if ('timestampValue' in valObj) {
+    const rawTs = valObj.timestampValue;
+    if (typeof rawTs !== 'string' || !rawTs.trim()) return null;
+    const parsedDate = new Date(rawTs);
+    return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
+  }
   if ('referenceValue' in valObj) return String(valObj.referenceValue);
   if ('geoPointValue' in valObj) {
     const geo = valObj.geoPointValue || {};

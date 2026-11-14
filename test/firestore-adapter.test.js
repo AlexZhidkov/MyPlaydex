@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Timestamp } from 'firebase-admin/firestore';
 import { createFirestoreAdapter } from '../src/firestore-adapter.js';
+import { parseFirestoreDocument } from '../src/app.js';
 
 test('Seam 2: batchUpsertActivities runs safely in dryRun mode without Firestore instance', async () => {
   const adapter = createFirestoreAdapter({ dryRun: true });
@@ -373,7 +374,7 @@ test('Seam 1: batchUpdateActivityUrls updates verified status, source_url, raw_s
   assert.equal(firstOp.data.verified, true);
   assert.equal(firstOp.data.source_url, 'https://canonical.com/1');
   assert.equal(firstOp.data.raw_source_url, 'http://raw.com/1');
-  assert.equal(typeof firstOp.data.updated_at, 'string');
+  assert.ok(firstOp.data.updated_at instanceof Timestamp, 'batchUpdateActivityUrls should write updated_at as Timestamp');
 });
 
 test('Seam 2: batchUpsertActivities merges subcategories arrays for shared organizer.id and venue.id', async () => {
@@ -747,5 +748,236 @@ test('Seam 2: batchUpsertActivities persists expire_at on /activities documents 
   const weeklyDoc = writtenActivities.get('stirling_weekly');
   assert.equal(weeklyDoc.expire_at, null, 'weekly recurring activity should persist expire_at: null');
 });
+
+test('Seam 2: batchUpsertActivities writes created_at and updated_at as native Firestore Timestamps across all four collections', async () => {
+  const writtenByCollection = {
+    activities: new Map(),
+    organizers: new Map(),
+    venues: new Map(),
+    regions: new Map()
+  };
+
+  const mockDb = {
+    collection(colName) {
+      return {
+        doc(id) {
+          return { id, colName, path: `${colName}/${id}` };
+        }
+      };
+    },
+    batch() {
+      const ops = [];
+      return {
+        set(docRef, data, options) {
+          ops.push({ docRef, data, options });
+        },
+        async commit() {
+          for (const op of ops) {
+            if (writtenByCollection[op.docRef.colName]) {
+              writtenByCollection[op.docRef.colName].set(op.docRef.id, op.data);
+            }
+          }
+        }
+      };
+    }
+  };
+
+  const adapter = createFirestoreAdapter({ db: mockDb, dryRun: false });
+  const createdIso = '2026-11-01T00:00:00.000Z';
+  const updatedIso = '2026-11-10T12:30:00.000Z';
+
+  await adapter.batchUpsertActivities([
+    {
+      id: 'stirling_ts_1',
+      region_id: 'perth',
+      title: 'Social Tennis',
+      subcategory: 'tennis',
+      venue: { id: 'venue_1_qd66h1', name: 'Court 1', coordinates: { lat: -31.95, lng: 115.86 }, geohash: 'qd66h1234' },
+      organizer: { id: 'org_1', name: 'Club 1' },
+      schedule: { start_date: '2026-11-15', end_date: null, recurrence: 'weekly' },
+      created_at: createdIso,
+      updated_at: updatedIso
+    }
+  ]);
+
+  for (const [colName, docs] of Object.entries(writtenByCollection)) {
+    assert.equal(docs.size, 1, `Expected 1 document in ${colName}`);
+    const doc = Array.from(docs.values())[0];
+    assert.ok(doc.created_at instanceof Timestamp, `${colName}.created_at must be a Firestore Timestamp`);
+    assert.ok(doc.updated_at instanceof Timestamp, `${colName}.updated_at must be a Firestore Timestamp`);
+    assert.equal(doc.updated_at.toDate().toISOString(), updatedIso, `${colName}.updated_at should preserve timestamp`);
+  }
+
+  assert.equal(
+    writtenByCollection.activities.get('stirling_ts_1').created_at.toDate().toISOString(),
+    createdIso
+  );
+});
+
+test('Seam 2: batchUpsertOrganizers and batchUpsertVenues write native Timestamps and preserve created_at on merge', async () => {
+  const existingCreated = Timestamp.fromDate(new Date('2026-10-01T00:00:00.000Z'));
+  const existingUpdated = Timestamp.fromDate(new Date('2026-10-05T00:00:00.000Z'));
+  const writtenDocs = new Map();
+
+  const mockDb = {
+    collection(colName) {
+      return {
+        doc(id) {
+          return { id, colName, path: `${colName}/${id}` };
+        }
+      };
+    },
+    async getAll(...docRefs) {
+      return docRefs.map((ref) => {
+        if (ref.path === 'organizers/org_club_a') {
+          return {
+            exists: true,
+            id: ref.id,
+            data: () => ({
+              id: 'org_club_a',
+              region_id: 'perth',
+              name: 'Club A',
+              subcategory: 'tennis',
+              subcategories: ['tennis'],
+              created_at: existingCreated,
+              updated_at: existingUpdated
+            })
+          };
+        }
+        if (ref.path === 'venues/venue_court_1_qd66h1') {
+          return {
+            exists: true,
+            id: ref.id,
+            data: () => ({
+              id: 'venue_court_1_qd66h1',
+              region_id: 'perth',
+              name: 'Court 1',
+              subcategory: 'tennis',
+              subcategories: ['tennis'],
+              created_at: '2026-09-15T00:00:00.000Z',
+              updated_at: '2026-09-20T00:00:00.000Z'
+            })
+          };
+        }
+        return { exists: false, id: ref.id, data: () => undefined };
+      });
+    },
+    batch() {
+      const ops = [];
+      return {
+        set(docRef, data, options) {
+          ops.push({ docRef, data, options });
+        },
+        async commit() {
+          for (const op of ops) {
+            writtenDocs.set(op.docRef.path, op.data);
+          }
+        }
+      };
+    }
+  };
+
+  const adapter = createFirestoreAdapter({ db: mockDb, dryRun: false });
+  const nextUpdatedIso = '2026-11-12T08:00:00.000Z';
+
+  await adapter.batchUpsertOrganizers([
+    {
+      id: 'org_club_a',
+      region_id: 'perth',
+      name: 'Club A',
+      subcategory: 'pickleball',
+      subcategories: ['pickleball'],
+      coordinates: { lat: -31.95, lng: 115.86 },
+      geohash: 'qd66h1234',
+      updated_at: nextUpdatedIso
+    }
+  ]);
+
+  await adapter.batchUpsertVenues([
+    {
+      id: 'venue_court_1_qd66h1',
+      region_id: 'perth',
+      name: 'Court 1',
+      subcategory: 'tennis',
+      subcategories: ['tennis'],
+      coordinates: { lat: -31.95, lng: 115.86 },
+      geohash: 'qd66h1234',
+      updated_at: nextUpdatedIso
+    }
+  ]);
+
+  const mergedOrg = writtenDocs.get('organizers/org_club_a');
+  assert.ok(mergedOrg.created_at instanceof Timestamp);
+  assert.ok(mergedOrg.updated_at instanceof Timestamp);
+  assert.equal(mergedOrg.created_at.toDate().toISOString(), '2026-10-01T00:00:00.000Z');
+  assert.equal(mergedOrg.updated_at.toDate().toISOString(), nextUpdatedIso);
+
+  const venueDoc = writtenDocs.get('venues/venue_court_1_qd66h1');
+  assert.ok(venueDoc.created_at instanceof Timestamp);
+  assert.ok(venueDoc.updated_at instanceof Timestamp);
+  assert.equal(venueDoc.created_at.toDate().toISOString(), '2026-09-15T00:00:00.000Z');
+  assert.equal(venueDoc.updated_at.toDate().toISOString(), nextUpdatedIso);
+});
+
+test('Integration: Timestamp fields persisted by adapter round-trip through REST timestampValue deserialization', async () => {
+  const writtenActivities = new Map();
+  const mockDb = {
+    collection(colName) {
+      return {
+        doc(id) {
+          return { id, colName, path: `${colName}/${id}` };
+        }
+      };
+    },
+    batch() {
+      const ops = [];
+      return {
+        set(docRef, data) {
+          ops.push({ docRef, data });
+        },
+        async commit() {
+          for (const op of ops) {
+            if (op.docRef.colName === 'activities') {
+              writtenActivities.set(op.docRef.id, op.data);
+            }
+          }
+        }
+      };
+    }
+  };
+
+  const adapter = createFirestoreAdapter({ db: mockDb, dryRun: false });
+  await adapter.batchUpsertActivities([
+    {
+      id: 'stirling_roundtrip',
+      region_id: 'perth',
+      title: 'Round-Trip Basketball',
+      subcategory: 'basketball',
+      venue: { id: 'venue_1_qd66h1', name: 'Court 1', coordinates: { lat: -31.95, lng: 115.86 }, geohash: 'qd66h1234' },
+      organizer: { id: 'org_1', name: 'Club 1' },
+      schedule: { start_date: '2026-11-15', end_date: null, recurrence: 'weekly' },
+      created_at: '2026-11-01T00:00:00.000Z',
+      updated_at: '2026-11-12T06:15:00.000Z'
+    }
+  ]);
+
+  const persisted = writtenActivities.get('stirling_roundtrip');
+  const restDoc = {
+    name: 'projects/myplaydex/databases/(default)/documents/activities/stirling_roundtrip',
+    fields: {
+      id: { stringValue: persisted.id },
+      title: { stringValue: persisted.title },
+      created_at: { timestampValue: persisted.created_at.toDate().toISOString() },
+      updated_at: { timestampValue: persisted.updated_at.toDate().toISOString() }
+    }
+  };
+
+  const clientDoc = parseFirestoreDocument(restDoc);
+  assert.ok(clientDoc.created_at instanceof Date);
+  assert.ok(clientDoc.updated_at instanceof Date);
+  assert.equal(clientDoc.created_at.toISOString(), '2026-11-01T00:00:00.000Z');
+  assert.equal(clientDoc.updated_at.toISOString(), '2026-11-12T06:15:00.000Z');
+});
+
 
 

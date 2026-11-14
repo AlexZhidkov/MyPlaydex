@@ -622,6 +622,10 @@ export function mergeEntityDocuments(prevDoc, nextDoc) {
     verified
   };
 
+  if (prevDoc.created_at || nextDoc.created_at) {
+    merged.created_at = prevDoc.created_at || nextDoc.created_at;
+  }
+
   if ('website' in prevDoc || 'website' in nextDoc) {
     merged.website = nextDoc.website || prevDoc.website || null;
   }

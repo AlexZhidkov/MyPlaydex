@@ -1081,6 +1081,35 @@ test('Firestore Client: unwrapFirestoreValue and parseFirestoreDocument parse RE
   assert.equal(parsedFallbackId.title, 'Subiaco Tennis');
 });
 
+test('Firestore Client: unwrapFirestoreValue and parseFirestoreDocument unwrap timestampValue into Date without runtime errors', () => {
+  const validDate = unwrapFirestoreValue({ timestampValue: '2026-11-15T10:00:00.000Z' });
+  assert.ok(validDate instanceof Date, 'timestampValue should unwrap to a Date instance');
+  assert.equal(validDate.toISOString(), '2026-11-15T10:00:00.000Z');
+
+  assert.equal(unwrapFirestoreValue({ timestampValue: null }), null);
+  assert.equal(unwrapFirestoreValue({ timestampValue: '' }), null);
+  assert.equal(unwrapFirestoreValue({ timestampValue: 'not-a-timestamp' }), null);
+
+  const restDocWithTimestamps = {
+    name: 'projects/myplaydex/databases/(default)/documents/activities/stirling_ts',
+    fields: {
+      id: { stringValue: 'stirling_ts' },
+      title: { stringValue: 'Evening Futsal' },
+      created_at: { timestampValue: '2026-11-01T00:00:00.000Z' },
+      updated_at: { timestampValue: '2026-11-10T12:30:00.000Z' },
+      expire_at: { timestampValue: '2026-11-17T16:00:00.000Z' }
+    }
+  };
+
+  const parsed = parseFirestoreDocument(restDocWithTimestamps);
+  assert.ok(parsed.created_at instanceof Date);
+  assert.equal(parsed.created_at.toISOString(), '2026-11-01T00:00:00.000Z');
+  assert.ok(parsed.updated_at instanceof Date);
+  assert.equal(parsed.updated_at.toISOString(), '2026-11-10T12:30:00.000Z');
+  assert.ok(parsed.expire_at instanceof Date);
+  assert.equal(parsed.expire_at.toISOString(), '2026-11-17T16:00:00.000Z');
+});
+
 test('Firestore Client: fetchers cap REST loads to 50 records in a single request and apply .limit(50) on SDK queries', async () => {
   const requestedUrls = [];
   const mockFetch = async (url) => {

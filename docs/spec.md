@@ -221,8 +221,8 @@ interface ActivityDocument {
 
   // Verification & Timestamps
   verified: boolean; // True by default for crawler and approved entries
-  created_at: string; // ISO UTC timestamp
-  updated_at: string; // ISO UTC timestamp
+  created_at: Timestamp | Date; // Native Firestore Timestamp (Date when unwrapped in client)
+  updated_at: Timestamp | Date; // Native Firestore Timestamp (Date when unwrapped in client)
 }
 ```
 
