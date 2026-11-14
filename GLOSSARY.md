@@ -27,3 +27,7 @@ _Avoid_: Post, Entry, Ad, Submission
 **Unverified Listing**:
 A published Listing whose external referral link is missing or unreachable, surfaced for location discovery without an outbound referral action.
 _Avoid_: Broken Listing, Dead Listing, Draft
+
+**Expired Activity**:
+A non-recurring Activity whose scheduled end date (or start date) has passed the retention grace window in AWST and is eligible for database purge.
+_Avoid_: Past Event, Old Record, Dead Activity
