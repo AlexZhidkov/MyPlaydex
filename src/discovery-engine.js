@@ -22,6 +22,20 @@ export function parseDateInput(value) {
     return Number.isNaN(value.getTime()) ? null : { date: value, hasTime: true };
   }
 
+  if (typeof value === 'object') {
+    if (typeof value.toDate === 'function') {
+      const d = value.toDate();
+      return d instanceof Date && !Number.isNaN(d.getTime()) ? { date: d, hasTime: true } : null;
+    }
+    if (typeof value.seconds === 'number' && Number.isFinite(value.seconds)) {
+      const ns = typeof value.nanoseconds === 'number' && Number.isFinite(value.nanoseconds) ? value.nanoseconds : 0;
+      const ms = value.seconds * 1000 + ns / 1e6;
+      const d = new Date(ms);
+      return Number.isNaN(d.getTime()) ? null : { date: d, hasTime: true };
+    }
+    return null;
+  }
+
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   if (!trimmed) return null;

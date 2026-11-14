@@ -8,7 +8,8 @@ import {
   DAY_NAMES,
   parseDateInput,
   resolveDayOfWeek,
-  getNextWeeklyOccurrence
+  getNextWeeklyOccurrence,
+  getTodayAwstDate
 } from './discovery-engine.js';
 
 export const SPORT_ICONS = {
@@ -40,6 +41,22 @@ export const CANONICAL_SPORTS = [
 ].map((sport) => ({ ...sport, icon: SPORT_ICONS[sport.slug] }));
 
 export const AUSTRALIAN_LOCALE = 'en-AU';
+export const VENUE_TIMEZONE = 'Australia/Perth';
+
+const PERTH_DATE_FORMATTER = new Intl.DateTimeFormat(AUSTRALIAN_LOCALE, {
+  timeZone: VENUE_TIMEZONE,
+  weekday: 'long',
+  day: '2-digit',
+  month: '2-digit',
+  year: 'numeric'
+});
+
+const PERTH_TIME_FORMATTER = new Intl.DateTimeFormat(AUSTRALIAN_LOCALE, {
+  timeZone: VENUE_TIMEZONE,
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23'
+});
 
 /**
  * Escapes HTML characters to prevent XSS.
@@ -78,17 +95,55 @@ export function createOutboundDirectionsUrl(venue = {}) {
 }
 
 /**
- * Formats a Date object as "<DayName>, DD/MM/YYYY" in Australian locale (en-AU).
+ * Formats a parsed date entry ({ date, hasTime }) as "<DayName>, DD/MM/YYYY" in Australian locale (en-AU).
+ * Calendar-only entries (hasTime: false) preserve their calendar fields; instant timestamps
+ * (hasTime: true) are formatted in Australia/Perth wall-clock time.
  *
- * @param {Date} date
+ * @param {{ date: Date, hasTime: boolean }} dateEntry
  * @returns {string}
  */
-function formatDateWithDay(date) {
-  return `${DAY_NAMES[date.getDay()]}, ${date.toLocaleDateString(AUSTRALIAN_LOCALE)}`;
+function formatDateWithDay(dateEntry) {
+  if (!dateEntry.hasTime) {
+    const { date } = dateEntry;
+    const day = String(date.getDate()).padStart(2, '0');
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const year = date.getFullYear();
+    return `${DAY_NAMES[date.getDay()]}, ${day}/${month}/${year}`;
+  }
+  return PERTH_DATE_FORMATTER.format(dateEntry.date);
 }
 
 /**
- * Formats a schedule object into a readable date and time string in Australian format (en-AU).
+ * Resolves a schedule endpoint (start or end) into its parsed date entry and formatted Perth time string.
+ *
+ * @param {*} dateInput
+ * @param {*} timeInput
+ * @returns {{ dateEntry: { date: Date, hasTime: boolean } | null, timeStr: string }}
+ */
+function resolveScheduleEndpoint(dateInput, timeInput) {
+  const parsedDate = parseDateInput(dateInput);
+  const parsedTime = parseDateInput(timeInput);
+  const dateEntry = parsedDate || parsedTime || null;
+  const timeStr = parsedTime
+    ? (parsedTime.hasTime ? PERTH_TIME_FORMATTER.format(parsedTime.date) : '')
+    : (typeof timeInput === 'string' ? timeInput.trim() : '');
+  return { dateEntry, timeStr };
+}
+
+/**
+ * Converts an instant Date into a local calendar Date representing its Australia/Perth calendar date.
+ *
+ * @param {Date} instantDate
+ * @returns {Date}
+ */
+function toPerthCalendarDate(instantDate) {
+  const [y, m, d] = getTodayAwstDate(instantDate).split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+/**
+ * Formats a schedule object into a readable date and time string in Australian format (en-AU),
+ * pinned to the venue timezone (Australia/Perth).
  *
  * @param {object} [schedule={}]
  * @param {Date} [referenceDate=new Date()]
@@ -98,41 +153,33 @@ export function formatScheduleText(schedule = {}, referenceDate = new Date()) {
   if (!schedule || typeof schedule !== 'object') return 'Schedule details on club page';
 
   const recurrence = schedule.recurrence || 'none';
+  const start = resolveScheduleEndpoint(schedule.start_date, schedule.start_time);
+  const end = resolveScheduleEndpoint(schedule.end_date, schedule.end_time);
 
-  const parsedStartTime = parseDateInput(schedule.start_time);
-  const parsedEndTime = parseDateInput(schedule.end_time);
-  const parsedStartDate = parseDateInput(schedule.start_date);
-  const parsedEndDate = parseDateInput(schedule.end_date);
-
-  const startDateObj = parsedStartDate?.date || parsedStartTime?.date || null;
-  const endDateObj = parsedEndDate?.date || parsedEndTime?.date || null;
-
-  const startTimeStr = parsedStartTime
-    ? (parsedStartTime.hasTime ? parsedStartTime.date.toLocaleTimeString(AUSTRALIAN_LOCALE, { hour: '2-digit', minute: '2-digit' }) : '')
-    : (typeof schedule.start_time === 'string' ? schedule.start_time.trim() : '');
-
-  const endTimeStr = parsedEndTime
-    ? (parsedEndTime.hasTime ? parsedEndTime.date.toLocaleTimeString(AUSTRALIAN_LOCALE, { hour: '2-digit', minute: '2-digit' }) : '')
-    : (typeof schedule.end_time === 'string' ? schedule.end_time.trim() : '');
-
-  const timeStr = startTimeStr
-    ? (endTimeStr && endTimeStr !== startTimeStr ? `${startTimeStr} – ${endTimeStr}` : startTimeStr)
+  const timeStr = start.timeStr
+    ? (end.timeStr && end.timeStr !== start.timeStr ? `${start.timeStr} – ${end.timeStr}` : start.timeStr)
     : '';
 
   if (recurrence === 'weekly') {
-    const targetDayOfWeek = resolveDayOfWeek(schedule, startDateObj);
+    const startCalendarDate = start.dateEntry
+      ? (start.dateEntry.hasTime ? toPerthCalendarDate(start.dateEntry.date) : start.dateEntry.date)
+      : null;
+    const targetDayOfWeek = resolveDayOfWeek(schedule, startCalendarDate);
     if (targetDayOfWeek !== null) {
-      const nextDate = getNextWeeklyOccurrence(targetDayOfWeek, startDateObj, referenceDate);
-      const dateLabel = formatDateWithDay(nextDate);
+      const refCalendarDate = referenceDate instanceof Date && !Number.isNaN(referenceDate.getTime())
+        ? toPerthCalendarDate(referenceDate)
+        : toPerthCalendarDate(new Date());
+      const nextDate = getNextWeeklyOccurrence(targetDayOfWeek, startCalendarDate, refCalendarDate);
+      const dateLabel = formatDateWithDay({ date: nextDate, hasTime: false });
       return timeStr ? `${dateLabel} • ${timeStr}` : dateLabel;
     }
     return timeStr ? `Weekly • ${timeStr}` : 'Weekly';
   }
 
   // One-off activity
-  if (startDateObj) {
-    const startDateLabel = formatDateWithDay(startDateObj);
-    const endDateLabel = endDateObj ? formatDateWithDay(endDateObj) : '';
+  if (start.dateEntry) {
+    const startDateLabel = formatDateWithDay(start.dateEntry);
+    const endDateLabel = end.dateEntry ? formatDateWithDay(end.dateEntry) : '';
     const dateLabel = endDateLabel && endDateLabel !== startDateLabel
       ? `${startDateLabel} – ${endDateLabel}`
       : startDateLabel;

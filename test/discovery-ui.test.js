@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import {
   renderActivityCard,
   renderOrganizerCard,
@@ -79,12 +80,94 @@ test('Seam 3: formatScheduleText formats weekly, one-off, and ISO timestamp date
     recurrence: null
   };
   const isoText = formatScheduleText(isoSchedule);
-  const isoDateObj = new Date('2026-11-08T12:12:05.553Z');
-  const expectedIsoAuDate = isoDateObj.toLocaleDateString('en-AU');
-  const expectedIsoAuTime = isoDateObj.toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit' });
-  assert.ok(isoText.includes(expectedIsoAuDate), `Expected "${isoText}" to include Australian date "${expectedIsoAuDate}"`);
-  assert.ok(isoText.includes(expectedIsoAuTime), `Expected "${isoText}" to include Australian time "${expectedIsoAuTime}"`);
+  assert.equal(isoText, 'Sunday, 08/11/2026 • 20:12');
   assert.ok(!isoText.includes('2026-11-08T12:12:05.553Z'), 'Should not render raw UTC ISO timestamp');
+});
+
+test('Seam 3: Non-recurring activities with Date or Timestamp representations display identically to canonical schedule strings in Australia/Perth', () => {
+  const canonical = formatScheduleText({
+    start_date: '2026-11-18',
+    start_time: '09:30',
+    end_time: '11:30',
+    recurrence: 'none'
+  });
+
+  const withDates = formatScheduleText({
+    start_time: new Date('2026-11-18T01:30:00.000Z'),
+    end_time: new Date('2026-11-18T03:30:00.000Z'),
+    recurrence: 'none'
+  });
+
+  const withFirestoreTimestamps = formatScheduleText({
+    start_time: { seconds: Math.floor(Date.parse('2026-11-18T01:30:00.000Z') / 1000), nanoseconds: 0 },
+    end_time: { toDate: () => new Date('2026-11-18T03:30:00.000Z') },
+    recurrence: 'none'
+  });
+
+  assert.equal(canonical, 'Wednesday, 18/11/2026 • 09:30 – 11:30');
+  assert.equal(withDates, canonical);
+  assert.equal(withFirestoreTimestamps, canonical);
+
+  // Midnight boundary: 2026-11-14T22:30:00Z is Saturday 22:30 in UTC/London, but Sunday 15/11/2026 06:30 in Perth
+  const midnightBoundary = formatScheduleText({
+    start_time: new Date('2026-11-14T22:30:00.000Z'),
+    recurrence: 'none'
+  });
+  assert.equal(midnightBoundary, 'Sunday, 15/11/2026 • 06:30');
+});
+
+test('Seam 3: Cross-timezone runtimes (Sydney, London, New York, UTC) preserve Australia/Perth session display', () => {
+  const timezones = ['Australia/Sydney', 'Europe/London', 'America/New_York', 'UTC'];
+  const script = `
+    import assert from 'node:assert/strict';
+    import { formatScheduleText, renderActivityCard } from './src/discovery-ui.js';
+
+    const canonical = formatScheduleText({
+      start_date: '2026-11-18',
+      start_time: '09:30',
+      end_time: '11:30',
+      recurrence: 'none'
+    });
+    assert.equal(canonical, 'Wednesday, 18/11/2026 • 09:30 – 11:30');
+
+    const timestampSchedule = {
+      start_time: new Date('2026-11-18T01:30:00.000Z'),
+      end_time: { toDate: () => new Date('2026-11-18T03:30:00.000Z') },
+      recurrence: 'none'
+    };
+    assert.equal(formatScheduleText(timestampSchedule), canonical);
+
+    const midnightBoundary = formatScheduleText({
+      start_time: '2026-11-14T22:30:00.000Z',
+      recurrence: 'none'
+    });
+    assert.equal(midnightBoundary, 'Sunday, 15/11/2026 • 06:30');
+
+    // Weekly activity viewed at 2026-11-13T18:00:00Z (Sat 14 Nov 02:00 AWST, but Fri 13 Nov in London/NY)
+    const weeklySaturday = formatScheduleText({
+      start_time: '09:00',
+      recurrence: 'weekly',
+      day_of_week: 6
+    }, new Date('2026-11-13T18:00:00.000Z'));
+    assert.equal(weeklySaturday, 'Saturday, 14/11/2026 • 09:00');
+
+    const cardHtml = renderActivityCard({
+      id: 'act_tz_1',
+      title: 'Perth Morning Tennis',
+      subcategory: 'tennis',
+      schedule: timestampSchedule,
+      venue: { name: 'Perth Tennis Centre', coordinates: { lat: -31.95, lng: 115.86 } },
+      source_url: 'https://example.com/tennis'
+    });
+    assert.ok(cardHtml.includes('Wednesday, 18/11/2026 • 09:30 – 11:30'));
+  `;
+
+  for (const tz of timezones) {
+    execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+      env: { ...process.env, TZ: tz },
+      stdio: 'pipe'
+    });
+  }
 });
 
 test('Seam 3: renderActivityCard outputs 4-tier semantic card structure with all required badges and outbound links', () => {
