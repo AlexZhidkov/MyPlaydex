@@ -28,6 +28,10 @@ _Avoid_: Post, Entry, Ad, Submission
 A published Listing whose external referral link is missing or unreachable, surfaced for location discovery without an outbound referral action.
 _Avoid_: Broken Listing, Dead Listing, Draft
 
+**Unreviewed Listing**:
+A published Activity or Organizer Listing created by an automated crawler or linked with an uncertain or missing Venue or Organizer match, awaiting human curation.
+_Avoid_: Draft, Unverified Listing, Pending Approval, Flagged Record
+
 **Expired Activity**:
 A non-recurring Activity whose scheduled end date (or start date) has passed the retention grace window in AWST and is eligible for database purge.
 _Avoid_: Past Event, Old Record, Dead Activity
