@@ -8,3 +8,4 @@ firebase-adminsdk-*.json
 
 .firebase/
 firebase-debug.log
+.scratch/places-sync-cache.json

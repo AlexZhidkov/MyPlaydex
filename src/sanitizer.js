@@ -805,6 +805,22 @@ function sanitizeEntityListingBase(raw = {}, options = {}, kind) {
 }
 
 /**
+ * Extracts optional Google Places & curation metadata fields when present on a raw entity.
+ *
+ * @param {object} [raw={}]
+ * @returns {object}
+ */
+function extractGooglePlaceMetadata(raw = {}) {
+  return {
+    ...(raw.google_place_id ? { google_place_id: raw.google_place_id } : {}),
+    ...(raw.primary_type !== undefined ? { primary_type: raw.primary_type } : {}),
+    ...(Array.isArray(raw.google_types) ? { google_types: raw.google_types } : {}),
+    ...(typeof raw.needs_review === 'boolean' ? { needs_review: raw.needs_review } : {}),
+    ...(raw.review_reason !== undefined ? { review_reason: raw.review_reason } : {})
+  };
+}
+
+/**
  * Sanitizes a raw crawled record into a canonical Organizer Listing document.
  *
  * @param {object} [raw={}]
@@ -831,7 +847,8 @@ export function sanitizeOrganizer(raw = {}, options = {}) {
     demographics: extractDemographics(raw),
     source_url: verification.source_url,
     raw_source_url: verification.raw_source_url,
-    verified: verification.verified
+    verified: verification.verified,
+    ...extractGooglePlaceMetadata(raw)
   };
 }
 
@@ -852,7 +869,8 @@ export function sanitizeVenue(raw = {}, options = {}) {
     address,
     source_url: verification.source_url,
     raw_source_url: verification.raw_source_url,
-    verified: verification.verified
+    verified: verification.verified,
+    ...extractGooglePlaceMetadata(raw)
   };
 }
 

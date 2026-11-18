@@ -299,6 +299,62 @@ export function createFirestoreAdapter(options = {}) {
   }
 
   /**
+   * Resolves existing Organizer/Venue records by `google_place_id` so re-syncs
+   * update the existing document ID rather than creating duplicates.
+   *
+   * @param {Array<Array<object>>} itemOpsList
+   * @param {Map<string, object>} accumulatedEntityDocs
+   */
+  async function resolveExistingByGooglePlaceId(itemOpsList, accumulatedEntityDocs) {
+    const placeIdsByCol = new Map();
+    for (const ops of itemOpsList) {
+      for (const op of ops) {
+        if (op.mergeable && op.data?.google_place_id) {
+          if (!placeIdsByCol.has(op.col)) {
+            placeIdsByCol.set(op.col, new Set());
+          }
+          placeIdsByCol.get(op.col).add(op.data.google_place_id);
+        }
+      }
+    }
+
+    const existingByPlaceKey = new Map();
+    for (const [col, placeIdSet] of placeIdsByCol.entries()) {
+      const colRef = db.collection(col);
+      if (typeof colRef?.where !== 'function') continue;
+
+      const placeIds = Array.from(placeIdSet);
+      for (let i = 0; i < placeIds.length; i += 30) {
+        const chunk = placeIds.slice(i, i + 30);
+        try {
+          const snap = await colRef.where('google_place_id', 'in', chunk).get();
+          for (const doc of snap?.docs || []) {
+            const data = typeof doc.data === 'function' ? doc.data() : doc;
+            if (data?.google_place_id) {
+              existingByPlaceKey.set(`${col}/${data.google_place_id}`, { id: doc.id, data });
+            }
+          }
+        } catch {
+          // Fall back to ID lookup if query fails
+        }
+      }
+    }
+
+    for (const ops of itemOpsList) {
+      for (const op of ops) {
+        if (op.mergeable && op.data?.google_place_id) {
+          const match = existingByPlaceKey.get(`${op.col}/${op.data.google_place_id}`);
+          if (match) {
+            op.id = match.id;
+            op.data = { ...op.data, id: match.id };
+            accumulatedEntityDocs.set(`${op.col}/${match.id}`, match.data);
+          }
+        }
+      }
+    }
+  }
+
+  /**
    * Upserts an array of canonical records in atomic Firestore batches,
    * merging `subcategories` across records referencing the same Organizer or Venue ID.
    *
@@ -315,23 +371,27 @@ export function createFirestoreAdapter(options = {}) {
     const itemOpsList = items.map(item => buildCandidateOps(item, explicitType));
     const accumulatedEntityDocs = new Map();
 
-    // Pre-fetch existing Organizer/Venue records when live db.getAll is available
-    // so subcategories merge persistently across separate ingestion runs.
-    if (!dryRun && db && typeof db.getAll === 'function') {
-      const mergeableIds = new Set();
-      for (const ops of itemOpsList) {
-        for (const op of ops) {
-          if (op.mergeable) {
-            mergeableIds.add(op.id);
+    // Pre-fetch existing Organizer/Venue records by google_place_id and document ID
+    // so re-syncs update the existing document ID and merge subcategories persistently.
+    if (!dryRun && db) {
+      await resolveExistingByGooglePlaceId(itemOpsList, accumulatedEntityDocs);
+
+      if (typeof db.getAll === 'function') {
+        const mergeableIds = new Set();
+        for (const ops of itemOpsList) {
+          for (const op of ops) {
+            if (op.mergeable && !accumulatedEntityDocs.has(`${op.col}/${op.id}`)) {
+              mergeableIds.add(op.id);
+            }
           }
         }
-      }
 
-      if (mergeableIds.size > 0) {
-        const existingMap = await getRecordsByIds(Array.from(mergeableIds));
-        for (const [id, data] of existingMap.entries()) {
-          const col = resolveCollectionForId(id);
-          accumulatedEntityDocs.set(`${col}/${id}`, data);
+        if (mergeableIds.size > 0) {
+          const existingMap = await getRecordsByIds(Array.from(mergeableIds));
+          for (const [id, data] of existingMap.entries()) {
+            const col = resolveCollectionForId(id);
+            accumulatedEntityDocs.set(`${col}/${id}`, data);
+          }
         }
       }
     }

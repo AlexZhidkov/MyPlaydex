@@ -979,5 +979,126 @@ test('Integration: Timestamp fields persisted by adapter round-trip through REST
   assert.equal(clientDoc.updated_at.toISOString(), '2026-11-12T06:15:00.000Z');
 });
 
+test('Seam 2: batchUpsertVenues and batchUpsertOrganizers deduplicate by google_place_id and merge subcategories onto existing doc ID', async () => {
+  const store = {
+    venues: new Map([
+      ['venue_old_arena_name_qd66d1', {
+        id: 'venue_old_arena_name_qd66d1',
+        name: 'Old Arena Name',
+        google_place_id: 'ChIJ_arena_123',
+        category: 'sports',
+        subcategory: 'basketball',
+        subcategories: ['basketball'],
+        needs_review: false,
+        review_reason: null
+      }]
+    ]),
+    organizers: new Map([
+      ['org_old_club_name', {
+        id: 'org_old_club_name',
+        name: 'Old Club Name',
+        google_place_id: 'ChIJ_club_456',
+        category: 'sports',
+        subcategory: 'volleyball',
+        subcategories: ['volleyball'],
+        needs_review: false,
+        review_reason: null
+      }]
+    ])
+  };
+
+  const mockDb = {
+    collection(colName) {
+      return {
+        doc(id) {
+          return { id, colName, path: `${colName}/${id}` };
+        },
+        where(field, op, value) {
+          return {
+            async get() {
+              const colMap = store[colName] || new Map();
+              const matched = [];
+              for (const [docId, data] of colMap.entries()) {
+                if (op === '==' && data[field] === value) {
+                  matched.push({ id: docId, exists: true, data: () => ({ ...data }) });
+                } else if (op === 'in' && Array.isArray(value) && value.includes(data[field])) {
+                  matched.push({ id: docId, exists: true, data: () => ({ ...data }) });
+                }
+              }
+              return { docs: matched };
+            }
+          };
+        }
+      };
+    },
+    async getAll(...docRefs) {
+      return docRefs.map(ref => {
+        const data = store[ref.colName]?.get(ref.id);
+        return data
+          ? { id: ref.id, exists: true, data: () => ({ ...data }) }
+          : { id: ref.id, exists: false, data: () => undefined };
+      });
+    },
+    batch() {
+      const ops = [];
+      return {
+        set(docRef, data) {
+          ops.push({ docRef, data });
+        },
+        async commit() {
+          for (const op of ops) {
+            if (!store[op.docRef.colName]) store[op.docRef.colName] = new Map();
+            store[op.docRef.colName].set(op.docRef.id, op.data);
+          }
+        }
+      };
+    }
+  };
+
+  const adapter = createFirestoreAdapter({ db: mockDb, dryRun: false });
+
+  await adapter.batchUpsertVenues([
+    {
+      id: 'venue_renamed_arena_qd66d2',
+      name: 'Renamed Arena',
+      google_place_id: 'ChIJ_arena_123',
+      category: 'sports',
+      subcategory: 'volleyball',
+      subcategories: ['volleyball'],
+      needs_review: false,
+      review_reason: null
+    }
+  ]);
+
+  await adapter.batchUpsertOrganizers([
+    {
+      id: 'org_renamed_club',
+      name: 'Renamed Club',
+      google_place_id: 'ChIJ_club_456',
+      category: 'sports',
+      subcategory: 'tennis',
+      subcategories: ['tennis'],
+      needs_review: false,
+      review_reason: null
+    }
+  ]);
+
+  // No duplicate documents created under new slug IDs
+  assert.equal(store.venues.size, 1);
+  assert.equal(store.venues.has('venue_renamed_arena_qd66d2'), false);
+  const updatedVenue = store.venues.get('venue_old_arena_name_qd66d1');
+  assert.equal(updatedVenue.id, 'venue_old_arena_name_qd66d1');
+  assert.equal(updatedVenue.name, 'Renamed Arena');
+  assert.deepEqual(updatedVenue.subcategories, ['basketball', 'volleyball']);
+
+  assert.equal(store.organizers.size, 1);
+  assert.equal(store.organizers.has('org_renamed_club'), false);
+  const updatedOrg = store.organizers.get('org_old_club_name');
+  assert.equal(updatedOrg.id, 'org_old_club_name');
+  assert.equal(updatedOrg.name, 'Renamed Club');
+  assert.deepEqual(updatedOrg.subcategories, ['volleyball', 'tennis']);
+});
+
+
 
 
