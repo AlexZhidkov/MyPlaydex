@@ -743,7 +743,7 @@ function createMockFirestoreDb(writtenDocs) {
   };
 }
 
-test('Seam 4: runCrawlerHarness routes directory crawlers (dlgsc, volleyball_wa) to /organizers and /venues with URL verification and anomaly gates', async () => {
+test('Seam 4: runCrawlerHarness routes directory crawlers (dlgsc, volleyball_wa) to /organizers only and never writes to /venues', async () => {
   const writtenDocs = new Map();
   const mockDb = createMockFirestoreDb(writtenDocs);
 
@@ -869,10 +869,11 @@ test('Seam 4: runCrawlerHarness routes directory crawlers (dlgsc, volleyball_wa)
 
   const writtenKeys = Array.from(writtenDocs.keys());
   assert.equal(writtenKeys.filter(k => k.startsWith('activities/')).length, 0);
+  assert.equal(writtenKeys.filter(k => k.startsWith('venues/')).length, 0);
   assert.ok(writtenDocs.has('organizers/org_subiaco_soccer_club'));
   assert.ok(writtenDocs.has('organizers/org_broken_link_club'));
   assert.ok(writtenDocs.has('organizers/org_chequers_volleyball_club'));
-  assert.ok(writtenDocs.has('venues/venue_the_hub_qd66h3'));
+  assert.equal(writtenDocs.has('venues/venue_the_hub_qd66h3'), false);
 
   const brokenOrg = writtenDocs.get('organizers/org_broken_link_club');
   assert.equal(brokenOrg.verified, false);
@@ -943,17 +944,14 @@ test('Seam 4: runCrawlerHarness preserves raw venue address, organizer contact, 
   assert.equal(summary.successfulCrawlers, 1);
   assert.equal(summary.totalUpserted, 2);
 
-  // Activity + linked Venue + linked Organizer + Region are all upserted
+  // Activity + linked Organizer + Region are upserted; /venues is never written by crawlers
   const activity1 = writtenDocs.get('activities/stirling_s-1');
   assert.ok(activity1);
   assert.equal(activity1.verified, true);
   assert.equal(activity1.source_url, 'https://stirling.wa.gov.au/events/beach-volley');
   assert.equal(Object.prototype.propertyIsEnumerable.call(activity1, '_canonicalEntities'), false);
 
-  const venue1 = writtenDocs.get('venues/venue_scarborough_beach_amphitheatre_qd66d1');
-  assert.ok(venue1);
-  assert.equal(venue1.address, 'The Esplanade, Scarborough WA 6019');
-  assert.equal(venue1.verified, true);
+  assert.equal(Array.from(writtenDocs.keys()).filter(k => k.startsWith('venues/')).length, 0);
 
   const org1 = writtenDocs.get('organizers/org_city_of_stirling');
   assert.ok(org1);
@@ -973,5 +971,295 @@ test('Seam 4: runCrawlerHarness preserves raw venue address, organizer contact, 
   assert.equal(org2.verified, false);
   assert.equal(org2.source_url, null);
   assert.equal(org2.website, null);
+});
+
+test('Seam 4 (Issue #17): runCrawlerHarness reconciles confident, uncertain, unmatched, and human-approved entities without writing to /venues', async () => {
+  const store = {
+    venues: new Map([
+      ['venue_scarborough_beach_amphitheatre_qd66s4', {
+        id: 'venue_scarborough_beach_amphitheatre_qd66s4',
+        name: 'Scarborough Beach Amphitheatre',
+        coordinates: { lat: -31.8942, lng: 115.7571 },
+        geohash: 'qd66s4b9x',
+        google_place_id: 'ChIJScarboroughPlace',
+        needs_review: false
+      }],
+      ['venue_rosalie_park_qd66h2', {
+        id: 'venue_rosalie_park_qd66h2',
+        name: 'Rosalie Park',
+        coordinates: { lat: -31.9540, lng: 115.8220 },
+        geohash: 'qd66h2xyz',
+        google_place_id: 'ChIJRosalieParkPlace',
+        needs_review: false
+      }]
+    ]),
+    organizers: new Map([
+      ['org_city_of_stirling', {
+        id: 'org_city_of_stirling',
+        name: 'City of Stirling',
+        coordinates: { lat: -31.8830, lng: 115.8050 },
+        needs_review: false,
+        review_reason: null,
+        address: '25 Cedric St, Stirling WA 6021',
+        google_place_id: 'ChIJCityStirlingPlace'
+      }]
+    ]),
+    activities: new Map([
+      ['stirling_approved_1', {
+        id: 'stirling_approved_1',
+        region_id: 'perth',
+        title: 'Approved Beach Volley',
+        name: 'Approved Beach Volley',
+        address: 'Curated Esplanade, Scarborough',
+        coordinates: { lat: -31.8942, lng: 115.7571 },
+        google_place_id: 'ChIJApprovedActivityPlace',
+        venue: {
+          id: 'venue_scarborough_beach_amphitheatre_qd66s4',
+          name: 'Scarborough Beach Amphitheatre',
+          coordinates: { lat: -31.8942, lng: 115.7571 },
+          geohash: 'qd66s4b9x',
+          google_place_id: 'ChIJScarboroughPlace'
+        },
+        organizer: {
+          id: 'org_city_of_stirling',
+          name: 'City of Stirling'
+        },
+        needs_review: false,
+        review_reason: null
+      }]
+    ]),
+    regions: new Map()
+  };
+
+  const mockDb = {
+    collection(colName) {
+      return {
+        doc(id) {
+          return { id, colName, path: `${colName}/${id}` };
+        },
+        async get() {
+          const map = store[colName] || new Map();
+          return {
+            docs: Array.from(map.entries()).map(([id, data]) => ({
+              id,
+              data: () => data
+            }))
+          };
+        }
+      };
+    },
+    async getAll(...docRefs) {
+      return docRefs.map(ref => {
+        const data = store[ref.colName]?.get(ref.id);
+        return { id: ref.id, exists: Boolean(data), data: () => data };
+      });
+    },
+    batch() {
+      const ops = [];
+      return {
+        set(docRef, data) {
+          ops.push({ docRef, data });
+        },
+        async commit() {
+          for (const op of ops) {
+            store[op.docRef.colName]?.set(op.docRef.id, op.data);
+          }
+        }
+      };
+    }
+  };
+
+  const adapter = createFirestoreAdapter({ db: mockDb, dryRun: false });
+  const initialVenueKeys = Array.from(store.venues.keys());
+
+  const crawler = {
+    name: 'stirling',
+    async fetchListings() {
+      return [
+        // 1. Confident Venue + Confident Organizer
+        {
+          source: 'stirling',
+          source_id: 'confident_1',
+          title: 'Sunset Volleyball',
+          sport: 'volleyball',
+          venue_name: 'Scarborough Beach Amphitheatre',
+          coordinates: { lat: -31.8943, lng: 115.7572 },
+          start_time: '2026-11-22T17:30:00+08:00',
+          external_url: 'https://stirling.wa.gov.au/sunset',
+          organizer: { name: 'City of Stirling' }
+        },
+        // 2. Uncertain Venue
+        {
+          source: 'stirling',
+          source_id: 'uncertain_venue_1',
+          title: 'Beach Yoga',
+          sport: 'yoga',
+          venue_name: 'Scarborough Beach',
+          coordinates: { lat: -31.8960, lng: 115.7580 },
+          start_time: '2026-11-22T08:00:00+08:00',
+          external_url: 'https://stirling.wa.gov.au/yoga',
+          organizer: { name: 'City of Stirling' }
+        },
+        // 3. Uncertain Organizer
+        {
+          source: 'stirling',
+          source_id: 'uncertain_org_1',
+          title: 'Park Touch',
+          sport: 'touch_football',
+          venue_name: 'Rosalie Park',
+          coordinates: { lat: -31.9540, lng: 115.8220 },
+          start_time: '2026-11-23T18:00:00+08:00',
+          external_url: 'https://stirling.wa.gov.au/touch',
+          organizer: { name: 'Stirling' }
+        },
+        // 4. Unmatched Venue
+        {
+          source: 'stirling',
+          source_id: 'unmatched_venue_1',
+          title: 'Hidden Court Badminton',
+          sport: 'badminton',
+          venue_name: 'Secret Community Hall',
+          coordinates: { lat: -32.1200, lng: 115.9200 },
+          start_time: '2026-11-24T19:00:00+08:00',
+          external_url: 'https://stirling.wa.gov.au/badminton',
+          organizer: { name: 'City of Stirling' }
+        },
+        // 5. Unmatched Organizer
+        {
+          source: 'stirling',
+          source_id: 'unmatched_org_1',
+          title: 'New Club Pickleball',
+          sport: 'pickleball',
+          venue_name: 'Rosalie Park',
+          coordinates: { lat: -31.9540, lng: 115.8220 },
+          start_time: '2026-11-25T18:30:00+08:00',
+          external_url: 'https://stirling.wa.gov.au/pickleball',
+          organizer: { name: 'Brand New Pickleball Club' }
+        },
+        // 6. Human-approved re-crawl (with unmatched raw venue name that must NOT overwrite curated link)
+        {
+          source: 'stirling',
+          source_id: 'approved_1',
+          title: 'Raw Title Should Not Break Approved',
+          sport: 'volleyball',
+          venue_name: 'Unrecognized Raw Venue Name',
+          coordinates: { lat: -32.2000, lng: 115.9900 },
+          start_time: '2026-11-26T17:30:00+08:00',
+          external_url: 'https://stirling.wa.gov.au/approved',
+          organizer: { name: 'City of Stirling' }
+        }
+      ];
+    }
+  };
+
+  const summary = await runCrawlerHarness({
+    crawlers: [crawler],
+    adapter,
+    options: { skipUrlVerification: true }
+  });
+
+  assert.equal(summary.successfulCrawlers, 1);
+  assert.equal(summary.totalUpserted, 6);
+
+  // /venues must remain untouched
+  assert.deepEqual(Array.from(store.venues.keys()), initialVenueKeys);
+
+  // 1. Confident
+  const confident = store.activities.get('stirling_confident_1');
+  assert.equal(confident.needs_review, false);
+  assert.equal(confident.review_reason, null);
+  assert.equal(confident.venue.id, 'venue_scarborough_beach_amphitheatre_qd66s4');
+  assert.equal(confident.venue.google_place_id, 'ChIJScarboroughPlace');
+  assert.equal(confident.organizer.id, 'org_city_of_stirling');
+
+  // 2. Uncertain venue
+  const uncertainVenue = store.activities.get('stirling_uncertain_venue_1');
+  assert.equal(uncertainVenue.needs_review, true);
+  assert.equal(uncertainVenue.review_reason, 'uncertain_venue_match');
+  assert.equal(uncertainVenue.venue.id, 'venue_scarborough_beach_amphitheatre_qd66s4');
+
+  // 3. Uncertain organizer
+  const uncertainOrg = store.activities.get('stirling_uncertain_org_1');
+  assert.equal(uncertainOrg.needs_review, true);
+  assert.equal(uncertainOrg.review_reason, 'uncertain_organizer_match');
+  assert.equal(uncertainOrg.organizer.id, 'org_city_of_stirling');
+
+  // 4. Unmatched venue
+  const unmatchedVenue = store.activities.get('stirling_unmatched_venue_1');
+  assert.equal(unmatchedVenue.needs_review, true);
+  assert.equal(unmatchedVenue.review_reason, 'unmatched_venue');
+  assert.equal(unmatchedVenue.venue.id, null);
+  assert.equal(unmatchedVenue.venue.name, 'Secret Community Hall');
+  assert.deepEqual(unmatchedVenue.venue.coordinates, { lat: -32.1200, lng: 115.9200 });
+
+  // 5. Unmatched organizer
+  const unmatchedOrg = store.activities.get('stirling_unmatched_org_1');
+  assert.equal(unmatchedOrg.needs_review, true);
+  assert.equal(unmatchedOrg.review_reason, 'unmatched_organizer');
+  const createdOrg = store.organizers.get('org_brand_new_pickleball_club');
+  assert.ok(createdOrg);
+  assert.equal(createdOrg.needs_review, true);
+  assert.equal(createdOrg.review_reason, 'crawler_created');
+
+  // 6. Human-approved activity & organizer preserved
+  const approvedActivity = store.activities.get('stirling_approved_1');
+  assert.equal(approvedActivity.needs_review, false);
+  assert.equal(approvedActivity.review_reason, null);
+  assert.equal(approvedActivity.venue.id, 'venue_scarborough_beach_amphitheatre_qd66s4');
+  assert.equal(approvedActivity.name, 'Approved Beach Volley');
+  assert.equal(approvedActivity.google_place_id, 'ChIJApprovedActivityPlace');
+
+  const approvedOrg = store.organizers.get('org_city_of_stirling');
+  assert.equal(approvedOrg.needs_review, false);
+  assert.equal(approvedOrg.review_reason, null);
+  assert.equal(approvedOrg.address, '25 Cedric St, Stirling WA 6021');
+  assert.equal(approvedOrg.google_place_id, 'ChIJCityStirlingPlace');
+
+  // 7. Directory crawler Organizer reconciliation (unmatched -> crawler_created, approved -> preserved)
+  const dirCrawler = {
+    name: 'dlgsc',
+    async fetchListings() {
+      return [
+        {
+          id: 'org_city_of_stirling',
+          entity_type: 'organizer',
+          source: 'dlgsc',
+          source_id: 'd-approved',
+          name: 'Raw Stirling Name',
+          address: 'Wrong Crawled Address',
+          coordinates: { lat: -31.9999, lng: 115.9999 },
+          subcategories: ['soccer'],
+          source_url: 'https://stirling.wa.gov.au'
+        },
+        {
+          id: 'org_unmatched_dir_club',
+          entity_type: 'organizer',
+          source: 'dlgsc',
+          source_id: 'd-new',
+          name: 'Unmatched Directory Organizer',
+          address: '10 New St, Perth WA 6000',
+          coordinates: { lat: -31.95, lng: 115.86 },
+          subcategories: ['netball'],
+          source_url: 'https://newclub.example.com'
+        }
+      ];
+    }
+  };
+
+  await runCrawlerHarness({
+    crawlers: [dirCrawler],
+    adapter,
+    options: { skipUrlVerification: true }
+  });
+
+  const reCrawledApprovedOrg = store.organizers.get('org_city_of_stirling');
+  assert.equal(reCrawledApprovedOrg.needs_review, false);
+  assert.equal(reCrawledApprovedOrg.review_reason, null);
+  assert.equal(reCrawledApprovedOrg.address, '25 Cedric St, Stirling WA 6021');
+
+  const newDirOrg = store.organizers.get('org_unmatched_dir_club');
+  assert.ok(newDirOrg);
+  assert.equal(newDirOrg.needs_review, true);
+  assert.equal(newDirOrg.review_reason, 'crawler_created');
 });
 

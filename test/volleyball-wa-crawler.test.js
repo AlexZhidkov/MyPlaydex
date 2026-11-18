@@ -8,7 +8,7 @@ import {
 import { sanitizeOrganizer, sanitizeVenue, sanitizeListing } from '../src/sanitizer.js';
 import { createFirestoreAdapter } from '../src/firestore-adapter.js';
 
-test('Seam 6: Volleyball WA Crawler classifies centres into Venues and clubs into Organizers (plus distinct Venues) without synthetic activities', async () => {
+test('Seam 6: Volleyball WA Crawler emits only Organizer records and no standalone Venue listings or synthetic activities', async () => {
   const mockPayload = [
     {
       id: 30092,
@@ -117,38 +117,18 @@ test('Seam 6: Volleyball WA Crawler classifies centres into Venues and clubs int
   assert.ok(requestedUrl.includes('search_radius=100'));
   assert.ok(requestedHeaders['User-Agent']);
 
-  // 1 venue (The HUB) + 1 organizer & 1 venue (Chequers / Perth Modern School) + 1 organizer (Bayswater) + 1 organizer (Northern Districts) = 5
-  assert.equal(listings.length, 5);
+  // 3 club Organizers (Chequers, Bayswater, Northern Districts); centres (The HUB) and distinct school venues are NOT emitted
+  assert.equal(listings.length, 3);
+  assert.equal(listings.filter((item) => item.entity_type === 'venue').length, 0);
 
   // None of the listings should generate synthetic weekly activities
   for (const item of listings) {
     assert.equal(item.schedule, undefined);
+    assert.equal(item.entity_type, 'organizer');
   }
 
-  // 1. Centre record -> Venue Listing
-  const hubVenue = listings[0];
-  assert.ok(hubVenue.id.startsWith('venue_the_hub_'));
-  assert.equal(hubVenue.entity_type, 'venue');
-  assert.equal(hubVenue.source, 'volleyball_wa');
-  assert.equal(hubVenue.source_id, '30092');
-  assert.equal(hubVenue.name, 'The HUB');
-  assert.equal(hubVenue.region_id, 'perth');
-  assert.equal(hubVenue.category, 'sports');
-  assert.equal(hubVenue.subcategory, 'volleyball');
-  assert.deepEqual(hubVenue.subcategories, ['volleyball']);
-  assert.equal(hubVenue.address, 'Inner City Beach, 180 Charles St, West Perth, WA 6005');
-  assert.deepEqual(hubVenue.coordinates, { lat: -31.941599, lng: 115.847653 });
-  assert.equal(hubVenue.geohash.length, 9);
-  assert.match(hubVenue.description, /Monday 9:00 AM/);
-  assert.equal(hubVenue.source_url, 'https://volleyballwa.com.au/social-volley/');
-  assert.equal(hubVenue.raw_source_url, 'https://volleyballwa.com.au/social-volley/');
-
-  const sanitizedHub = sanitizeVenue(hubVenue);
-  assert.equal(sanitizedHub.id, hubVenue.id);
-  assert.deepEqual(sanitizedHub.subcategories, ['volleyball']);
-
-  // 2. Club record -> Organizer Listing + distinct Venue Listing
-  const chequersOrg = listings[1];
+  // 1. Club record -> Organizer Listing only (no distinct Venue Listing)
+  const chequersOrg = listings[0];
   assert.equal(chequersOrg.id, 'org_chequers_volleyball_club');
   assert.equal(chequersOrg.entity_type, 'organizer');
   assert.equal(chequersOrg.name, 'Chequers Volleyball Club');
@@ -166,34 +146,23 @@ test('Seam 6: Volleyball WA Crawler classifies centres into Venues and clubs int
   const sanitizedChequers = sanitizeOrganizer(chequersOrg);
   assert.equal(sanitizedChequers.id, 'org_chequers_volleyball_club');
 
-  const pmsVenue = listings[2];
-  assert.ok(pmsVenue.id.startsWith('venue_perth_modern_school_'));
-  assert.equal(pmsVenue.entity_type, 'venue');
-  assert.equal(pmsVenue.name, 'Perth Modern School');
-  assert.equal(pmsVenue.address, 'Perth Modern School, 90 Roberts Rd, Subiaco, WA 6008');
-  assert.deepEqual(pmsVenue.coordinates, { lat: -31.944988, lng: 115.83866 });
-  assert.equal(pmsVenue.geohash.length, 9);
-  assert.deepEqual(pmsVenue.subcategories, ['volleyball']);
-  assert.equal(pmsVenue.source_url, 'https://volleyballwa.com.au/places/chequers-volleyball-club/');
-  assert.equal(pmsVenue.raw_source_url, 'https://volleyballwa.com.au/places/chequers-volleyball-club/');
-
-  // 3. Clubs without distinct venue names emit Organizer only
-  const bayswaterOrg = listings[3];
+  // 2. Clubs without distinct venue names emit Organizer only
+  const bayswaterOrg = listings[1];
   assert.equal(bayswaterOrg.id, 'org_bayswater_volleyball_club');
   assert.equal(bayswaterOrg.entity_type, 'organizer');
 
-  const ndvcOrg = listings[4];
+  const ndvcOrg = listings[2];
   assert.equal(ndvcOrg.id, 'org_northern_districts_volleyball_club');
   assert.equal(ndvcOrg.entity_type, 'organizer');
 
-  // Verify extractDistinctVenueName helper edge cases
+  // Verify extractDistinctVenueName helper edge cases remain intact
   assert.equal(extractDistinctVenueName({ address: 'Perth Modern School', address2: '90 Roberts Rd' }, 'Chequers Volleyball Club'), 'Perth Modern School');
   assert.equal(extractDistinctVenueName({ address: '123 Roberts Road', address2: '' }, 'Bayswater Volleyball Club'), null);
   assert.equal(extractDistinctVenueName({ address: 'PO Box 456', address2: '' }, 'Northern Districts Volleyball Club'), null);
   assert.equal(extractDistinctVenueName({ address: 'Roberts Road', address2: '' }, 'Some Club'), null);
   assert.equal(extractDistinctVenueName({ address: 'Chequers Volleyball Club', address2: '90 Roberts Rd' }, 'Chequers Volleyball Club'), null);
 
-  // Verify Firestore routing writes only to /organizers and /venues and zero docs to /activities
+  // Verify Firestore routing writes only to /organizers and zero docs to /venues or /activities
   const sanitizedListings = listings.map(item => sanitizeListing(item));
   const writtenPaths = [];
   const mockDb = {
@@ -223,7 +192,7 @@ test('Seam 6: Volleyball WA Crawler classifies centres into Venues and clubs int
 
   assert.equal(writtenPaths.filter(p => p.startsWith('activities/')).length, 0);
   assert.equal(writtenPaths.filter(p => p.startsWith('organizers/')).length, 3);
-  assert.equal(writtenPaths.filter(p => p.startsWith('venues/')).length, 2);
+  assert.equal(writtenPaths.filter(p => p.startsWith('venues/')).length, 0);
 });
 
 test('Seam 6: Volleyball WA Crawler throws descriptive error on HTTP failure', async () => {
@@ -240,7 +209,7 @@ test('Seam 6: Volleyball WA Crawler throws descriptive error on HTTP failure', a
   );
 });
 
-test('Seam 6: Volleyball WA Crawler classifies multi-venue clubs (e.g. Fremantle Volleyball Club) into single Organizer and distinct school Venues', async () => {
+test('Seam 6: Volleyball WA Crawler deduplicates multi-venue clubs (e.g. Fremantle Volleyball Club) into a single Organizer without emitting Venues', async () => {
   const multiVenuePayload = [
     {
       id: 40001,
@@ -289,8 +258,8 @@ test('Seam 6: Volleyball WA Crawler classifies multi-venue clubs (e.g. Fremantle
 
   const listings = await crawler.fetchListings();
 
-  // Single deduplicated Organizer + 2 distinct school Venues = 3 total listings
-  assert.equal(listings.length, 3);
+  // Single deduplicated Organizer and 0 Venues = 1 total listing
+  assert.equal(listings.length, 1);
 
   const organizers = listings.filter((item) => item.entity_type === 'organizer');
   const venues = listings.filter((item) => item.entity_type === 'venue');
@@ -298,16 +267,5 @@ test('Seam 6: Volleyball WA Crawler classifies multi-venue clubs (e.g. Fremantle
   assert.equal(organizers.length, 1);
   assert.equal(organizers[0].id, 'org_fremantle_volleyball_club');
   assert.equal(organizers[0].name, 'Fremantle Volleyball Club');
-
-  assert.equal(venues.length, 2);
-  const mlcVenue = venues.find((v) => v.name === 'Methodist Ladies College');
-  const ionaVenue = venues.find((v) => v.name === 'Iona Presentation College');
-
-  assert.ok(mlcVenue, 'Must extract Methodist Ladies College as distinct venue');
-  assert.ok(mlcVenue.id.startsWith('venue_methodist_ladies_college_'));
-  assert.equal(mlcVenue.address, 'Methodist Ladies College, 356 Stirling Hwy, Claremont, WA 6010');
-
-  assert.ok(ionaVenue, 'Must extract Iona Presentation College as distinct venue');
-  assert.ok(ionaVenue.id.startsWith('venue_iona_presentation_college_'));
-  assert.equal(ionaVenue.address, 'Iona Presentation College, 33 Palmerston St, Mosman Park, WA 6012');
+  assert.equal(venues.length, 0);
 });

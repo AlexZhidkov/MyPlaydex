@@ -34,7 +34,7 @@ test('Seam 2: batchUpsertActivities runs safely in dryRun mode without Firestore
   assert.equal(result.failed, 0);
 });
 
-test('Seam 2: batchUpsertActivities atomically upserts activities, venues, organizers, and regions using merge: true', async () => {
+test('Seam 2: batchUpsertActivities atomically upserts activities, organizers, and regions using merge: true without writing to venues', async () => {
   const committedBatches = [];
   const setOperations = [];
   const accessedCollections = new Set();
@@ -106,9 +106,9 @@ test('Seam 2: batchUpsertActivities atomically upserts activities, venues, organ
   assert.equal(result.upserted, 1);
   assert.equal(committedBatches.length, 1);
 
-  // Verifies all 4 canonical collections are upserted atomically in the same batch
+  // Verifies activities, organizers, and regions are upserted atomically while venues is locked down
   assert.ok(accessedCollections.has('activities'));
-  assert.ok(accessedCollections.has('venues'));
+  assert.equal(accessedCollections.has('venues'), false);
   assert.ok(accessedCollections.has('organizers'));
   assert.ok(accessedCollections.has('regions'));
 
@@ -118,7 +118,7 @@ test('Seam 2: batchUpsertActivities atomically upserts activities, venues, organ
   // Verify paths written
   const writtenPaths = setOperations.map(op => op.docRef.path);
   assert.ok(writtenPaths.includes('activities/stirling_1'));
-  assert.ok(writtenPaths.includes('venues/venue_scarborough_qd66s4'));
+  assert.equal(writtenPaths.includes('venues/venue_scarborough_qd66s4'), false);
   assert.ok(writtenPaths.includes('organizers/org_scarborough_club'));
   assert.ok(writtenPaths.includes('regions/perth'));
 });
@@ -377,7 +377,7 @@ test('Seam 1: batchUpdateActivityUrls updates verified status, source_url, raw_s
   assert.ok(firstOp.data.updated_at instanceof Timestamp, 'batchUpdateActivityUrls should write updated_at as Timestamp');
 });
 
-test('Seam 2: batchUpsertActivities merges subcategories arrays for shared organizer.id and venue.id', async () => {
+test('Seam 2: batchUpsertActivities merges subcategories arrays for shared organizer.id without writing to venues', async () => {
   const writtenDocs = new Map();
   const mockDb = {
     collection(colName) {
@@ -452,10 +452,7 @@ test('Seam 2: batchUpsertActivities merges subcategories arrays for shared organ
   const result = await adapter.batchUpsertActivities(activities);
   assert.equal(result.upserted, 2);
 
-  const venueDoc = writtenDocs.get('venues/venue_loftus_qd66hd');
-  assert.ok(venueDoc);
-  assert.deepEqual(venueDoc.subcategories, ['soccer', 'basketball']);
-  assert.equal(venueDoc.subcategory, 'soccer');
+  assert.equal(writtenDocs.has('venues/venue_loftus_qd66hd'), false);
 
   const orgDoc = writtenDocs.get('organizers/org_loftus_rec');
   assert.ok(orgDoc);
@@ -749,11 +746,10 @@ test('Seam 2: batchUpsertActivities persists expire_at on /activities documents 
   assert.equal(weeklyDoc.expire_at, null, 'weekly recurring activity should persist expire_at: null');
 });
 
-test('Seam 2: batchUpsertActivities writes created_at and updated_at as native Firestore Timestamps across all four collections', async () => {
+test('Seam 2: batchUpsertActivities writes created_at and updated_at as native Firestore Timestamps across activities, organizers, and regions', async () => {
   const writtenByCollection = {
     activities: new Map(),
     organizers: new Map(),
-    venues: new Map(),
     regions: new Map()
   };
 
@@ -1073,6 +1069,7 @@ test('Seam 2: batchUpsertVenues and batchUpsertOrganizers deduplicate by google_
   await adapter.batchUpsertOrganizers([
     {
       id: 'org_renamed_club',
+      source: 'google_places',
       name: 'Renamed Club',
       google_place_id: 'ChIJ_club_456',
       category: 'sports',
@@ -1097,6 +1094,160 @@ test('Seam 2: batchUpsertVenues and batchUpsertOrganizers deduplicate by google_
   assert.equal(updatedOrg.id, 'org_old_club_name');
   assert.equal(updatedOrg.name, 'Renamed Club');
   assert.deepEqual(updatedOrg.subcategories, ['volleyball', 'tennis']);
+});
+
+test('Seam 2: batchUpsertRecords preserves needs_review: false and curated fields on human-approved /organizers and /activities', async () => {
+  const store = {
+    activities: new Map([
+      ['stirling_approved_1', {
+        id: 'stirling_approved_1',
+        region_id: 'perth',
+        title: 'Curated Beach Volleyball',
+        name: 'Curated Beach Volleyball',
+        address: 'Curated Esplanade, Scarborough WA 6019',
+        coordinates: { lat: -31.8942, lng: 115.7571 },
+        google_place_id: 'ChIJCuratedActivityPlace',
+        subcategory: 'volleyball',
+        subcategories: ['volleyball'],
+        venue: {
+          id: 'venue_scarborough_canonical',
+          name: 'Scarborough Beach Amphitheatre',
+          coordinates: { lat: -31.8942, lng: 115.7571 },
+          geohash: 'qd66s4b9x',
+          google_place_id: 'ChIJCanonicalVenue1'
+        },
+        organizer: {
+          id: 'org_curated_club',
+          name: 'Curated Club Name'
+        },
+        needs_review: false,
+        review_reason: null,
+        created_at: Timestamp.fromDate(new Date('2026-10-01T00:00:00.000Z')),
+        updated_at: Timestamp.fromDate(new Date('2026-10-15T00:00:00.000Z'))
+      }]
+    ]),
+    organizers: new Map([
+      ['org_curated_club', {
+        id: 'org_curated_club',
+        region_id: 'perth',
+        name: 'Curated Club Name',
+        address: '100 Curated Way, Subiaco WA 6008',
+        coordinates: { lat: -31.944, lng: 115.838 },
+        geohash: 'qd66h8xyz',
+        google_place_id: 'ChIJCuratedOrgPlace',
+        subcategory: 'volleyball',
+        subcategories: ['volleyball'],
+        needs_review: false,
+        review_reason: null,
+        created_at: Timestamp.fromDate(new Date('2026-10-01T00:00:00.000Z')),
+        updated_at: Timestamp.fromDate(new Date('2026-10-15T00:00:00.000Z'))
+      }]
+    ]),
+    venues: new Map(),
+    regions: new Map()
+  };
+
+  const mockDb = {
+    collection(colName) {
+      return {
+        doc(id) {
+          return { id, colName, path: `${colName}/${id}` };
+        }
+      };
+    },
+    async getAll(...docRefs) {
+      return docRefs.map(ref => {
+        const data = store[ref.colName]?.get(ref.id);
+        return { id: ref.id, exists: Boolean(data), data: () => data };
+      });
+    },
+    batch() {
+      const ops = [];
+      return {
+        set(docRef, data) {
+          ops.push({ docRef, data });
+        },
+        async commit() {
+          for (const op of ops) {
+            store[op.docRef.colName]?.set(op.docRef.id, op.data);
+          }
+        }
+      };
+    }
+  };
+
+  const adapter = createFirestoreAdapter({ db: mockDb, dryRun: false });
+
+  await adapter.batchUpsertListings([
+    {
+      id: 'stirling_approved_1',
+      region_id: 'perth',
+      source: 'stirling',
+      source_id: 'approved_1',
+      title: 'Raw Crawled Title',
+      name: 'Raw Crawled Name',
+      address: 'Raw Unmatched Address',
+      coordinates: { lat: -31.9000, lng: 115.8000 },
+      google_place_id: 'ChIJWrongPlace',
+      subcategory: 'volleyball',
+      subcategories: ['volleyball', 'beach_volleyball'],
+      venue: {
+        id: null,
+        name: 'Raw Unmatched Venue',
+        coordinates: { lat: -31.9000, lng: 115.8000 },
+        geohash: 'qd66aaaaa'
+      },
+      organizer: {
+        id: 'org_curated_club',
+        name: 'Raw Crawled Org Name'
+      },
+      needs_review: true,
+      review_reason: 'unmatched_venue',
+      schedule: { start_date: '2026-11-20', end_date: null, recurrence: 'weekly' },
+      verified: true,
+      source_url: 'https://example.com/approved',
+      raw_source_url: 'https://example.com/approved',
+      updated_at: '2026-11-18T00:00:00.000Z'
+    },
+    {
+      id: 'org_curated_club',
+      entity_type: 'organizer',
+      region_id: 'perth',
+      name: 'Raw Crawled Org Name',
+      address: 'Raw Crawled Org Address',
+      coordinates: { lat: -31.999, lng: 115.999 },
+      geohash: 'qd66zzzzz',
+      google_place_id: null,
+      subcategory: 'tennis',
+      subcategories: ['tennis'],
+      needs_review: true,
+      review_reason: 'crawler_created',
+      updated_at: '2026-11-18T00:00:00.000Z'
+    }
+  ]);
+
+  const savedActivity = store.activities.get('stirling_approved_1');
+  assert.equal(savedActivity.needs_review, false);
+  assert.equal(savedActivity.review_reason, null);
+  assert.equal(savedActivity.venue.id, 'venue_scarborough_canonical');
+  assert.equal(savedActivity.venue.name, 'Scarborough Beach Amphitheatre');
+  assert.equal(savedActivity.venue.google_place_id, 'ChIJCanonicalVenue1');
+  assert.equal(savedActivity.organizer.id, 'org_curated_club');
+  assert.equal(savedActivity.organizer.name, 'Curated Club Name');
+  assert.equal(savedActivity.name, 'Curated Beach Volleyball');
+  assert.equal(savedActivity.address, 'Curated Esplanade, Scarborough WA 6019');
+  assert.deepEqual(savedActivity.coordinates, { lat: -31.8942, lng: 115.7571 });
+  assert.equal(savedActivity.google_place_id, 'ChIJCuratedActivityPlace');
+
+  const savedOrg = store.organizers.get('org_curated_club');
+  assert.equal(savedOrg.needs_review, false);
+  assert.equal(savedOrg.review_reason, null);
+  assert.equal(savedOrg.name, 'Curated Club Name');
+  assert.equal(savedOrg.address, '100 Curated Way, Subiaco WA 6008');
+  assert.deepEqual(savedOrg.coordinates, { lat: -31.944, lng: 115.838 });
+  assert.equal(savedOrg.google_place_id, 'ChIJCuratedOrgPlace');
+  assert.deepEqual(savedOrg.subcategories, ['volleyball', 'tennis']);
+  assert.equal(store.venues.size, 0);
 });
 
 

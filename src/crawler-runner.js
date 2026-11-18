@@ -6,6 +6,7 @@
 
 import { pathToFileURL } from 'node:url';
 import { sanitizeListing, resolveListingType, extractCanonicalEntities } from './sanitizer.js';
+import { reconcileListingWithCatalog } from './entity-matcher.js';
 import { createFirestoreAdapter, initFirestoreFromEnv } from './firestore-adapter.js';
 import { createUrlVerifier } from './url-verifier.js';
 import { createStirlingCrawler } from './crawlers/stirling-crawler.js';
@@ -74,6 +75,13 @@ export async function runCrawlerHarness({ crawlers = [], adapter, options = {} }
     ? crawlers
     : crawlers.filter(c => c.name.toLowerCase() === targetCrawler.toLowerCase());
 
+  const venuesCatalog = Array.isArray(options.existingVenues)
+    ? options.existingVenues
+    : (typeof adapter?.scanVenues === 'function' ? await adapter.scanVenues() : []);
+  const organizersCatalog = Array.isArray(options.existingOrganizers)
+    ? options.existingOrganizers
+    : (typeof adapter?.scanOrganizers === 'function' ? await adapter.scanOrganizers() : []);
+
   const results = [];
   let totalRaw = 0;
   let totalValid = 0;
@@ -125,6 +133,9 @@ export async function runCrawlerHarness({ crawlers = [], adapter, options = {} }
       for (const item of rawItems) {
         try {
           const listingType = resolveListingType(item);
+          if (listingType === 'venue') {
+            continue;
+          }
           const sanitized = sanitizeListing(item);
           validItems.push(sanitized);
           validEntries.push({ raw: item, listingType });
@@ -141,22 +152,38 @@ export async function runCrawlerHarness({ crawlers = [], adapter, options = {} }
           ? validItems
           : await urlVerifier.verifyListings(validItems);
 
+        const reconciledItems = [];
         for (let idx = 0; idx < verifiedItems.length; idx++) {
           const verifiedItem = verifiedItems[idx];
           const entry = validEntries[idx];
+          const reconciled = reconcileListingWithCatalog(
+            verifiedItem,
+            { venuesCatalog, organizersCatalog },
+            entry?.listingType || 'activity'
+          );
+
           if (entry?.listingType === 'activity') {
-            Object.defineProperty(verifiedItem, '_canonicalEntities', {
-              value: extractCanonicalEntities(verifiedItem, entry.raw),
+            const entities = extractCanonicalEntities(reconciled, entry.raw);
+            if (reconciled.review_reason === 'unmatched_organizer' && entities.organizer) {
+              entities.organizer.needs_review = true;
+              entities.organizer.review_reason = 'crawler_created';
+            } else if (reconciled.review_reason === 'uncertain_organizer_match') {
+              entities.organizer = null;
+            }
+            Object.defineProperty(reconciled, '_canonicalEntities', {
+              value: entities,
               enumerable: false,
               configurable: true,
               writable: true
             });
           }
+
+          reconciledItems.push(reconciled);
         }
 
         const writeResult = typeof adapter.batchUpsertListings === 'function'
-          ? await adapter.batchUpsertListings(verifiedItems)
-          : await adapter.batchUpsertActivities(verifiedItems);
+          ? await adapter.batchUpsertListings(reconciledItems)
+          : await adapter.batchUpsertActivities(reconciledItems);
         upsertedCount = writeResult.upserted;
         totalUpserted += upsertedCount;
       }

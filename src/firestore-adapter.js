@@ -6,7 +6,7 @@
  */
 
 import { Timestamp } from 'firebase-admin/firestore';
-import { computeActivityExpireAt, extractCanonicalEntities, mergeEntityDocuments, resolveListingType } from './sanitizer.js';
+import { computeActivityExpireAt, extractCanonicalEntities, mergeActivityDocuments, mergeEntityDocuments, resolveListingType } from './sanitizer.js';
 
 const FIRESTORE_MAX_BATCH_SIZE = 500;
 
@@ -176,7 +176,11 @@ export function createFirestoreAdapter(options = {}) {
     }
 
     const { onlyUnverified = false } = scanOptions;
-    const snapshot = await db.collection(targetCollection).get();
+    const colRef = db.collection(targetCollection);
+    if (typeof colRef?.get !== 'function') {
+      return [];
+    }
+    const snapshot = await colRef.get();
     const records = [];
     const docs = snapshot && snapshot.docs ? snapshot.docs : [];
 
@@ -261,14 +265,14 @@ export function createFirestoreAdapter(options = {}) {
 
     if (resolvedType === 'organizer') {
       if (cleanItem.id) {
-        ops.push({ col: organizersCollectionName, id: cleanItem.id, data: withAuditTimestamps(cleanItem, now), mergeable: true });
+        ops.push({ col: organizersCollectionName, id: cleanItem.id, data: withAuditTimestamps(cleanItem, now), mergeable: true, mergeFn: mergeEntityDocuments });
       }
       return ops;
     }
 
     if (resolvedType === 'venue') {
       if (cleanItem.id) {
-        ops.push({ col: venuesCollectionName, id: cleanItem.id, data: withAuditTimestamps(cleanItem, now), mergeable: true });
+        ops.push({ col: venuesCollectionName, id: cleanItem.id, data: withAuditTimestamps(cleanItem, now), mergeable: true, mergeFn: mergeEntityDocuments });
       }
       return ops;
     }
@@ -283,13 +287,10 @@ export function createFirestoreAdapter(options = {}) {
       : (rawExpireAt ?? null);
 
     if (cleanActivity.id) {
-      ops.push({ col: collectionName, id: cleanActivity.id, data: cleanActivity });
-    }
-    if (entities.venue && entities.venue.id) {
-      ops.push({ col: venuesCollectionName, id: entities.venue.id, data: withAuditTimestamps(entities.venue, now), mergeable: true });
+      ops.push({ col: collectionName, id: cleanActivity.id, data: cleanActivity, mergeFn: mergeActivityDocuments });
     }
     if (entities.organizer && entities.organizer.id) {
-      ops.push({ col: organizersCollectionName, id: entities.organizer.id, data: withAuditTimestamps(entities.organizer, now), mergeable: true });
+      ops.push({ col: organizersCollectionName, id: entities.organizer.id, data: withAuditTimestamps(entities.organizer, now), mergeable: true, mergeFn: mergeEntityDocuments });
     }
     if (entities.region && entities.region.id) {
       ops.push({ col: regionsCollectionName, id: entities.region.id, data: withAuditTimestamps(entities.region, now) });
@@ -376,22 +377,20 @@ export function createFirestoreAdapter(options = {}) {
     if (!dryRun && db) {
       await resolveExistingByGooglePlaceId(itemOpsList, accumulatedEntityDocs);
 
-      if (typeof db.getAll === 'function') {
-        const mergeableIds = new Set();
-        for (const ops of itemOpsList) {
-          for (const op of ops) {
-            if (op.mergeable && !accumulatedEntityDocs.has(`${op.col}/${op.id}`)) {
-              mergeableIds.add(op.id);
-            }
+      const prefetchIds = new Set();
+      for (const ops of itemOpsList) {
+        for (const op of ops) {
+          if (op.mergeFn && !accumulatedEntityDocs.has(`${op.col}/${op.id}`)) {
+            prefetchIds.add(op.id);
           }
         }
+      }
 
-        if (mergeableIds.size > 0) {
-          const existingMap = await getRecordsByIds(Array.from(mergeableIds));
-          for (const [id, data] of existingMap.entries()) {
-            const col = resolveCollectionForId(id);
-            accumulatedEntityDocs.set(`${col}/${id}`, data);
-          }
+      if (prefetchIds.size > 0) {
+        const existingMap = await getRecordsByIds(Array.from(prefetchIds));
+        for (const [id, data] of existingMap.entries()) {
+          const col = resolveCollectionForId(id);
+          accumulatedEntityDocs.set(`${col}/${id}`, data);
         }
       }
     }
@@ -423,9 +422,9 @@ export function createFirestoreAdapter(options = {}) {
 
       for (const op of candidateOps) {
         const key = `${op.col}/${op.id}`;
-        if (op.mergeable) {
+        if (op.mergeFn) {
           const prevDoc = accumulatedEntityDocs.get(key);
-          const mergedData = withAuditTimestamps(prevDoc ? mergeEntityDocuments(prevDoc, op.data) : op.data);
+          const mergedData = withAuditTimestamps(prevDoc ? op.mergeFn(prevDoc, op.data) : op.data);
           accumulatedEntityDocs.set(key, mergedData);
           currentBatchOps.set(key, { col: op.col, id: op.id, data: mergedData });
         } else {

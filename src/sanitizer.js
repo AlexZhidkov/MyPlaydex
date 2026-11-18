@@ -588,9 +588,72 @@ function resolveExtractedEntityVerification(entityInput = {}, verifiedReferralUr
   };
 }
 
+const CURATED_PRESERVED_FIELDS = [
+  'venue',
+  'organizer',
+  'title',
+  'name',
+  'address',
+  'coordinates',
+  'geohash',
+  'google_place_id'
+];
+
+/**
+ * Preserves human-approved curation state (`needs_review: false`) and curated fields
+ * from `prevDoc` so subsequent crawler runs never overwrite manual approvals.
+ *
+ * @param {object} prevDoc
+ * @param {object} merged
+ * @returns {object}
+ */
+function applyApprovedCurationPreservation(prevDoc, nextDoc, merged) {
+  if (prevDoc?.needs_review !== false || nextDoc?.source === 'google_places') {
+    return merged;
+  }
+  if (typeof prevDoc.id === 'string' && prevDoc.id.startsWith('venue_')) {
+    return merged;
+  }
+
+  const preserved = {
+    ...merged,
+    needs_review: false,
+    review_reason: null
+  };
+
+  for (const field of CURATED_PRESERVED_FIELDS) {
+    if (prevDoc[field] !== undefined) {
+      preserved[field] = prevDoc[field];
+    }
+  }
+
+  return preserved;
+}
+
+/**
+ * Merges a previous Activity document with a newly crawled Activity document,
+ * preserving `created_at` and human-approved curation when `prevDoc.needs_review === false`.
+ *
+ * @param {object} prevDoc
+ * @param {object} nextDoc
+ * @returns {object}
+ */
+export function mergeActivityDocuments(prevDoc, nextDoc) {
+  const merged = {
+    ...prevDoc,
+    ...nextDoc
+  };
+
+  if (prevDoc.created_at || nextDoc.created_at) {
+    merged.created_at = prevDoc.created_at || nextDoc.created_at;
+  }
+
+  return applyApprovedCurationPreservation(prevDoc, nextDoc, merged);
+}
+
 /**
  * Merges two canonical Organizer or Venue documents referencing the same deterministic ID,
- * combining `subcategories` arrays and preserving populated metadata.
+ * combining `subcategories` arrays, preserving populated metadata, and keeping human-approved curation.
  *
  * @param {object} prevDoc
  * @param {object} nextDoc
@@ -639,7 +702,7 @@ export function mergeEntityDocuments(prevDoc, nextDoc) {
     };
   }
 
-  return merged;
+  return applyApprovedCurationPreservation(prevDoc, nextDoc, merged);
 }
 
 /**

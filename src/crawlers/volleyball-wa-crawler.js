@@ -91,46 +91,6 @@ function summarizeHours(hoursHtml = '') {
 }
 
 /**
- * Appends a deduplicated canonical Venue Listing to `listings` if its deterministic ID
- * has not been emitted yet in this crawl.
- */
-function appendUniqueVenue(listings, seenVenueIds, {
-  name,
-  geohash,
-  sourceId,
-  urlLink,
-  description,
-  address,
-  lat,
-  lng,
-  subcategories
-}) {
-  const geohash6 = geohash.slice(0, 6);
-  const venueId = `venue_${slugify(name) || 'venue'}_${geohash6}`;
-  if (seenVenueIds.has(venueId)) {
-    return;
-  }
-  seenVenueIds.add(venueId);
-  listings.push({
-    id: venueId,
-    entity_type: 'venue',
-    source: 'volleyball_wa',
-    source_id: sourceId,
-    source_url: urlLink,
-    raw_source_url: urlLink,
-    region_id: 'perth',
-    name,
-    description,
-    address,
-    coordinates: { lat, lng },
-    geohash,
-    category: 'sports',
-    subcategory: 'volleyball',
-    subcategories
-  });
-}
-
-/**
  * Creates a Volleyball WA crawler instance.
  *
  * @param {object} [options]
@@ -178,7 +138,6 @@ export function createVolleyballWaCrawler(options = {}) {
       const records = Array.isArray(json) ? json : (json?.data || []);
 
       const listings = [];
-      const seenVenueIds = new Set();
       const seenOrgIds = new Set();
       const subcategories = normalizeSubcategories({ subcategory: 'volleyball' }, 'volleyball');
 
@@ -245,33 +204,6 @@ export function createVolleyballWaCrawler(options = {}) {
               }
             });
           }
-
-          const distinctVenueName = extractDistinctVenueName(item, directoryName);
-          if (distinctVenueName) {
-            appendUniqueVenue(listings, seenVenueIds, {
-              name: distinctVenueName,
-              geohash,
-              sourceId: `${sourceId}_venue`,
-              urlLink,
-              description: `${distinctVenueName} (${terms || 'Volleyball Venue'}) - ${disciplineLabel} venue in Greater Perth.${hoursSuffix}`,
-              address,
-              lat: itemLat,
-              lng: itemLng,
-              subcategories
-            });
-          }
-        } else {
-          appendUniqueVenue(listings, seenVenueIds, {
-            name: directoryName,
-            geohash,
-            sourceId,
-            urlLink,
-            description,
-            address,
-            lat: itemLat,
-            lng: itemLng,
-            subcategories
-          });
         }
       }
 
