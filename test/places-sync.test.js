@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { runPlacesSync, parseCliArgs, main } from '../src/places-sync.js';
 
 const EXPECTED_FIELD_MASK = [
@@ -448,6 +450,42 @@ test('Seam 1: runPlacesSync classifies sports primaryType with park in types as 
   const perthCache = memoryCache.get('Perth');
   assert.equal(perthCache.organizers.length, 1);
   assert.equal(perthCache.organizers[0].id, 'ChIJ_cached_org');
+});
+
+test('Seam 3: main loads GOOGLE_PLACES_API_KEY from .env when not already set in env', async () => {
+  const scratchDir = fileURLToPath(new URL('../.scratch', import.meta.url));
+  await fs.mkdir(scratchDir, { recursive: true });
+  const tmpDir = await fs.mkdtemp(path.join(scratchDir, 'test-env-'));
+  const envFilePath = path.join(tmpDir, 'test.env');
+  try {
+    await fs.writeFile(
+      envFilePath,
+      '# Comment line\n\nGOOGLE_PLACES_API_KEY="env-file-key"\n',
+      'utf8'
+    );
+
+    let capturedApiKey = null;
+    const env = {};
+    const summary = await main(
+      ['--suburb=Perth', '--dry-run', '--entity=organizers'],
+      env,
+      {
+        envFilePath,
+        fetchFn: async (_url, init) => {
+          capturedApiKey = init?.headers?.['X-Goog-Api-Key'] || null;
+          return { ok: true, status: 200, async json() { return { places: [] }; } };
+        },
+        cacheStore: { read: async () => null, write: async () => {} },
+        logger: { log: () => {}, warn: () => {}, error: () => {} }
+      }
+    );
+
+    assert.equal(env.GOOGLE_PLACES_API_KEY, 'env-file-key');
+    assert.equal(capturedApiKey, 'env-file-key');
+    assert.equal(summary.dryRun, true);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
 });
 
 

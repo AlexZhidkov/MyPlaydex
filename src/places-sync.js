@@ -426,6 +426,54 @@ export function parseCliArgs(argv = process.argv.slice(2), env = process.env) {
 }
 
 /**
+ * Loads environment variables from a `.env` file into `targetEnv` without overwriting
+ * variables that are already set.
+ *
+ * @param {string} [envFilePath]
+ * @param {object} [targetEnv=process.env]
+ */
+export async function loadDotEnv(envFilePath = path.resolve(process.cwd(), '.env'), targetEnv = process.env) {
+  let content;
+  try {
+    content = await fs.readFile(envFilePath, 'utf8');
+  } catch (err) {
+    if (err?.code === 'ENOENT') {
+      return;
+    }
+    throw err;
+  }
+
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) {
+      continue;
+    }
+
+    const eqIndex = line.indexOf('=');
+    if (eqIndex <= 0) {
+      continue;
+    }
+
+    const key = line.slice(0, eqIndex).trim();
+    if (!key) {
+      continue;
+    }
+
+    let value = line.slice(eqIndex + 1).trim();
+    if (
+      value.length >= 2 &&
+      ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))
+    ) {
+      value = value.slice(1, -1);
+    }
+
+    if (targetEnv[key] === undefined || targetEnv[key] === '') {
+      targetEnv[key] = value;
+    }
+  }
+}
+
+/**
  * Main entry point for the local Google Places sync CLI.
  *
  * @param {Array<string>} [argv=process.argv.slice(2)]
@@ -434,6 +482,10 @@ export function parseCliArgs(argv = process.argv.slice(2), env = process.env) {
  * @returns {Promise<object>} Sync summary report
  */
 export async function main(argv = process.argv.slice(2), env = process.env, options = {}) {
+  if (env === process.env || options.envFilePath) {
+    await loadDotEnv(options.envFilePath, env);
+  }
+
   const parsedArgs = parseCliArgs(argv, env);
   const logger = options.logger || console;
   const apiKey = options.apiKey || env.GOOGLE_PLACES_API_KEY || '';
