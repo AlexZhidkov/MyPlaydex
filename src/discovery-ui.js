@@ -82,6 +82,11 @@ export function escapeHtml(str = '') {
  */
 export function createOutboundDirectionsUrl(venue = {}) {
   const name = venue.name || 'Sports Venue';
+  const placeId = typeof venue.google_place_id === 'string' ? venue.google_place_id.trim() : '';
+  if (placeId) {
+    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(name)}&query_place_id=${encodeURIComponent(placeId)}`;
+  }
+
   const coords = venue.coordinates || (venue.lat !== undefined && venue.lng !== undefined ? venue : null);
 
   let query = name;
@@ -456,6 +461,43 @@ export function renderActivityCard(activity = {}) {
   `.trim();
 }
 
+function trimmedString(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+/**
+ * Resolves outbound Google Maps URL, whole-card click URL, and Unverified badge state
+ * for Organizer and Venue cards, supporting Pro-tier Google Places listings without websites.
+ *
+ * @param {object} listing
+ * @param {string} name
+ * @param {string} rawCandidateUrl
+ * @returns {{ directionsUrl: string, wholeCardUrl: string, hasVerifiedExternalUrl: boolean, isGooglePlaceOnly: boolean }}
+ */
+function resolveCardNavigationState(listing, name, rawCandidateUrl) {
+  const trimmedSourceUrl = trimmedString(rawCandidateUrl);
+  const hasVerifiedExternalUrl = listing.verified !== false && Boolean(trimmedSourceUrl) && trimmedSourceUrl !== '#';
+  const isGooglePlaceOnly = Boolean(trimmedString(listing.google_place_id))
+    && !trimmedSourceUrl
+    && !trimmedString(listing.raw_source_url);
+  const directionsUrl = createOutboundDirectionsUrl({
+    name,
+    address: listing.address,
+    coordinates: listing.coordinates,
+    google_place_id: listing.google_place_id
+  });
+  const wholeCardUrl = hasVerifiedExternalUrl
+    ? trimmedSourceUrl
+    : (isGooglePlaceOnly ? directionsUrl : '');
+
+  return {
+    directionsUrl,
+    wholeCardUrl,
+    hasVerifiedExternalUrl,
+    isGooglePlaceOnly
+  };
+}
+
 /**
  * Renders a 4-Tier Organizer card HTML string.
  *
@@ -476,20 +518,19 @@ export function renderOrganizerCard(organizer = {}) {
     ? `<span class="badge badge-cost ${isHighlightCost ? 'badge-free' : ''}">${escapeHtml(rawCost)}</span>`
     : '';
 
-  const rawCandidateUrl = organizer.source_url !== undefined ? organizer.source_url : organizer.website;
-  const trimmedSourceUrl = typeof rawCandidateUrl === 'string' ? rawCandidateUrl.trim() : '';
-  const isVerified = organizer.verified !== false && Boolean(trimmedSourceUrl) && trimmedSourceUrl !== '#';
-  const unverifiedBadge = !isVerified ? `<span class="badge badge-unverified">Unverified</span>` : '';
-
-  const cardClasses = isVerified
-    ? 'activity-card organizer-card'
-    : 'activity-card organizer-card activity-card-unverified organizer-card-unverified';
-  const cardInteractiveAttrs = isVerified
-    ? ` data-url="${escapeHtml(trimmedSourceUrl)}" tabindex="0"`
-    : '';
-
   const name = organizer.name || organizer.title || 'Untitled Organizer';
-  const description = typeof organizer.description === 'string' ? organizer.description.trim() : '';
+  const rawCandidateUrl = organizer.source_url !== undefined ? organizer.source_url : organizer.website;
+  const {
+    directionsUrl,
+    wholeCardUrl,
+    hasVerifiedExternalUrl,
+    isGooglePlaceOnly
+  } = resolveCardNavigationState(organizer, name, rawCandidateUrl);
+
+  const showUnverifiedBadge = !hasVerifiedExternalUrl && !isGooglePlaceOnly;
+  const unverifiedBadge = showUnverifiedBadge ? `<span class="badge badge-unverified">Unverified</span>` : '';
+
+  const description = trimmedString(organizer.description);
   const phone = organizer.contact?.phone || organizer.phone || '';
   const email = organizer.contact?.email || organizer.email || '';
   const contactParts = [];
@@ -497,11 +538,14 @@ export function renderOrganizerCard(organizer = {}) {
   if (email) contactParts.push(`✉️ ${escapeHtml(email)}`);
 
   const addressText = organizer.address || name || 'Greater Perth, WA';
-  const directionsUrl = createOutboundDirectionsUrl({
-    name,
-    address: organizer.address,
-    coordinates: organizer.coordinates
-  });
+  const isClickable = Boolean(wholeCardUrl);
+  const cardClasses = isClickable
+    ? 'activity-card organizer-card'
+    : 'activity-card organizer-card activity-card-unverified organizer-card-unverified';
+  const cardInteractiveAttrs = isClickable
+    ? ` data-url="${escapeHtml(wholeCardUrl)}" tabindex="0"`
+    : '';
+
   const editMailtoUrl = createSuggestEditMailtoUrl({ ...organizer, entity_type: 'organizer' });
 
   return `
@@ -542,19 +586,19 @@ export function renderVenueCard(venue = {}) {
   const sportBadges = renderSportBadges(venue);
   const distanceBadge = renderDistanceBadge(venue);
 
-  const trimmedSourceUrl = typeof venue.source_url === 'string' ? venue.source_url.trim() : '';
-  const hasVerifiedExternalUrl = venue.verified !== false && Boolean(trimmedSourceUrl) && trimmedSourceUrl !== '#';
-  const hasFailedExternalUrl = venue.verified === false || (Boolean(venue.raw_source_url) && !hasVerifiedExternalUrl);
-  const unverifiedBadge = hasFailedExternalUrl ? `<span class="badge badge-unverified">Unverified</span>` : '';
-
   const name = venue.name || venue.title || 'Untitled Venue';
   const addressText = venue.address || name || 'Greater Perth, WA';
-  const directionsUrl = createOutboundDirectionsUrl({
-    name,
-    address: venue.address,
-    coordinates: venue.coordinates
-  });
-  const wholeCardUrl = hasVerifiedExternalUrl ? trimmedSourceUrl : directionsUrl;
+  const {
+    directionsUrl,
+    wholeCardUrl: resolvedCardUrl,
+    hasVerifiedExternalUrl,
+    isGooglePlaceOnly
+  } = resolveCardNavigationState(venue, name, venue.source_url);
+
+  const hasFailedExternalUrl = !isGooglePlaceOnly
+    && (venue.verified === false || (Boolean(venue.raw_source_url) && !hasVerifiedExternalUrl));
+  const unverifiedBadge = hasFailedExternalUrl ? `<span class="badge badge-unverified">Unverified</span>` : '';
+  const wholeCardUrl = resolvedCardUrl || directionsUrl;
 
   const summaryParts = [];
   if (typeof venue.description === 'string' && venue.description.trim()) {

@@ -771,5 +771,89 @@ test('Seam 1: In-memory expiration filtering enforces 24-hour AWST grace window 
   assert.deepEqual(afterGrace.map(a => a.id), ['weekly_with_null_expire_at']);
 });
 
+test('Seam 2 (Issue #16): Unreviewed Listings (needs_review: true) remain visible in Activities and Organizers discovery', () => {
+  const perthCbd = { lat: -31.9505, lng: 115.8605 };
+
+  const activities = [
+    {
+      id: 'act_unreviewed',
+      title: 'Community Basketball',
+      subcategories: ['basketball'],
+      venue: { coordinates: perthCbd },
+      schedule: { start_date: '2026-11-18', recurrence: 'weekly', day_of_week: 3 },
+      needs_review: true
+    },
+    {
+      id: 'act_reviewed',
+      title: 'Reviewed Tennis',
+      subcategories: ['tennis'],
+      venue: { coordinates: perthCbd },
+      schedule: { start_date: '2026-11-18', recurrence: 'weekly', day_of_week: 3 },
+      needs_review: false
+    }
+  ];
+
+  const rankedActivities = filterAndRankActivities(activities, {
+    location: perthCbd,
+    radiusKm: 10,
+    referenceDate: new Date('2026-11-18T10:00:00+08:00')
+  });
+  assert.deepEqual(
+    rankedActivities.map((a) => a.id).sort(),
+    ['act_reviewed', 'act_unreviewed']
+  );
+
+  const organizers = [
+    {
+      id: 'org_unreviewed',
+      name: 'Unreviewed Club',
+      subcategories: ['volleyball'],
+      coordinates: perthCbd,
+      needs_review: true
+    },
+    {
+      id: 'org_reviewed',
+      name: 'Reviewed Club',
+      subcategories: ['volleyball'],
+      coordinates: perthCbd,
+      needs_review: false
+    }
+  ];
+
+  const rankedOrganizers = filterAndRankOrganizers(organizers, {
+    location: perthCbd,
+    radiusKm: 10
+  });
+  assert.deepEqual(
+    rankedOrganizers.map((o) => o.id).sort(),
+    ['org_reviewed', 'org_unreviewed']
+  );
+});
+
+test('Seam 2 (Issue #16): filterAndRankVenues returns all nearby Venues across all categories when no sport filter is selected', () => {
+  const perthCbd = { lat: -31.9505, lng: 115.8605 };
+  const categories = ['sports', 'recreation', 'culture', 'community', 'outdoors'];
+
+  const venues = categories.map((category, idx) => ({
+    id: `venue_${category}`,
+    name: `Perth ${category} Venue`,
+    category,
+    subcategories: [],
+    coordinates: { lat: -31.9505 + idx * 0.001, lng: 115.8605 }
+  }));
+
+  const rankedVenues = filterAndRankVenues(venues, {
+    location: perthCbd,
+    radiusKm: 10,
+    filters: { sports: [] }
+  });
+
+  assert.deepEqual(
+    rankedVenues.map((v) => v.category),
+    categories,
+    'All venue categories must be returned when no sport filter is selected'
+  );
+});
+
 
 

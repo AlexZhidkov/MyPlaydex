@@ -26,6 +26,21 @@ test('Seam 3: createOutboundDirectionsUrl generates valid Google Maps query URL 
   const url = createOutboundDirectionsUrl(venue);
   assert.ok(url.startsWith('https://www.google.com/maps/search/?api=1&query='));
   assert.ok(url.includes('Loftus') || url.includes('-31.9366'));
+
+  const placeUrl = createOutboundDirectionsUrl({
+    ...venue,
+    google_place_id: 'ChIJ_loftus_123'
+  });
+  assert.equal(
+    placeUrl,
+    'https://www.google.com/maps/search/?api=1&query=Loftus%20Recreation%20Centre&query_place_id=ChIJ_loftus_123'
+  );
+
+  const nullPlaceUrl = createOutboundDirectionsUrl({
+    ...venue,
+    google_place_id: null
+  });
+  assert.equal(nullPlaceUrl, url);
 });
 
 test('Seam 3: formatScheduleText formats weekly, one-off, and ISO timestamp dates in Australian format (en-AU)', () => {
@@ -528,5 +543,62 @@ test('Seam 2 (Issue #13): renderTabSwitcher and renderEmptyState adapt copy per 
   assert.ok(emptyVenues.includes('No venues found nearby'));
   assert.ok(!emptyVenues.includes('data-action="expand-radius"'), 'Expand button hidden when radius is all');
   assert.ok(emptyVenues.includes('data-action="clear-filters"'));
+});
+
+test('Seam 1 (Issue #16): Activity, Organizer, and Venue cards use query_place_id and omit Unverified badge on Google Places listings without websites', () => {
+  const activityHtml = renderActivityCard({
+    id: 'act_place_1',
+    title: 'Social Basketball',
+    subcategories: ['basketball'],
+    schedule: { recurrence: 'weekly', day_of_week: 2, start_time: '18:30', end_time: '20:00' },
+    cost: { is_free: false, display_price: '$10' },
+    source_url: 'https://example.com/bball',
+    verified: true,
+    venue: {
+      name: 'Bendat Basketball Centre',
+      address: '201 Underwood Ave, Floreat WA 6014',
+      coordinates: { lat: -31.944, lng: 115.798 },
+      google_place_id: 'ChIJ_bendat_789'
+    }
+  });
+  assert.ok(
+    activityHtml.includes('data-directions-url="https://www.google.com/maps/search/?api=1&amp;query=Bendat%20Basketball%20Centre&amp;query_place_id=ChIJ_bendat_789"'),
+    'Activity card venue row must include query_place_id'
+  );
+
+  const placesOrganizerHtml = renderOrganizerCard({
+    id: 'org_places_1',
+    name: 'Subiaco Tennis Club',
+    address: '200 Bagot Rd, Subiaco WA 6008',
+    coordinates: { lat: -31.947, lng: 115.822 },
+    subcategories: ['tennis'],
+    google_place_id: 'ChIJ_subi_tennis',
+    source_url: null,
+    raw_source_url: null,
+    verified: false
+  });
+  const expectedOrgMapsUrl = 'https://www.google.com/maps/search/?api=1&amp;query=Subiaco%20Tennis%20Club&amp;query_place_id=ChIJ_subi_tennis';
+  assert.ok(!placesOrganizerHtml.includes('badge-unverified'), 'Google Places organizer without website must not display Unverified badge');
+  assert.ok(!placesOrganizerHtml.includes('activity-card-unverified'), 'Google Places organizer without website must remain clickable');
+  assert.ok(placesOrganizerHtml.includes(`data-url="${expectedOrgMapsUrl}"`), 'Google Places organizer whole-card click must open Google Maps Place URL');
+  assert.ok(placesOrganizerHtml.includes('tabindex="0"'), 'Google Places organizer card must be focusable');
+  assert.ok(placesOrganizerHtml.includes(`data-directions-url="${expectedOrgMapsUrl}"`), 'Google Places organizer maps row must use query_place_id');
+
+  const placesVenueHtml = renderVenueCard({
+    id: 'venue_places_1',
+    name: 'Beatty Park Leisure Centre',
+    address: '220 Vincent St, North Perth WA 6006',
+    coordinates: { lat: -31.938, lng: 115.851 },
+    subcategories: ['swimming'],
+    category: 'recreation',
+    google_place_id: 'ChIJ_beatty_park',
+    source_url: null,
+    raw_source_url: null,
+    verified: false
+  });
+  const expectedVenueMapsUrl = 'https://www.google.com/maps/search/?api=1&amp;query=Beatty%20Park%20Leisure%20Centre&amp;query_place_id=ChIJ_beatty_park';
+  assert.ok(!placesVenueHtml.includes('badge-unverified'), 'Google Places venue without website must not display Unverified badge');
+  assert.ok(placesVenueHtml.includes(`data-url="${expectedVenueMapsUrl}"`), 'Google Places venue whole-card click must open Google Maps Place URL');
+  assert.ok(placesVenueHtml.includes(`data-directions-url="${expectedVenueMapsUrl}"`), 'Google Places venue maps row must use query_place_id');
 });
 

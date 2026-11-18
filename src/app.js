@@ -24,6 +24,8 @@ export const DEFAULT_FIRESTORE_COLLECTION = 'activities';
 export const DEFAULT_ORGANIZERS_COLLECTION = 'organizers';
 export const DEFAULT_VENUES_COLLECTION = 'venues';
 export const DEFAULT_FIRESTORE_PAGE_SIZE = 50;
+export const DEFAULT_FULL_CATALOG_PAGE_SIZE = 300;
+const MAX_FIRESTORE_PAGINATION_PAGES = 50;
 
 /**
  * Unwraps a single Cloud Firestore REST API typed value into a plain JavaScript primitive/object.
@@ -98,15 +100,18 @@ export function parseFirestoreDocument(doc) {
 }
 
 /**
- * Fetches up to 50 documents from a public Cloud Firestore collection in a single request.
- * Supports injected `db` instance (SDK `.limit(50).get()`) or public Firestore REST v1 endpoint (`pageSize=50` without pagination loops).
+ * Fetches documents from a public Cloud Firestore collection.
+ * By default (`paginate: false`), caps to a single request of up to 50 documents.
+ * When `paginate: true` (used for `/organizers` and `/venues`), pages through `nextPageToken`
+ * (or queries the full collection on an injected SDK `db`) so regional ranking operates on the full catalog.
  *
  * @param {object} [options={}]
  * @param {object} [options.db] - Optional Firestore instance with collection(name)
  * @param {Function} [options.fetchImpl] - Fetch implementation (defaults to globalThis.fetch)
  * @param {string} [options.projectId=DEFAULT_FIREBASE_PROJECT_ID] - Firebase project ID
  * @param {string} [options.collectionName=DEFAULT_FIRESTORE_COLLECTION] - Collection name
- * @param {number} [options.pageSize=DEFAULT_FIRESTORE_PAGE_SIZE] - Page size capped at 50
+ * @param {number} [options.pageSize=DEFAULT_FIRESTORE_PAGE_SIZE] - Page size (capped at 50 when paginate=false, 300 when paginate=true)
+ * @param {boolean} [options.paginate=false] - Whether to paginate across the full collection
  * @returns {Promise<Array<object>>}
  */
 export async function fetchCollectionFromFirestore(options = {}) {
@@ -117,50 +122,64 @@ export async function fetchCollectionFromFirestore(options = {}) {
       : null,
     projectId = DEFAULT_FIREBASE_PROJECT_ID,
     collectionName = DEFAULT_FIRESTORE_COLLECTION,
-    pageSize = DEFAULT_FIRESTORE_PAGE_SIZE
+    pageSize = DEFAULT_FIRESTORE_PAGE_SIZE,
+    paginate = false
   } = options;
 
-  const limit = Math.min(Math.max(1, Number(pageSize) || DEFAULT_FIRESTORE_PAGE_SIZE), DEFAULT_FIRESTORE_PAGE_SIZE);
+  const maxPageSize = paginate ? DEFAULT_FULL_CATALOG_PAGE_SIZE : DEFAULT_FIRESTORE_PAGE_SIZE;
+  const limit = Math.min(Math.max(1, Number(pageSize) || maxPageSize), maxPageSize);
 
   // 1. If a Firestore DB instance is provided (e.g. Firebase SDK or test double)
   if (db && typeof db.collection === 'function') {
     const colRef = db.collection(collectionName);
-    const query = typeof colRef.limit === 'function' ? colRef.limit(limit) : colRef;
+    const query = !paginate && typeof colRef.limit === 'function' ? colRef.limit(limit) : colRef;
     const snapshot = await query.get();
     const docs = snapshot?.docs || [];
-    return docs.slice(0, limit).map((doc) => {
+    const targetDocs = paginate ? docs : docs.slice(0, limit);
+    return targetDocs.map((doc) => {
       const data = typeof doc.data === 'function' ? doc.data() : doc;
       return { id: doc.id, ...data };
     });
   }
 
-  // 2. Otherwise query the Cloud Firestore v1 REST API in a single capped request
+  // 2. Otherwise query the Cloud Firestore v1 REST API
   if (typeof fetchImpl !== 'function') {
     return [];
   }
 
   const baseUrl = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/${encodeURIComponent(collectionName)}`;
-  const url = new URL(baseUrl);
-  url.searchParams.set('pageSize', String(limit));
-
-  const response = await fetchImpl(url.toString());
-  if (!response || !response.ok) {
-    const status = response ? response.status : 'unknown';
-    throw new Error(`Failed to fetch /${collectionName} from Firestore (HTTP ${status})`);
-  }
-
-  const payload = await response.json();
-  const documents = Array.isArray(payload?.documents) ? payload.documents : [];
   const records = [];
-  for (const doc of documents) {
-    const parsed = parseFirestoreDocument(doc);
-    if (parsed) {
-      records.push(parsed);
-      if (records.length >= limit) {
-        break;
+  let pageToken = '';
+  let pageCount = 0;
+
+  do {
+    const url = new URL(baseUrl);
+    url.searchParams.set('pageSize', String(limit));
+    if (pageToken) {
+      url.searchParams.set('pageToken', pageToken);
+    }
+
+    const response = await fetchImpl(url.toString());
+    if (!response || !response.ok) {
+      const status = response ? response.status : 'unknown';
+      throw new Error(`Failed to fetch /${collectionName} from Firestore (HTTP ${status})`);
+    }
+
+    const payload = await response.json();
+    const documents = Array.isArray(payload?.documents) ? payload.documents : [];
+    for (const doc of documents) {
+      const parsed = parseFirestoreDocument(doc);
+      if (parsed) {
+        records.push(parsed);
+        if (!paginate && records.length >= limit) {
+          return records;
+        }
       }
     }
-  }
+
+    pageToken = paginate && typeof payload?.nextPageToken === 'string' ? payload.nextPageToken : '';
+    pageCount++;
+  } while (pageToken && pageCount < MAX_FIRESTORE_PAGINATION_PAGES);
 
   return records;
 }
@@ -179,26 +198,30 @@ export function fetchActivitiesFromFirestore(options = {}) {
 }
 
 /**
- * Fetches up to 50 organizer documents from `/organizers`.
+ * Fetches organizer documents across the full `/organizers` collection for proximity ranking.
  *
  * @param {object} [options={}]
  * @returns {Promise<Array<object>>}
  */
 export function fetchOrganizersFromFirestore(options = {}) {
   return fetchCollectionFromFirestore({
+    paginate: true,
+    pageSize: DEFAULT_FULL_CATALOG_PAGE_SIZE,
     ...options,
     collectionName: options.organizersCollectionName || options.collectionName || DEFAULT_ORGANIZERS_COLLECTION
   });
 }
 
 /**
- * Fetches up to 50 venue documents from `/venues`.
+ * Fetches venue documents across the full `/venues` collection for proximity ranking.
  *
  * @param {object} [options={}]
  * @returns {Promise<Array<object>>}
  */
 export function fetchVenuesFromFirestore(options = {}) {
   return fetchCollectionFromFirestore({
+    paginate: true,
+    pageSize: DEFAULT_FULL_CATALOG_PAGE_SIZE,
     ...options,
     collectionName: options.venuesCollectionName || options.collectionName || DEFAULT_VENUES_COLLECTION
   });

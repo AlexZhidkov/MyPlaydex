@@ -1133,31 +1133,25 @@ test('Firestore Client: fetchers cap REST loads to 50 records in a single reques
     };
   };
 
-  // Even when pageSize > 50 or nextPageToken is returned, REST fetch executes a single request capped at 50
-  const results = await fetchOrganizersFromFirestore({
+  // Even when pageSize > 50 or nextPageToken is returned, default single-page REST fetch executes a single request capped at 50
+  const results = await fetchActivitiesFromFirestore({
     fetchImpl: mockFetch,
     projectId: 'myplaydex',
     pageSize: 300
   });
 
   assert.equal(requestedUrls.length, 1, 'Must execute exactly one REST request without multi-page loop');
-  assert.ok(requestedUrls[0].includes('/documents/organizers'));
+  assert.ok(requestedUrls[0].includes('/documents/activities'));
   assert.ok(requestedUrls[0].includes('pageSize=50'), `Expected pageSize=50, got: ${requestedUrls[0]}`);
   assert.ok(!requestedUrls[0].includes('pageToken='), 'Must not request subsequent pages');
   assert.equal(results.length, 50, 'Must cap returned records to 50');
   assert.equal(results[0].id, 'org_0');
 
-  // Default pageSize for activities and venues is also 50, single request
+  // Default pageSize for direct fetchCollectionFromFirestore is also 50, single request
   requestedUrls.length = 0;
-  await fetchActivitiesFromFirestore({ fetchImpl: mockFetch });
+  await fetchCollectionFromFirestore({ fetchImpl: mockFetch, collectionName: 'activities' });
   assert.equal(requestedUrls.length, 1);
   assert.ok(requestedUrls[0].includes('/documents/activities'));
-  assert.ok(requestedUrls[0].includes('pageSize=50'));
-
-  requestedUrls.length = 0;
-  await fetchVenuesFromFirestore({ fetchImpl: mockFetch });
-  assert.equal(requestedUrls.length, 1);
-  assert.ok(requestedUrls[0].includes('/documents/venues'));
   assert.ok(requestedUrls[0].includes('pageSize=50'));
 
   // Injected db instance must invoke .limit(50) when supported
@@ -1188,6 +1182,86 @@ test('Firestore Client: fetchers cap REST loads to 50 records in a single reques
   assert.equal(recordedCalls[0].limit, 50, 'SDK query must enforce .limit(50)');
   assert.equal(dbResults.length, 1);
   assert.equal(dbResults[0].id, 'db_1');
+});
+
+test('Firestore Client (Issue #16): fetchOrganizersFromFirestore and fetchVenuesFromFirestore paginate across full regional catalog', async () => {
+  const requestedUrls = [];
+  const createPaginatedFetch = (collectionName, totalDocs) => async (url) => {
+    requestedUrls.push(url);
+    const parsedUrl = new URL(url);
+    const pageToken = parsedUrl.searchParams.get('pageToken');
+    const offset = pageToken ? Number(pageToken) : 0;
+    const pageSize = Number(parsedUrl.searchParams.get('pageSize') || 300);
+    const end = Math.min(offset + pageSize, totalDocs);
+
+    const documents = [];
+    for (let i = offset; i < end; i++) {
+      documents.push({
+        name: `projects/myplaydex/databases/(default)/documents/${collectionName}/${collectionName}_${i}`,
+        fields: {
+          id: { stringValue: `${collectionName}_${i}` },
+          name: { stringValue: `${collectionName} ${i}` }
+        }
+      });
+    }
+
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          documents,
+          ...(end < totalDocs ? { nextPageToken: String(end) } : {})
+        };
+      }
+    };
+  };
+
+  // 1. Organizers paginate until nextPageToken is exhausted
+  requestedUrls.length = 0;
+  const organizers = await fetchOrganizersFromFirestore({
+    fetchImpl: createPaginatedFetch('organizers', 85),
+    pageSize: 50
+  });
+  assert.equal(requestedUrls.length, 2, 'Organizers must paginate across 2 pages');
+  assert.ok(requestedUrls[1].includes('pageToken=50'), 'Second request must pass pageToken=50');
+  assert.equal(organizers.length, 85, 'Organizers must return all 85 documents across pages');
+
+  // 2. Venues paginate until nextPageToken is exhausted
+  requestedUrls.length = 0;
+  const venues = await fetchVenuesFromFirestore({
+    fetchImpl: createPaginatedFetch('venues', 120),
+    pageSize: 50
+  });
+  assert.equal(requestedUrls.length, 3, 'Venues must paginate across 3 pages');
+  assert.ok(requestedUrls[1].includes('pageToken=50'));
+  assert.ok(requestedUrls[2].includes('pageToken=100'));
+  assert.equal(venues.length, 120, 'Venues must return all 120 documents across pages');
+
+  // 3. Injected db instance queries full collection without .limit(50) when paginating
+  let limitCalled = false;
+  const mockDb = {
+    collection(colName) {
+      return {
+        limit() {
+          limitCalled = true;
+          return this;
+        },
+        async get() {
+          return {
+            docs: Array.from({ length: 65 }, (_, i) => ({
+              id: `${colName}_${i}`,
+              data: () => ({ name: `${colName} ${i}` })
+            }))
+          };
+        }
+      };
+    }
+  };
+
+  const dbVenues = await fetchVenuesFromFirestore({ db: mockDb });
+  assert.equal(limitCalled, false, 'Full-catalog SDK venue query must not call .limit(50)');
+  assert.equal(dbVenues.length, 65, 'Full-catalog SDK venue query must return all 65 documents');
 });
 
 test('Firestore Client: src/app.js has no MOCK_PERTH_ACTIVITIES fallback and loads /activities asynchronously from Firestore', async () => {
