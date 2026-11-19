@@ -511,4 +511,363 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
     assert.equal(res.upserted, 1);
     assert.equal(res.activities[0].organizer.id, 'org_alpha');
   });
+
+  it('Seam 4 (Issue #21): runFacebookSync filters invalid contact.facebook URLs and filters by --organizer=<id>', async () => {
+    const fetchedUrls = [];
+    const mockAdapter = {
+      async scanVenues() {
+        return [];
+      },
+      async scanOrganizers() {
+        return [
+          {
+            id: 'org_invalid_fb',
+            name: 'Invalid FB Club',
+            coordinates: { lat: -31.9505, lng: 115.8605 },
+            contact: { facebook: 'https://www.facebook.com/login' }
+          },
+          {
+            id: 'org_alpha',
+            name: 'Alpha Club',
+            coordinates: { lat: -31.9505, lng: 115.8605 },
+            contact: { facebook: 'https://m.facebook.com/alphaclub?fbclid=123' }
+          },
+          {
+            id: 'org_beta',
+            name: 'Beta Club',
+            coordinates: { lat: -31.9505, lng: 115.8605 },
+            contact: { facebook: 'https://www.facebook.com/betaclub' }
+          }
+        ];
+      },
+      async batchUpsertActivities(activities) {
+        return { upserted: activities.length };
+      }
+    };
+
+    const makeFetch = () => async (url) => {
+      fetchedUrls.push(url);
+      return {
+        ok: true,
+        status: 200,
+        text: async () => `
+          <html><head>
+            <meta property="og:title" content="Club Session" />
+            <meta property="og:url" content="https://www.facebook.com/events/444555666/" />
+            <meta property="event:start_time" content="2027-02-01T10:00:00Z" />
+          </head></html>
+        `
+      };
+    };
+
+    // Without --organizer: skips org_invalid_fb, seeds org_alpha and org_beta
+    await runFacebookSync({
+      adapter: mockAdapter,
+      fetchFn: makeFetch(),
+      cacheStore: { read: async () => null, write: async () => {} },
+      options: {},
+      logger: { log: () => {} }
+    });
+    assert.deepEqual(fetchedUrls, [
+      'https://www.facebook.com/alphaclub',
+      'https://www.facebook.com/betaclub'
+    ]);
+
+    // With --organizer=org_beta: seeds only org_beta
+    fetchedUrls.length = 0;
+    const filteredRes = await runFacebookSync({
+      adapter: mockAdapter,
+      fetchFn: makeFetch(),
+      cacheStore: { read: async () => null, write: async () => {} },
+      options: { organizer: 'org_beta' },
+      logger: { log: () => {} }
+    });
+    assert.deepEqual(fetchedUrls, ['https://www.facebook.com/betaclub']);
+    assert.equal(filteredRes.targets, 1);
+    assert.equal(filteredRes.activities[0].organizer.id, 'org_beta');
+  });
+
+  it('Seam 4 (Issue #21): runFacebookSync hydrates /events/<id> detail links from Organizer Page HTML through checkpoint cache', async () => {
+    const pageHtml = `
+      <html><body>
+        <a href="/events/777888999/?acontext=%7B%22ref%22%3A1%7D">Saturday Social</a>
+        <a href="https://m.facebook.com/events/888999000?fbclid=xyz">Sunday League</a>
+        <script>var data = {"url":"https:\\/\\/www.facebook.com\\/events\\/777888999\\/"};</script>
+      </body></html>
+    `;
+    const event777Html = `
+      <html><head>
+        <meta property="og:title" content="Saturday Social Volleyball" />
+        <meta property="og:url" content="https://www.facebook.com/events/777888999/" />
+        <meta property="event:start_time" content="2027-03-06T09:00:00Z" />
+        <meta property="place:location:latitude" content="-31.9462" />
+        <meta property="place:location:longitude" content="115.7924" />
+      </head></html>
+    `;
+    const event888Html = `
+      <html><head>
+        <meta property="og:title" content="Sunday League Volleyball" />
+        <meta property="og:url" content="https://www.facebook.com/events/888999000/" />
+        <meta property="event:start_time" content="2027-03-07T09:00:00Z" />
+        <meta property="place:location:latitude" content="-31.9462" />
+        <meta property="place:location:longitude" content="115.7924" />
+      </head></html>
+    `;
+
+    const cacheMap = new Map();
+    const cacheStore = {
+      read: async (k) => cacheMap.get(k) || null,
+      write: async (k, v) => { cacheMap.set(k, v); }
+    };
+    const fetchCalls = [];
+    const mockFetch = async (url) => {
+      fetchCalls.push(url);
+      if (url === 'https://www.facebook.com/perthvolleyball') {
+        return { ok: true, status: 200, text: async () => pageHtml };
+      }
+      if (url === 'https://www.facebook.com/events/777888999/') {
+        return { ok: true, status: 200, text: async () => event777Html };
+      }
+      if (url === 'https://www.facebook.com/events/888999000/') {
+        return { ok: true, status: 200, text: async () => event888Html };
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    };
+
+    const mockAdapter = {
+      async scanVenues() { return []; },
+      async scanOrganizers() {
+        return [{
+          id: 'org_perth_vb',
+          name: 'Perth Volleyball',
+          subcategory: 'volleyball',
+          coordinates: { lat: -31.9505, lng: 115.8605 },
+          contact: { facebook: 'https://www.facebook.com/perthvolleyball' }
+        }];
+      },
+      async batchUpsertActivities(activities) {
+        return { upserted: activities.length };
+      }
+    };
+
+    const res = await runFacebookSync({
+      adapter: mockAdapter,
+      fetchFn: mockFetch,
+      cacheStore,
+      options: {},
+      logger: { log: () => {} }
+    });
+
+    assert.deepEqual(fetchCalls, [
+      'https://www.facebook.com/perthvolleyball',
+      'https://www.facebook.com/events/777888999/',
+      'https://www.facebook.com/events/888999000/'
+    ]);
+    assert.equal(res.valid, 2);
+    assert.deepEqual(res.activities.map(a => a.id), ['facebook_777888999', 'facebook_888999000']);
+    assert.ok(cacheMap.has('https://www.facebook.com/events/777888999/'));
+    assert.ok(cacheMap.has('https://www.facebook.com/events/888999000/'));
+
+    // Second run uses cached detail pages without extra fetches
+    fetchCalls.length = 0;
+    const cachedRes = await runFacebookSync({
+      adapter: mockAdapter,
+      fetchFn: mockFetch,
+      cacheStore,
+      options: {},
+      logger: { log: () => {} }
+    });
+    assert.equal(fetchCalls.length, 0);
+    assert.equal(cachedRes.valid, 2);
+  });
+
+  it('Seam 3 (Issue #21): Activities inherit parent or matched Organizer subcategory only when title and description resolve to other', async () => {
+    const html = `
+      <html><head>
+        <script type="application/ld+json">[
+          {
+            "@type": "Event",
+            "name": "Thursday Social Night",
+            "description": "Come join us for a fun evening!",
+            "url": "https://www.facebook.com/events/9001/",
+            "startDate": "2027-04-01T10:00:00Z",
+            "location": { "@type": "Place", "name": "Club Hall", "geo": { "latitude": -31.9505, "longitude": 115.8605 } }
+          },
+          {
+            "@type": "Event",
+            "name": "Social Twilight Tennis",
+            "description": "Doubles hit around.",
+            "url": "https://www.facebook.com/events/9002/",
+            "startDate": "2027-04-02T10:00:00Z",
+            "location": { "@type": "Place", "name": "Club Courts", "geo": { "latitude": -31.9505, "longitude": 115.8605 } }
+          },
+          {
+            "@type": "Event",
+            "name": "Friday Club Mixer",
+            "description": "All members welcome!",
+            "url": "https://www.facebook.com/events/9003/",
+            "organizer": { "@type": "Organization", "name": "Perth Redbacks" },
+            "startDate": "2027-04-03T10:00:00Z",
+            "location": { "@type": "Place", "name": "Main Court", "geo": { "latitude": -31.9505, "longitude": 115.8605 } }
+          }
+        ]</script>
+      </head></html>
+    `;
+
+    const mockAdapter = {
+      async scanVenues() { return []; },
+      async scanOrganizers() {
+        return [
+          {
+            id: 'org_perth_vb',
+            name: 'Perth Volleyball',
+            subcategory: 'volleyball',
+            coordinates: { lat: -31.9505, lng: 115.8605 },
+            contact: { facebook: 'https://www.facebook.com/perthvolleyball' }
+          },
+          {
+            id: 'org_perth_redbacks',
+            name: 'Perth Redbacks',
+            subcategories: ['basketball'],
+            coordinates: { lat: -31.9753, lng: 115.8978 }
+          }
+        ];
+      },
+      async batchUpsertActivities(activities) { return { upserted: activities.length }; }
+    };
+
+    const res = await runFacebookSync({
+      adapter: mockAdapter,
+      fetchFn: async () => ({ ok: true, status: 200, text: async () => html }),
+      cacheStore: { read: async () => null, write: async () => {} },
+      options: { organizer: 'org_perth_vb' },
+      logger: { log: () => {} }
+    });
+
+    const ev9001 = res.activities.find(a => a.id === 'facebook_9001');
+    const ev9002 = res.activities.find(a => a.id === 'facebook_9002');
+    const ev9003 = res.activities.find(a => a.id === 'facebook_9003');
+
+    assert.equal(ev9001.subcategory, 'volleyball');
+    assert.equal(ev9002.subcategory, 'tennis');
+    assert.equal(ev9003.subcategory, 'basketball');
+  });
+
+  it('Seam 3 (Issue #21): 4-step Venue & coordinate resolution handles multiple exact, allSmallerContained/jaccard>=0.6 partial, weak non-match, and parent Organizer fallback with venue.id: null', async () => {
+    const html = `
+      <html><head>
+        <script type="application/ld+json">[
+          {
+            "@type": "SportsEvent",
+            "name": "Duplicate Venue Name Event",
+            "url": "https://www.facebook.com/events/9101/",
+            "organizer": { "@type": "Organization", "name": "Perth Redbacks" },
+            "startDate": "2027-04-10T10:00:00Z",
+            "location": { "@type": "Place", "name": "Community Sports Hall" }
+          },
+          {
+            "@type": "SportsEvent",
+            "name": "Contained Partial Venue Match",
+            "url": "https://www.facebook.com/events/9102/",
+            "organizer": { "@type": "Organization", "name": "Perth Redbacks" },
+            "startDate": "2027-04-11T10:00:00Z",
+            "location": { "@type": "Place", "name": "Lords Recreation Centre" }
+          },
+          {
+            "@type": "SportsEvent",
+            "name": "Reordered Jaccard Venue Match",
+            "url": "https://www.facebook.com/events/9103/",
+            "organizer": { "@type": "Organization", "name": "Perth Redbacks" },
+            "startDate": "2027-04-12T10:00:00Z",
+            "location": { "@type": "Place", "name": "Robertson Tennis Park Centre" }
+          },
+          {
+            "@type": "SportsEvent",
+            "name": "Weak Single Token Overlap Fallback",
+            "url": "https://www.facebook.com/events/9104/",
+            "organizer": { "@type": "Organization", "name": "Perth Redbacks" },
+            "startDate": "2027-04-13T10:00:00Z",
+            "location": { "@type": "Place", "name": "Centre" }
+          }
+        ]</script>
+      </head></html>
+    `;
+
+    const mockAdapter = {
+      async scanVenues() {
+        return [
+          {
+            id: 'venue_hall_north',
+            name: 'Community Sports Hall',
+            coordinates: { lat: -31.901, lng: 115.801 },
+            geohash: 'qd66n1111',
+            google_place_id: 'ChIJ_hall_1'
+          },
+          {
+            id: 'venue_hall_south',
+            name: 'Community Sports Hall',
+            coordinates: { lat: -32.011, lng: 115.851 },
+            geohash: 'qd66s2222',
+            google_place_id: 'ChIJ_hall_2'
+          },
+          {
+            id: 'venue_lords_subiaco',
+            name: 'Lords Recreation Centre Subiaco',
+            coordinates: { lat: -31.9445, lng: 115.8265 },
+            geohash: 'qd66h3333',
+            google_place_id: 'ChIJ_lords'
+          },
+          {
+            id: 'venue_robertson',
+            name: 'Robertson Park Tennis Centre',
+            coordinates: { lat: -31.9428, lng: 115.8601 },
+            geohash: 'qd66j4444',
+            google_place_id: 'ChIJ_robertson'
+          }
+        ];
+      },
+      async scanOrganizers() {
+        return [{
+          id: 'org_perth_redbacks',
+          name: 'Perth Redbacks',
+          coordinates: { lat: -31.9753, lng: 115.8978 }
+        }];
+      },
+      async batchUpsertActivities(activities) { return { upserted: activities.length }; }
+    };
+
+    const res = await runFacebookSync({
+      adapter: mockAdapter,
+      fetchFn: async () => ({ ok: true, status: 200, text: async () => html }),
+      cacheStore: { read: async () => null, write: async () => {} },
+      options: { url: 'https://www.facebook.com/perthredbacks' },
+      logger: { log: () => {} }
+    });
+
+    // Multiple exact slug matches -> uncertain_venue_match
+    const ev9101 = res.activities.find(a => a.id === 'facebook_9101');
+    assert.equal(ev9101.venue.id, 'venue_hall_north');
+    assert.equal(ev9101.needs_review, true);
+    assert.equal(ev9101.review_reason, 'uncertain_venue_match');
+
+    // allSmallerContained (>= 2 tokens) -> uncertain_venue_match
+    const ev9102 = res.activities.find(a => a.id === 'facebook_9102');
+    assert.equal(ev9102.venue.id, 'venue_lords_subiaco');
+    assert.equal(ev9102.venue.google_place_id, 'ChIJ_lords');
+    assert.equal(ev9102.needs_review, true);
+    assert.equal(ev9102.review_reason, 'uncertain_venue_match');
+
+    // Reordered tokens (jaccard = 1.0 >= 0.6) -> uncertain_venue_match
+    const ev9103 = res.activities.find(a => a.id === 'facebook_9103');
+    assert.equal(ev9103.venue.id, 'venue_robertson');
+    assert.equal(ev9103.needs_review, true);
+    assert.equal(ev9103.review_reason, 'uncertain_venue_match');
+
+    // Weak 1-token overlap ("Centre") must NOT match /venues; falls back to matched Organizer coords with venue.id: null
+    const ev9104 = res.activities.find(a => a.id === 'facebook_9104');
+    assert.equal(ev9104.venue.id, null);
+    assert.deepEqual(ev9104.venue.coordinates, { lat: -31.9753, lng: 115.8978 });
+    assert.equal(ev9104.needs_review, true);
+    assert.equal(ev9104.review_reason, 'unmatched_venue');
+  });
 });

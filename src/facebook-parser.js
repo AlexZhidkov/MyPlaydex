@@ -517,3 +517,31 @@ export function extractFacebookEvents(payload, context = {}) {
 
   return extractFromOpenGraph(text, context);
 }
+
+/**
+ * Discovers unique `/events/<id>` detail links from an Organizer Facebook Page HTML payload.
+ *
+ * @param {string} html
+ * @returns {Array<{ eventId: string, url: string }>}
+ */
+export function extractFacebookEventLinks(html) {
+  if (!html || typeof html !== 'string') return [];
+  if (html.includes('BEGIN:VCALENDAR')) return [];
+
+  const normalizedHtml = html.replace(/\\\//g, '/');
+  const linkRegex = /(?:https?:\/\/(?:[a-z0-9-]+\.)?(?:facebook\.com|fb\.com))?\/events\/(?:[^/"'\s<>?]+\/)?(\d{5,})/gi;
+  const seen = new Set();
+  const links = [];
+
+  let match;
+  while ((match = linkRegex.exec(normalizedHtml)) !== null) {
+    const eventId = match[1];
+    if (!seen.has(eventId)) {
+      seen.add(eventId);
+      const url = normalizeFacebookUrl(`https://www.facebook.com/events/${eventId}/`) || `https://www.facebook.com/events/${eventId}`;
+      links.push({ eventId, url });
+    }
+  }
+
+  return links;
+}

@@ -119,6 +119,49 @@ export function matchVenueCandidate(rawVenue = {}, venuesCatalog = []) {
 }
 
 /**
+ * Matches a Venue name without coordinates against the pre-loaded `/venues` catalog.
+ * Resolves a unique exact normalized slug match to `'matched'`, and multiple exact
+ * or confident partial token matches (`allSmallerContained` with `>= 2` tokens or
+ * `jaccard >= 0.6`) to `'uncertain'`.
+ *
+ * @param {string} venueName
+ * @param {Array<object>} [venuesCatalog=[]]
+ * @returns {{ status: 'matched' | 'uncertain' | 'unmatched', candidate: object | null }}
+ */
+export function matchVenueByNameOnly(venueName, venuesCatalog = []) {
+  const targetSlug = slugify(venueName);
+  const targetTokens = tokenizeNormalized(venueName);
+  if (!targetSlug || targetTokens.length === 0 || !Array.isArray(venuesCatalog) || venuesCatalog.length === 0) {
+    return { status: 'unmatched', candidate: null };
+  }
+
+  const exactMatches = venuesCatalog.filter(v => v && v.name && slugify(v.name) === targetSlug);
+  if (exactMatches.length === 1) {
+    return { status: 'matched', candidate: exactMatches[0] };
+  }
+  if (exactMatches.length > 1) {
+    return { status: 'uncertain', candidate: exactMatches[0] };
+  }
+
+  let best = null;
+  for (const candidate of venuesCatalog) {
+    if (!candidate || !candidate.name) continue;
+    const candTokens = tokenizeNormalized(candidate.name);
+    const { jaccard, sharedCount, allSmallerContained } = computeTokenSimilarity(targetTokens, candTokens);
+    if (allSmallerContained || jaccard >= 0.6) {
+      const score = jaccard * 10 + sharedCount;
+      if (!best || score > best.score) {
+        best = { candidate, score };
+      }
+    }
+  }
+
+  return best
+    ? { status: 'uncertain', candidate: best.candidate }
+    : { status: 'unmatched', candidate: null };
+}
+
+/**
  * Matches a scraped Organizer reference against the pre-loaded `/organizers` catalog.
  *
  * @param {{ id?: string, name?: string, coordinates?: { lat: number, lng: number } }} rawOrganizer

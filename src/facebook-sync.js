@@ -8,14 +8,19 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { calculateDistanceKm } from './discovery-engine.js';
-import { reconcileListingWithCatalog } from './entity-matcher.js';
-import { extractFacebookEvents } from './facebook-parser.js';
+import {
+  matchOrganizerCandidate,
+  matchVenueByNameOnly,
+  reconcileListingWithCatalog
+} from './entity-matcher.js';
+import { extractFacebookEventLinks, extractFacebookEvents } from './facebook-parser.js';
 import { createFirestoreAdapter, initFirestoreFromEnv } from './firestore-adapter.js';
 import { encodeGeohash } from './geohash.js';
 import { PERTH_SUBURB_CENTROIDS } from './perth-centroids.js';
 import { createFileCacheStore, loadDotEnv } from './places-sync.js';
 import {
   computeActivityExpireAt,
+  normalizeSport,
   parseSchedule,
   sanitizeActivity,
   slugify
@@ -81,32 +86,6 @@ function isNonWaText(locationText = '') {
   return NON_WA_LOCATION_REGEX.test(locationText) && !WA_LOCATION_REGEX.test(locationText);
 }
 
-function matchVenueByNameOnly(venueName, venuesCatalog = []) {
-  const targetSlug = slugify(venueName);
-  if (!targetSlug || venuesCatalog.length === 0) {
-    return { status: 'unmatched', candidate: null };
-  }
-
-  const exactMatches = venuesCatalog.filter(v => v && v.name && slugify(v.name) === targetSlug);
-  if (exactMatches.length === 1) {
-    return { status: 'matched', candidate: exactMatches[0] };
-  }
-  if (exactMatches.length > 1) {
-    return { status: 'uncertain', candidate: exactMatches[0] };
-  }
-
-  const partialMatch = venuesCatalog.find(v => {
-    if (!v || !v.name) return false;
-    const candSlug = slugify(v.name);
-    return candSlug && (candSlug.includes(targetSlug) || targetSlug.includes(candSlug));
-  });
-  if (partialMatch) {
-    return { status: 'uncertain', candidate: partialMatch };
-  }
-
-  return { status: 'unmatched', candidate: null };
-}
-
 function matchPerthCentroidFromText(text = '') {
   const source = String(text || '');
   if (!source.trim()) return null;
@@ -129,6 +108,18 @@ function matchPerthCentroidFromText(text = '') {
   return null;
 }
 
+function resolveOrganizerSubcategory(org) {
+  if (!org) return null;
+  if (typeof org.subcategory === 'string' && org.subcategory && org.subcategory !== 'other') {
+    return org.subcategory;
+  }
+  if (Array.isArray(org.subcategories)) {
+    const firstSpecific = org.subcategories.find(s => typeof s === 'string' && s && s !== 'other');
+    if (firstSpecific) return firstSpecific;
+  }
+  return null;
+}
+
 function resolvedVenueResult(coordinates, { geohash, venueOverride = null, fallbackReviewReason = null } = {}) {
   return {
     outOfArea: false,
@@ -139,7 +130,7 @@ function resolvedVenueResult(coordinates, { geohash, venueOverride = null, fallb
   };
 }
 
-function resolveActivityVenueAndCoordinates(ev, { venuesCatalog = [], parentOrganizer = null }) {
+function resolveActivityVenueAndCoordinates(ev, { venuesCatalog = [], organizersCatalog = [], parentOrganizer = null }) {
   // Step 1: Explicit coordinates from Facebook payload
   if (ev.coordinates) {
     return isWithinPerthRadius(ev.coordinates)
@@ -181,7 +172,10 @@ function resolveActivityVenueAndCoordinates(ev, { venuesCatalog = [], parentOrga
   }
 
   // Step 4: Parent Organizer coordinates
-  const orgCoords = parentOrganizer?.coordinates || parentOrganizer?.venue?.coordinates || null;
+  const matchedOrg = parentOrganizer || (ev.organizer_name
+    ? matchOrganizerCandidate({ name: ev.organizer_name }, organizersCatalog).candidate
+    : null);
+  const orgCoords = matchedOrg?.coordinates || matchedOrg?.venue?.coordinates || null;
   if (orgCoords && isWithinPerthRadius(orgCoords)) {
     return resolvedVenueResult(orgCoords, { fallbackReviewReason: 'unmatched_venue' });
   }
@@ -221,6 +215,39 @@ async function fetchTargetPayload({ url, fetchFn, cacheStore, refresh, facebookC
   }
 
   return { body, fromCache: false, sourceUrl: canonicalUrl };
+}
+
+async function hydrateDiscoveredEventLinks(target, rawEvents, { fetchFn, cacheStore, refresh, facebookCookie, remainingLimit }) {
+  if (target.format === 'ics' || typeof target.body !== 'string') {
+    return rawEvents;
+  }
+
+  const completeIds = new Set(rawEvents.filter(ev => ev.start_date).map(ev => ev.eventId));
+  const discoveredLinks = extractFacebookEventLinks(target.body).filter(l => !completeIds.has(l.eventId));
+  if (discoveredLinks.length === 0) {
+    return rawEvents;
+  }
+
+  const hydratedEvents = [];
+  for (const link of discoveredLinks) {
+    if (remainingLimit !== undefined && (rawEvents.length + hydratedEvents.length) >= remainingLimit) {
+      break;
+    }
+    const detail = await fetchTargetPayload({
+      url: link.url,
+      fetchFn,
+      cacheStore,
+      refresh,
+      facebookCookie
+    });
+    hydratedEvents.push(...extractFacebookEvents(detail.body, { sourceUrl: detail.sourceUrl }));
+  }
+
+  const hydratedIds = new Set(hydratedEvents.map(ev => ev.eventId));
+  return [
+    ...rawEvents.filter(ev => ev.start_date || !hydratedIds.has(ev.eventId)),
+    ...hydratedEvents
+  ];
 }
 
 /**
@@ -268,7 +295,7 @@ export async function runFacebookSync({
     });
     targets.push({ body: fetched.body, sourceUrl: fetched.sourceUrl, organizer: explicitOrganizer });
   } else {
-    let seededOrgs = organizersCatalog.filter(o => o?.contact?.facebook);
+    let seededOrgs = organizersCatalog.filter(o => Boolean(normalizeFacebookUrl(o?.contact?.facebook)));
     if (options.organizer) {
       seededOrgs = seededOrgs.filter(o => o.id === options.organizer);
     }
@@ -295,10 +322,23 @@ export async function runFacebookSync({
   const seenIds = new Set();
 
   for (const target of targets) {
-    const rawEvents = extractFacebookEvents(target.body, {
+    if (limit !== undefined && activities.length >= limit) {
+      break;
+    }
+
+    let rawEvents = extractFacebookEvents(target.body, {
       sourceUrl: target.sourceUrl,
       format: target.format
     });
+
+    rawEvents = await hydrateDiscoveredEventLinks(target, rawEvents, {
+      fetchFn,
+      cacheStore,
+      refresh,
+      facebookCookie,
+      remainingLimit: limit !== undefined ? Math.max(0, limit - activities.length) : undefined
+    });
+
     extractedCount += rawEvents.length;
 
     for (const ev of rawEvents) {
@@ -319,6 +359,7 @@ export async function runFacebookSync({
 
       const resolved = resolveActivityVenueAndCoordinates(ev, {
         venuesCatalog,
+        organizersCatalog,
         parentOrganizer: target.organizer
       });
       if (resolved.outOfArea) {
@@ -330,12 +371,15 @@ export async function runFacebookSync({
         ? { name: ev.organizer_name }
         : (target.organizer ? { id: target.organizer.id, name: target.organizer.name } : undefined);
 
+      const eventSubcategory = ev.subcategory || ev.sport || normalizeSport(`${ev.title || ''} ${ev.description || ''}`);
+
       const sanitized = sanitizeActivity({
         ...ev,
         source: 'facebook',
         source_id: ev.source_id,
         source_url: ev.source_url,
         verified: true,
+        subcategory: eventSubcategory,
         coordinates: resolved.coordinates,
         geohash: resolved.geohash,
         venue_name: resolved.venueOverride?.name || ev.venue_name || ev.title,
@@ -358,6 +402,22 @@ export async function runFacebookSync({
       if (resolved.fallbackReviewReason) {
         reconciled.needs_review = true;
         reconciled.review_reason = resolved.fallbackReviewReason;
+        if (resolved.fallbackReviewReason === 'unmatched_venue') {
+          reconciled.venue = {
+            ...reconciled.venue,
+            id: null
+          };
+        }
+      }
+
+      if (reconciled.subcategory === 'other') {
+        const matchedOrg = (reconciled.organizer?.id
+          ? organizersCatalog.find(o => o.id === reconciled.organizer.id)
+          : null) || target.organizer;
+        const inheritedSport = resolveOrganizerSubcategory(matchedOrg);
+        if (inheritedSport) {
+          reconciled.subcategory = inheritedSport;
+        }
       }
 
       reconciled.verified = true;
