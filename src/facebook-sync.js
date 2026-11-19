@@ -14,7 +14,11 @@ import {
   reconcileListingWithCatalog
 } from './entity-matcher.js';
 import { DEFAULT_LOG_DIR, resolveCliLogger } from './crawler-reporter.js';
-import { extractFacebookEventLinks, extractFacebookEvents } from './facebook-parser.js';
+import {
+  extractFacebookEventLinks,
+  extractFacebookEvents,
+  isCometNonEntityRoute
+} from './facebook-parser.js';
 import { createFirestoreAdapter, initFirestoreFromEnv } from './firestore-adapter.js';
 import { encodeGeohash } from './geohash.js';
 import { PERTH_SUBURB_CENTROIDS } from './perth-centroids.js';
@@ -26,7 +30,7 @@ import {
   sanitizeActivity,
   slugify
 } from './sanitizer.js';
-import { normalizeFacebookUrl } from './url-utils.js';
+import { deriveFacebookEventsTabUrl, normalizeFacebookUrl } from './url-utils.js';
 
 export { extractFacebookEvents };
 
@@ -185,7 +189,7 @@ function resolveActivityVenueAndCoordinates(ev, { venuesCatalog = [], organizers
   return { outOfArea: true };
 }
 
-async function fetchTargetPayload({ url, fetchFn, cacheStore, refresh, facebookCookie }) {
+async function fetchTargetPayload({ url, fetchFn, cacheStore, refresh, facebookCookie, logger }) {
   const canonicalUrl = normalizeFacebookUrl(url) || url;
   if (!refresh && cacheStore) {
     const cached = await cacheStore.read(canonicalUrl);
@@ -215,17 +219,40 @@ async function fetchTargetPayload({ url, fetchFn, cacheStore, refresh, facebookC
   const body = await response.text();
 
   if (cacheStore) {
-    await cacheStore.write(canonicalUrl, {
-      url: canonicalUrl,
-      fetchedAt: new Date().toISOString(),
-      body
-    });
+    try {
+      await cacheStore.write(canonicalUrl, {
+        url: canonicalUrl,
+        fetchedAt: new Date().toISOString(),
+        body
+      });
+    } catch (err) {
+      logger?.warn?.(`[Facebook Sync] Cache write failed for ${canonicalUrl}: ${err.message}`);
+    }
   }
 
   return { body, fromCache: false, sourceUrl: canonicalUrl };
 }
 
-async function hydrateDiscoveredEventLinks(target, rawEvents, { fetchFn, cacheStore, refresh, facebookCookie, remainingLimit, logger }) {
+async function fetchTargetWithEventsTabFallback({ url, ...transport }) {
+  const baseUrl = normalizeFacebookUrl(url) || url;
+  const eventsTabUrl = deriveFacebookEventsTabUrl(baseUrl) || baseUrl;
+
+  if (eventsTabUrl !== baseUrl) {
+    try {
+      const tabResult = await fetchTargetPayload({ url: eventsTabUrl, ...transport });
+      if (!isCometNonEntityRoute(tabResult.body)) {
+        return tabResult;
+      }
+      transport.logger?.warn?.(`[Facebook Sync] Events tab returned Comet error/home route for ${eventsTabUrl}; falling back to ${baseUrl}`);
+    } catch (err) {
+      transport.logger?.warn?.(`[Facebook Sync] Events tab fetch failed for ${eventsTabUrl} (${err.message}); falling back to ${baseUrl}`);
+    }
+  }
+
+  return fetchTargetPayload({ url: baseUrl, ...transport });
+}
+
+async function hydrateDiscoveredEventLinks(target, rawEvents, { fetchFn, cacheStore, refresh, facebookCookie, remainingLimit, now, logger }) {
   if (target.format === 'ics' || typeof target.body !== 'string') {
     return { events: rawEvents, failedFetches: 0 };
   }
@@ -248,9 +275,10 @@ async function hydrateDiscoveredEventLinks(target, rawEvents, { fetchFn, cacheSt
         fetchFn,
         cacheStore,
         refresh,
-        facebookCookie
+        facebookCookie,
+        logger
       });
-      hydratedEvents.push(...extractFacebookEvents(detail.body, { sourceUrl: detail.sourceUrl }));
+      hydratedEvents.push(...extractFacebookEvents(detail.body, { sourceUrl: detail.sourceUrl, now }));
     } catch (err) {
       failedFetches += 1;
       logger?.warn?.(`[Facebook Sync] Skipping discovered event ${link.url}: ${err.message}`);
@@ -297,26 +325,21 @@ export async function runFacebookSync({
     ? organizersCatalog.find(o => o.id === options.organizer) || { id: options.organizer, name: options.organizer }
     : null;
 
-  const targets = [];
-  let failedTargets = 0;
+  let targetSpecs = [];
   if (options.input) {
-    const ext = path.extname(options.input).toLowerCase().replace(/^\./, '');
-    const body = await fs.readFile(options.input, 'utf8');
-    targets.push({ body, format: ext, sourceUrl: options.url || '', organizer: explicitOrganizer });
+    targetSpecs = [{
+      kind: 'file',
+      filePath: options.input,
+      sourceUrl: options.url || '',
+      organizer: explicitOrganizer
+    }];
   } else if (options.url) {
-    try {
-      const fetched = await fetchTargetPayload({
-        url: options.url,
-        fetchFn,
-        cacheStore,
-        refresh,
-        facebookCookie
-      });
-      targets.push({ body: fetched.body, sourceUrl: fetched.sourceUrl, organizer: explicitOrganizer });
-    } catch (err) {
-      failedTargets += 1;
-      logger.warn?.(`[Facebook Sync] Skipping target ${options.url}: ${err.message}`);
-    }
+    targetSpecs = [{
+      kind: 'url',
+      url: options.url,
+      organizer: explicitOrganizer,
+      label: `target ${options.url}`
+    }];
   } else {
     let seededOrgs = organizersCatalog.filter(o => Boolean(normalizeFacebookUrl(o?.contact?.facebook)));
     if (options.organizer) {
@@ -325,23 +348,16 @@ export async function runFacebookSync({
     if (limit !== undefined) {
       seededOrgs = seededOrgs.slice(0, limit);
     }
-    for (const org of seededOrgs) {
-      try {
-        const fetched = await fetchTargetPayload({
-          url: org.contact.facebook,
-          fetchFn,
-          cacheStore,
-          refresh,
-          facebookCookie
-        });
-        targets.push({ body: fetched.body, sourceUrl: fetched.sourceUrl, organizer: org });
-      } catch (err) {
-        failedTargets += 1;
-        logger.warn?.(`[Facebook Sync] Skipping organizer ${org.id} (${org.contact.facebook}): ${err.message}`);
-      }
-    }
+    targetSpecs = seededOrgs.map(org => ({
+      kind: 'url',
+      url: org.contact.facebook,
+      organizer: org,
+      label: `organizer ${org.id} (${org.contact.facebook})`
+    }));
   }
 
+  let targetsCount = 0;
+  let failedTargets = 0;
   let extractedCount = 0;
   let filteredOnline = 0;
   let filteredOutOfArea = 0;
@@ -349,14 +365,40 @@ export async function runFacebookSync({
   const activities = [];
   const seenIds = new Set();
 
-  for (const target of targets) {
+  for (const spec of targetSpecs) {
     if (limit !== undefined && activities.length >= limit) {
       break;
     }
 
+    let target;
+    if (spec.kind === 'file') {
+      const ext = path.extname(spec.filePath).toLowerCase().replace(/^\./, '');
+      const body = await fs.readFile(spec.filePath, 'utf8');
+      target = { body, format: ext, sourceUrl: spec.sourceUrl, organizer: spec.organizer };
+    } else {
+      try {
+        const fetched = await fetchTargetWithEventsTabFallback({
+          url: spec.url,
+          fetchFn,
+          cacheStore,
+          refresh,
+          facebookCookie,
+          logger
+        });
+        target = { body: fetched.body, sourceUrl: fetched.sourceUrl, organizer: spec.organizer };
+      } catch (err) {
+        failedTargets += 1;
+        logger.warn?.(`[Facebook Sync] Skipping ${spec.label}: ${err.message}`);
+        continue;
+      }
+    }
+
+    targetsCount += 1;
+
     let rawEvents = extractFacebookEvents(target.body, {
       sourceUrl: target.sourceUrl,
-      format: target.format
+      format: target.format,
+      now
     });
 
     const hydrated = await hydrateDiscoveredEventLinks(target, rawEvents, {
@@ -365,6 +407,7 @@ export async function runFacebookSync({
       refresh,
       facebookCookie,
       remainingLimit: limit !== undefined ? Math.max(0, limit - activities.length) : undefined,
+      now,
       logger
     });
     rawEvents = hydrated.events;
@@ -467,10 +510,10 @@ export async function runFacebookSync({
     upserted = res?.upserted ?? activities.length;
   }
 
-  logger.log?.(`[Facebook Sync] Targets: ${targets.length}, Failed: ${failedTargets}, Extracted: ${extractedCount}, Valid: ${activities.length}, Upserted: ${upserted} (dryRun=${dryRun})`);
+  logger.log?.(`[Facebook Sync] Targets: ${targetsCount}, Failed: ${failedTargets}, Extracted: ${extractedCount}, Valid: ${activities.length}, Upserted: ${upserted} (dryRun=${dryRun})`);
 
   return {
-    targets: targets.length,
+    targets: targetsCount,
     failedTargets,
     extracted: extractedCount,
     filteredOnline,

@@ -4,12 +4,15 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+import { extractFacebookEventLinks } from '../src/facebook-parser.js';
 import {
   extractFacebookEvents,
   main,
   parseCliArgs,
   runFacebookSync
 } from '../src/facebook-sync.js';
+import { createFileCacheStore } from '../src/places-sync.js';
+import { deriveFacebookEventsTabUrl } from '../src/url-utils.js';
 
 describe('Facebook Public Events Sync CLI (Issue #20)', () => {
   it('Seam 1: parseCliArgs parses --url, --input, --organizer, --dry-run, --refresh, --limit, --use-adc, and --project', () => {
@@ -506,7 +509,7 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
       logger: { log: () => {} }
     });
 
-    assert.deepEqual(fetchedUrls, ['https://www.facebook.com/alphaclub']);
+    assert.deepEqual(fetchedUrls, ['https://www.facebook.com/alphaclub/events']);
     assert.equal(res.targets, 1);
     assert.equal(res.upserted, 1);
     assert.equal(res.activities[0].organizer.id, 'org_alpha');
@@ -569,8 +572,8 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
       logger: { log: () => {} }
     });
     assert.deepEqual(fetchedUrls, [
-      'https://www.facebook.com/alphaclub',
-      'https://www.facebook.com/betaclub'
+      'https://www.facebook.com/alphaclub/events',
+      'https://www.facebook.com/betaclub/events'
     ]);
 
     // With --organizer=org_beta: seeds only org_beta
@@ -582,7 +585,7 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
       options: { organizer: 'org_beta' },
       logger: { log: () => {} }
     });
-    assert.deepEqual(fetchedUrls, ['https://www.facebook.com/betaclub']);
+    assert.deepEqual(fetchedUrls, ['https://www.facebook.com/betaclub/events']);
     assert.equal(filteredRes.targets, 1);
     assert.equal(filteredRes.activities[0].organizer.id, 'org_beta');
   });
@@ -622,7 +625,7 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
     const fetchCalls = [];
     const mockFetch = async (url) => {
       fetchCalls.push(url);
-      if (url === 'https://www.facebook.com/perthvolleyball') {
+      if (url === 'https://www.facebook.com/perthvolleyball/events') {
         return { ok: true, status: 200, text: async () => pageHtml };
       }
       if (url === 'https://www.facebook.com/events/777888999/') {
@@ -659,7 +662,7 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
     });
 
     assert.deepEqual(fetchCalls, [
-      'https://www.facebook.com/perthvolleyball',
+      'https://www.facebook.com/perthvolleyball/events',
       'https://www.facebook.com/events/777888999/',
       'https://www.facebook.com/events/888999000/'
     ]);
@@ -901,7 +904,7 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
 
     const mockFetch = async (url, init) => {
       fetchRequests.push({ url, headers: init?.headers || {} });
-      if (url === 'https://www.facebook.com/hunter.balletforte') {
+      if (url.startsWith('https://www.facebook.com/hunter.balletforte')) {
         return { ok: false, status: 400, text: async () => '' };
       }
       if (url === 'https://www.facebook.com/events/555666777/') {
@@ -990,5 +993,359 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  it('createFileCacheStore externalizes large >64KB bodies to sidecar files and migrates legacy inline caches', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'myplaydex-fb-cache-'));
+    const cachePath = path.join(tmpDir, 'cache.json');
+    const largeBody = '<html>' + 'x'.repeat(70000) + '</html>';
+    const legacyBody = '<html>' + 'y'.repeat(70000) + '</html>';
+
+    try {
+      // Seed a legacy monolithic cache file with an inline oversized body
+      await fs.writeFile(cachePath, JSON.stringify({
+        'https://www.facebook.com/legacyclub': {
+          url: 'https://www.facebook.com/legacyclub',
+          fetchedAt: '2026-11-19T00:00:00.000Z',
+          body: legacyBody
+        }
+      }, null, 2), 'utf8');
+
+      const store = createFileCacheStore(cachePath);
+
+      // Reading triggers migration of inline large body into cache.json.d/*.body
+      const migratedEntry = await store.read('https://www.facebook.com/legacyclub');
+      assert.equal(migratedEntry.body, legacyBody);
+
+      // Writing another large body externalizes it too
+      await store.write('https://www.facebook.com/newclub', {
+        url: 'https://www.facebook.com/newclub',
+        fetchedAt: '2026-11-19T01:00:00.000Z',
+        body: largeBody
+      });
+
+      const indexJson = JSON.parse(await fs.readFile(cachePath, 'utf8'));
+      assert.equal(indexJson['https://www.facebook.com/legacyclub'].body, undefined);
+      assert.ok(indexJson['https://www.facebook.com/legacyclub'].bodyFile);
+      assert.equal(indexJson['https://www.facebook.com/newclub'].body, undefined);
+      assert.ok(indexJson['https://www.facebook.com/newclub'].bodyFile);
+
+      const sidecarFiles = await fs.readdir(`${cachePath}.d`);
+      assert.equal(sidecarFiles.length, 2);
+
+      // Fresh store instance reads the externalized body transparently
+      const freshStore = createFileCacheStore(cachePath);
+      const readBack = await freshStore.read('https://www.facebook.com/newclub');
+      assert.equal(readBack.body, largeBody);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('extractFacebookEventLinks ignores external /events/<id> URLs, discovers Relay Event IDs, and skips CometErrorRoute/CometHomeRoute', () => {
+    const timelineHtml = `
+      <html><body>
+        <a href="https://l.facebook.com/l.php?u=https%3A%2F%2Fapp.utrsports.net%2Fevents%2F409907">External UTR</a>
+        <script type="application/json">{"external_url":"https:\\/\\/www.squashwa.asn.au\\/events\\/391708"}</script>
+        <script type="application/json">{"__typename":"Event","id":"1683713346681049","name":"Relay Forward"}</script>
+        <script type="application/json">{"id":"2047253656144310","__typename":"Event"}</script>
+      </body></html>
+    `;
+    const links = extractFacebookEventLinks(timelineHtml);
+    assert.deepEqual(links, [
+      { eventId: '1683713346681049', url: 'https://www.facebook.com/events/1683713346681049/' },
+      { eventId: '2047253656144310', url: 'https://www.facebook.com/events/2047253656144310/' }
+    ]);
+
+    const errorHtml = `<html><script>{"canonicalRouteName":"comet.fbweb.CometErrorRoute","url":"https:\\/\\/www.facebook.com\\/events\\/999111222\\/"}</script></html>`;
+    const homeHtml = `<html><script>{"canonicalRouteName":"comet.fbweb.CometHomeRoute","__typename":"Event","id":"999111222"}</script></html>`;
+    assert.deepEqual(extractFacebookEventLinks(errorHtml), []);
+    assert.deepEqual(extractFacebookEventLinks(homeHtml), []);
+  });
+
+  it('extractFacebookEvents parses Comet Relay day_time_sentence variants, merges split fragments, and extracts event_place.contextual_name', () => {
+    const now = new Date('2026-11-19T14:00:00+08:00'); // Thursday
+    const cometHtml = `
+      <html><body>
+        <script type="application/json">{"require":[["ScheduledServerJS","handle",null,[{"__bbox":{"result":{"data":{"node":{"__typename":"Event","id":"1683713346681049","url":"https://www.facebook.com/events/1683713346681049/"}}}}}]]]}</script>
+        <script type="application/json">{"require":[["ScheduledServerJS","handle",null,[{"__bbox":{"result":{"data":{"node":{"__typename":"Event","id":"1683713346681049","name":"Summer Trials Night #1","day_time_sentence":"This Saturday at 3\\u202fPM","is_canceled":false,"event_place":{"__typename":"Page","contextual_name":"AJS MotoTrials Park","city":{"contextual_name":"Perth, WA"}}}}}}}]]]}</script>
+        <script type="application/json">{"require":[["ScheduledServerJS","handle",null,[{"__bbox":{"result":{"data":{"node":{"__typename":"Event","id":"1678092483391749","name":"Winter Dance Gala","day_time_sentence":"Sun, Jun 20, 2027 at 2\\u202fPM","is_canceled":false}}}}}]]]}</script>
+        <script type="application/json">{"require":[["ScheduledServerJS","handle",null,[{"__bbox":{"result":{"data":{"node":{"__typename":"Event","id":"1149783274296978","name":"Veterans Shield","capitalized_day_time_sentence":"Sat, Nov 14","is_canceled":false,"event_place":{"__typename":"Page","contextual_name":"Cockburn Ice Arena","city":{"contextual_name":"Perth, WA"}}}}}}}]]]}</script>
+        <script type="application/json">{"require":[["ScheduledServerJS","handle",null,[{"__bbox":{"result":{"data":{"node":{"__typename":"Event","id":"555000111","name":"Canceled Event","day_time_sentence":"Sun, Jun 20, 2027 at 2\\u202fPM","is_canceled":true}}}}}]]]}</script>
+      </body></html>
+    `;
+
+    const events = extractFacebookEvents(cometHtml, { now });
+    assert.equal(events.length, 3);
+
+    const ajs = events.find(e => e.eventId === '1683713346681049');
+    assert.ok(ajs);
+    assert.equal(ajs.title, 'Summer Trials Night #1');
+    assert.equal(ajs.source_url, 'https://www.facebook.com/events/1683713346681049/');
+    assert.equal(ajs.start_date, '2026-11-21');
+    assert.equal(ajs.start_time, '15:00');
+    assert.equal(ajs.venue_name, 'AJS MotoTrials Park');
+    assert.equal(ajs.location_text, 'AJS MotoTrials Park, Perth, WA');
+
+    const gala = events.find(e => e.eventId === '1678092483391749');
+    assert.ok(gala);
+    assert.equal(gala.start_date, '2027-06-20');
+    assert.equal(gala.start_time, '14:00');
+
+    const shield = events.find(e => e.eventId === '1149783274296978');
+    assert.ok(shield);
+    assert.equal(shield.start_date, '2026-11-14');
+    assert.equal(shield.start_time, null);
+    assert.equal(shield.venue_name, 'Cockburn Ice Arena');
+
+    // CometErrorRoute returns empty even if it contains markup
+    const errorPayload = `<html><script>{"canonicalRouteName":"comet.fbweb.CometErrorRoute"}</script><meta property="og:title" content="Error" /><meta property="og:url" content="https://www.facebook.com/events/123456/" /></html>`;
+    assert.deepEqual(extractFacebookEvents(errorPayload, { now }), []);
+  });
+
+  it('runFacebookSync isolates cacheStore.write failures without discarding fetched activities', async () => {
+    const warnings = [];
+    const res = await runFacebookSync({
+      adapter: {
+        async scanVenues() { return []; },
+        async scanOrganizers() { return []; }
+      },
+      fetchFn: async () => ({
+        ok: true,
+        status: 200,
+        text: async () => `
+          <html><head>
+            <meta property="og:title" content="Resilient Tennis Hit" />
+            <meta property="og:url" content="https://www.facebook.com/events/666777888/" />
+            <meta property="event:start_time" content="2027-06-01T10:00:00Z" />
+            <meta property="place:location:latitude" content="-31.9505" />
+            <meta property="place:location:longitude" content="115.8605" />
+          </head></html>
+        `
+      }),
+      cacheStore: {
+        read: async () => null,
+        write: async () => { throw new RangeError('Invalid string length'); }
+      },
+      options: { url: 'https://www.facebook.com/events/666777888/', dryRun: true },
+      logger: { log: () => {}, warn: (...args) => warnings.push(args.join(' ')) }
+    });
+
+    assert.equal(res.valid, 1);
+    assert.equal(res.activities[0].id, 'facebook_666777888');
+    assert.ok(warnings.some(w => w.includes('Cache write failed') && w.includes('Invalid string length')));
+  });
+
+  it('Seam 1 (Issue #22): deriveFacebookEventsTabUrl resolves Pages, Groups, and profile.php to /events tab while preserving /events and /events/<id>', () => {
+    // Organizer Pages
+    assert.equal(
+      deriveFacebookEventsTabUrl('https://www.facebook.com/perthvolleyball'),
+      'https://www.facebook.com/perthvolleyball/events'
+    );
+    assert.equal(
+      deriveFacebookEventsTabUrl('https://m.facebook.com/perthvolleyball/?fbclid=123'),
+      'https://www.facebook.com/perthvolleyball/events'
+    );
+    assert.equal(
+      deriveFacebookEventsTabUrl('https://www.facebook.com/perthvolleyball/about'),
+      'https://www.facebook.com/perthvolleyball/events'
+    );
+
+    // Public Groups
+    assert.equal(
+      deriveFacebookEventsTabUrl('https://www.facebook.com/groups/perth-volleyball/'),
+      'https://www.facebook.com/groups/perth-volleyball/events'
+    );
+    assert.equal(
+      deriveFacebookEventsTabUrl('https://www.facebook.com/groups/123456/about'),
+      'https://www.facebook.com/groups/123456/events'
+    );
+
+    // profile.php?id=...
+    assert.equal(
+      deriveFacebookEventsTabUrl('https://www.facebook.com/profile.php?id=100064123456'),
+      'https://www.facebook.com/profile.php?id=100064123456&sk=events'
+    );
+    assert.equal(
+      deriveFacebookEventsTabUrl('https://m.facebook.com/profile.php?id=100064123456&sk=about'),
+      'https://www.facebook.com/profile.php?id=100064123456&sk=events'
+    );
+
+    // Already /events or /events/<id>
+    assert.equal(
+      deriveFacebookEventsTabUrl('https://www.facebook.com/events'),
+      'https://www.facebook.com/events'
+    );
+    assert.equal(
+      deriveFacebookEventsTabUrl('https://www.facebook.com/events/123456789/'),
+      'https://www.facebook.com/events/123456789/'
+    );
+    assert.equal(
+      deriveFacebookEventsTabUrl('https://www.facebook.com/perthvolleyball/events'),
+      'https://www.facebook.com/perthvolleyball/events'
+    );
+    assert.equal(
+      deriveFacebookEventsTabUrl('https://www.facebook.com/groups/perth-volleyball/events'),
+      'https://www.facebook.com/groups/perth-volleyball/events'
+    );
+    assert.equal(
+      deriveFacebookEventsTabUrl('https://www.facebook.com/profile.php?id=100064123456&sk=events'),
+      'https://www.facebook.com/profile.php?id=100064123456&sk=events'
+    );
+
+    // Root and invalid URLs
+    assert.equal(
+      deriveFacebookEventsTabUrl('https://www.facebook.com/'),
+      'https://www.facebook.com/'
+    );
+    assert.equal(deriveFacebookEventsTabUrl('https://www.facebook.com/login'), null);
+    assert.equal(deriveFacebookEventsTabUrl('https://example.com/events'), null);
+  });
+
+  it('Seam 4 (Issue #22): runFacebookSync targets /events tabs, falls back to base URL on HTTP or Comet error/home routes, caches by fetched URL, and respects --refresh', async () => {
+    const fetchCalls = [];
+    const cacheMap = new Map();
+    const cacheStore = {
+      read: async (k) => cacheMap.get(k) || null,
+      write: async (k, v) => { cacheMap.set(k, v); }
+    };
+
+    const makeEventHtml = (id, title) => `
+      <html><head>
+        <meta property="og:title" content="${title}" />
+        <meta property="og:url" content="https://www.facebook.com/events/${id}/" />
+        <meta property="event:start_time" content="2027-04-10T10:00:00Z" />
+        <meta property="place:location:latitude" content="-31.9505" />
+        <meta property="place:location:longitude" content="115.8605" />
+      </head></html>
+    `;
+
+    const mockFetch = async (url) => {
+      fetchCalls.push(url);
+      if (url === 'https://www.facebook.com/pageok/events') {
+        return { ok: true, status: 200, text: async () => makeEventHtml('101', 'Page Tab Event') };
+      }
+      if (url === 'https://www.facebook.com/groups/hoops/events') {
+        return { ok: false, status: 404, text: async () => 'Not Found' };
+      }
+      if (url === 'https://www.facebook.com/groups/hoops') {
+        return { ok: true, status: 200, text: async () => makeEventHtml('102', 'Group Base Event') };
+      }
+      if (url === 'https://www.facebook.com/profile.php?id=998877&sk=events') {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => '<html><script>{"canonicalRouteName":"comet.fbweb.CometErrorRoute"}</script></html>'
+        };
+      }
+      if (url === 'https://www.facebook.com/profile.php?id=998877') {
+        return { ok: true, status: 200, text: async () => makeEventHtml('103', 'Profile Base Event') };
+      }
+      if (url === 'https://www.facebook.com/broken/events') {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => '<html><script>{"canonicalRouteName":"comet.fbweb.CometHomeRoute"}</script></html>'
+        };
+      }
+      if (url === 'https://www.facebook.com/broken') {
+        return { ok: false, status: 500, text: async () => 'Server Error' };
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    };
+
+    const mockAdapter = {
+      async scanVenues() { return []; },
+      async scanOrganizers() {
+        return [
+          {
+            id: 'org_page',
+            name: 'Page Org',
+            coordinates: { lat: -31.9505, lng: 115.8605 },
+            contact: { facebook: 'https://www.facebook.com/pageok' }
+          },
+          {
+            id: 'org_group',
+            name: 'Group Org',
+            coordinates: { lat: -31.9505, lng: 115.8605 },
+            contact: { facebook: 'https://www.facebook.com/groups/hoops' }
+          },
+          {
+            id: 'org_profile',
+            name: 'Profile Org',
+            coordinates: { lat: -31.9505, lng: 115.8605 },
+            contact: { facebook: 'https://www.facebook.com/profile.php?id=998877' }
+          },
+          {
+            id: 'org_broken',
+            name: 'Broken Org',
+            coordinates: { lat: -31.9505, lng: 115.8605 },
+            contact: { facebook: 'https://www.facebook.com/broken' }
+          }
+        ];
+      },
+      async batchUpsertActivities(activities) {
+        return { upserted: activities.length };
+      }
+    };
+
+    const res = await runFacebookSync({
+      adapter: mockAdapter,
+      fetchFn: mockFetch,
+      cacheStore,
+      options: {},
+      logger: { log: () => {}, warn: () => {} }
+    });
+
+    assert.deepEqual(fetchCalls, [
+      'https://www.facebook.com/pageok/events',
+      'https://www.facebook.com/groups/hoops/events',
+      'https://www.facebook.com/groups/hoops',
+      'https://www.facebook.com/profile.php?id=998877&sk=events',
+      'https://www.facebook.com/profile.php?id=998877',
+      'https://www.facebook.com/broken/events',
+      'https://www.facebook.com/broken'
+    ]);
+    assert.equal(res.targets, 3);
+    assert.equal(res.failedTargets, 1);
+    assert.equal(res.valid, 3);
+    assert.deepEqual(res.activities.map(a => a.id), ['facebook_101', 'facebook_102', 'facebook_103']);
+
+    // Verify cache keys under normalized fetched URLs
+    assert.ok(cacheMap.has('https://www.facebook.com/pageok/events'));
+    assert.ok(cacheMap.has('https://www.facebook.com/groups/hoops'));
+    assert.ok(cacheMap.has('https://www.facebook.com/profile.php?id=998877'));
+
+    // Second run without --refresh reuses cached payloads for the 3 succeeded targets
+    // (groups/hoops/events was 404 so not cached, broken was 500 so not cached)
+    fetchCalls.length = 0;
+    const cachedRes = await runFacebookSync({
+      adapter: {
+        async scanVenues() { return []; },
+        async scanOrganizers() {
+          return (await mockAdapter.scanOrganizers()).filter(o => o.id !== 'org_broken');
+        }
+      },
+      fetchFn: mockFetch,
+      cacheStore,
+      options: { dryRun: true },
+      logger: { log: () => {}, warn: () => {} }
+    });
+    assert.deepEqual(fetchCalls, [
+      'https://www.facebook.com/groups/hoops/events'
+    ]);
+    assert.equal(cachedRes.valid, 3);
+
+    // Explicit --url with --refresh bypasses cache
+    fetchCalls.length = 0;
+    const refreshRes = await runFacebookSync({
+      adapter: mockAdapter,
+      fetchFn: mockFetch,
+      cacheStore,
+      options: { url: 'https://m.facebook.com/pageok?fbclid=xyz', refresh: true, dryRun: true },
+      logger: { log: () => {}, warn: () => {} }
+    });
+    assert.deepEqual(fetchCalls, ['https://www.facebook.com/pageok/events']);
+    assert.equal(refreshRes.valid, 1);
   });
 });

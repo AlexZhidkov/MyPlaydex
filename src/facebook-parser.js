@@ -15,6 +15,167 @@ const EVENT_SCHEMA_TYPES = new Set([
   'ChildrensEvent'
 ]);
 
+export function isCometNonEntityRoute(text = '') {
+  return (
+    text.includes('"canonicalRouteName":"comet.fbweb.CometErrorRoute"') ||
+    text.includes('"canonicalRouteName":"comet.fbweb.CometHomeRoute"')
+  );
+}
+
+const MONTH_NAME_MAP = {
+  jan: 1,
+  january: 1,
+  feb: 2,
+  february: 2,
+  mar: 3,
+  march: 3,
+  apr: 4,
+  april: 4,
+  may: 5,
+  jun: 6,
+  june: 6,
+  jul: 7,
+  july: 7,
+  aug: 8,
+  august: 8,
+  sep: 9,
+  sept: 9,
+  september: 9,
+  oct: 10,
+  october: 10,
+  nov: 11,
+  november: 11,
+  dec: 12,
+  december: 12
+};
+
+const WEEKDAY_MAP = {
+  sunday: 0,
+  monday: 1,
+  tuesday: 2,
+  wednesday: 3,
+  thursday: 4,
+  friday: 5,
+  saturday: 6
+};
+
+const MONTH_PATTERN = 'Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?';
+const MONTH_DAY_YEAR_REGEX = new RegExp(`\\b(${MONTH_PATTERN})\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(\\d{4})\\b`, 'i');
+const DAY_MONTH_YEAR_REGEX = new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_PATTERN}),?\\s+(\\d{4})\\b`, 'i');
+const MONTH_DAY_REGEX = new RegExp(`\\b(${MONTH_PATTERN})\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b`, 'i');
+const DAY_MONTH_REGEX = new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_PATTERN})\\b`, 'i');
+const RELATIVE_WEEKDAY_REGEX = /\b(?:This\s+|Next\s+)?(Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday)\b/i;
+
+function formatValidCalendarDate(year, month, day) {
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+    return null;
+  }
+  const dt = new Date(Date.UTC(year, month - 1, day));
+  if (
+    dt.getUTCFullYear() !== year ||
+    dt.getUTCMonth() !== month - 1 ||
+    dt.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+function addDaysToYmd(ymd, days) {
+  const [year, month, day] = ymd.split('-').map(Number);
+  const dt = new Date(Date.UTC(year, month - 1, day + days));
+  return `${String(dt.getUTCFullYear()).padStart(4, '0')}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
+}
+
+function parseDayTimeSentence(sentence, referenceDate = new Date()) {
+  if (!sentence || typeof sentence !== 'string') {
+    return { date: null, time: null };
+  }
+
+  const cleaned = sentence.replace(/[\u202f\u00a0]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!cleaned) {
+    return { date: null, time: null };
+  }
+
+  const startSegment = cleaned.split(/\s+(?:–|—|-|to)\s+/i)[0].trim();
+
+  let time = null;
+  let datePart = startSegment;
+
+  const amPmMatch = startSegment.match(/\b(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(AM|PM)\b/i);
+  if (amPmMatch) {
+    const rawHour = parseInt(amPmMatch[1], 10);
+    const minute = amPmMatch[2] ? parseInt(amPmMatch[2], 10) : 0;
+    const meridiem = amPmMatch[3].toUpperCase();
+    if (rawHour >= 1 && rawHour <= 12 && minute >= 0 && minute <= 59) {
+      let hour24 = rawHour % 12;
+      if (meridiem === 'PM') hour24 += 12;
+      time = `${String(hour24).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+    }
+    datePart = startSegment.replace(amPmMatch[0], ' ').replace(/[\s,]+$/, '').trim();
+  } else {
+    const h24Match = startSegment.match(/\bat\s+(\d{1,2}):(\d{2})\b/i);
+    if (h24Match) {
+      const hour24 = parseInt(h24Match[1], 10);
+      const minute = parseInt(h24Match[2], 10);
+      if (hour24 >= 0 && hour24 <= 23 && minute >= 0 && minute <= 59) {
+        time = `${String(hour24).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+      }
+      datePart = startSegment.replace(h24Match[0], ' ').replace(/[\s,]+$/, '').trim();
+    }
+  }
+
+  const baseDate = referenceDate instanceof Date && !Number.isNaN(referenceDate.getTime())
+    ? referenceDate
+    : new Date();
+  const refAwst = formatDateInAwst(baseDate);
+  const refDate = refAwst.date || formatDateInAwst(new Date()).date;
+  const refYear = Number(refDate.slice(0, 4));
+
+  let date = null;
+
+  const mdyMatch = datePart.match(MONTH_DAY_YEAR_REGEX);
+  const dmyMatch = !mdyMatch ? datePart.match(DAY_MONTH_YEAR_REGEX) : null;
+  if (mdyMatch) {
+    const month = MONTH_NAME_MAP[mdyMatch[1].toLowerCase()];
+    const day = parseInt(mdyMatch[2], 10);
+    const year = parseInt(mdyMatch[3], 10);
+    date = formatValidCalendarDate(year, month, day);
+  } else if (dmyMatch) {
+    const day = parseInt(dmyMatch[1], 10);
+    const month = MONTH_NAME_MAP[dmyMatch[2].toLowerCase()];
+    const year = parseInt(dmyMatch[3], 10);
+    date = formatValidCalendarDate(year, month, day);
+  } else {
+    const mdMatch = datePart.match(MONTH_DAY_REGEX);
+    const dmMatch = !mdMatch ? datePart.match(DAY_MONTH_REGEX) : null;
+    if (mdMatch) {
+      const month = MONTH_NAME_MAP[mdMatch[1].toLowerCase()];
+      const day = parseInt(mdMatch[2], 10);
+      date = formatValidCalendarDate(refYear, month, day);
+    } else if (dmMatch) {
+      const day = parseInt(dmMatch[1], 10);
+      const month = MONTH_NAME_MAP[dmMatch[2].toLowerCase()];
+      date = formatValidCalendarDate(refYear, month, day);
+    } else if (/\bToday\b/i.test(datePart)) {
+      date = refDate;
+    } else if (/\bTomorrow\b/i.test(datePart)) {
+      date = addDaysToYmd(refDate, 1);
+    } else {
+      const weekdayMatch = datePart.match(RELATIVE_WEEKDAY_REGEX);
+      if (weekdayMatch) {
+        const targetDow = WEEKDAY_MAP[weekdayMatch[1].toLowerCase()];
+        const [ry, rm, rd] = refDate.split('-').map(Number);
+        const currentDow = new Date(Date.UTC(ry, rm - 1, rd)).getUTCDay();
+        const offsetDays = (targetDow - currentDow + 7) % 7;
+        date = addDaysToYmd(refDate, offsetDays);
+      }
+    }
+  }
+
+  return { date, time };
+}
+
 function formatDateInAwst(dateInput) {
   if (dateInput === null || dateInput === undefined || dateInput === '') {
     return { date: null, time: null };
@@ -185,44 +346,93 @@ function extractFromJsonLd(html, context = {}) {
   return results;
 }
 
-function findRelayEventObjects(node, out = [], seen = new Set()) {
-  if (!node || typeof node !== 'object') return out;
-  if (Array.isArray(node)) {
-    for (const item of node) findRelayEventObjects(item, out, seen);
-    return out;
-  }
-
-  const hasEventIdentity = Boolean(node.id || node.event_id) && Boolean(node.name || node.title);
-  const hasSchedule =
+function hasRelaySchedule(node) {
+  if (!node || typeof node !== 'object') return false;
+  return (
     node.start_timestamp !== undefined ||
     node.start_time !== undefined ||
     node.startDate !== undefined ||
-    Boolean(node.child_events);
+    Boolean(node.child_events) ||
+    typeof node.day_time_sentence === 'string' ||
+    typeof node.capitalized_day_time_sentence === 'string'
+  );
+}
 
-  if (hasEventIdentity && hasSchedule) {
+function mergeRelayFragment(target, source) {
+  for (const [key, val] of Object.entries(source)) {
+    if (val === undefined || val === null || val === '') continue;
+    const cur = target[key];
+    if (cur === undefined || cur === null || cur === '') {
+      target[key] = val;
+    } else if (Array.isArray(cur) && cur.length === 0 && Array.isArray(val) && val.length > 0) {
+      target[key] = val;
+    } else if (
+      typeof cur === 'object' &&
+      !Array.isArray(cur) &&
+      typeof val === 'object' &&
+      !Array.isArray(val)
+    ) {
+      const nextNested = { ...cur };
+      for (const [subKey, subVal] of Object.entries(val)) {
+        if (
+          (nextNested[subKey] === undefined || nextNested[subKey] === null || nextNested[subKey] === '') &&
+          subVal !== undefined &&
+          subVal !== null &&
+          subVal !== ''
+        ) {
+          nextNested[subKey] = subVal;
+        }
+      }
+      target[key] = nextNested;
+    }
+  }
+}
+
+function collectRelayEventFragments(node, mergedById = new Map()) {
+  if (!node || typeof node !== 'object') return mergedById;
+  if (Array.isArray(node)) {
+    for (const item of node) collectRelayEventFragments(item, mergedById);
+    return mergedById;
+  }
+
+  const isTypedEvent = node.__typename === 'Event' && Boolean(node.id || node.event_id);
+  const isLegacyEvent = Boolean(node.id || node.event_id) && Boolean(node.name || node.title) && hasRelaySchedule(node);
+
+  if (isTypedEvent || isLegacyEvent) {
     const key = String(node.id || node.event_id);
-    if (!seen.has(key)) {
-      seen.add(key);
-      out.push(node);
+    if (!mergedById.has(key)) {
+      mergedById.set(key, { ...node });
+    } else {
+      mergeRelayFragment(mergedById.get(key), node);
     }
-    return out;
   }
 
-  for (const val of Object.values(node)) {
+  for (const [key, val] of Object.entries(node)) {
+    if (key === 'child_events') continue;
     if (val && typeof val === 'object') {
-      findRelayEventObjects(val, out, seen);
+      collectRelayEventFragments(val, mergedById);
     }
   }
-  return out;
+  return mergedById;
 }
 
 function buildRelayEventRecord(node, parentNode, context = {}, isRecurringOccurrence = false) {
   const baseEventId = String(parentNode?.id || node.id || node.event_id || '').trim();
   const title = node.name || node.title || parentNode?.name || parentNode?.title || '';
-  const descObj = node.description || parentNode?.description;
+  const descObj = node.description || node.event_description || parentNode?.description || parentNode?.event_description;
   const description = typeof descObj === 'string' ? descObj : (descObj?.text || '');
 
-  const start = formatDateInAwst(node.start_timestamp ?? node.start_time ?? node.startDate);
+  let start = formatDateInAwst(node.start_timestamp ?? node.start_time ?? node.startDate);
+  if (!start.date) {
+    const sentence =
+      node.day_time_sentence ||
+      node.capitalized_day_time_sentence ||
+      parentNode?.day_time_sentence ||
+      parentNode?.capitalized_day_time_sentence;
+    if (sentence) {
+      start = parseDayTimeSentence(sentence, context.now);
+    }
+  }
   const end = formatDateInAwst(node.end_timestamp ?? node.end_time ?? node.endDate);
 
   const place = node.event_place || node.location || parentNode?.event_place || parentNode?.location || {};
@@ -231,24 +441,35 @@ function buildRelayEventRecord(node, parentNode, context = {}, isRecurringOccurr
 
   const hosts = node.event_hosts || parentNode?.event_hosts || [];
   const firstHost = Array.isArray(hosts) && hosts.length > 0 ? hosts[0] : null;
-  const organizerName = firstHost?.name || node.organizer?.name || parentNode?.organizer?.name || '';
+  const organizerName =
+    firstHost?.name ||
+    node.organizer?.name ||
+    parentNode?.organizer?.name ||
+    node.event_creator?.name ||
+    parentNode?.event_creator?.name ||
+    node.owner?.name ||
+    parentNode?.owner?.name ||
+    '';
 
-  const addressParts = [
+  const rawAddressParts = [
     place.name,
+    place.contextual_name,
+    place.one_line_address,
     place.address?.street,
     place.address?.city,
     place.address?.state,
     place.address?.zip,
     place.address?.country,
     typeof place.address === 'string' ? place.address : '',
-    place.contextual_name
+    place.city?.contextual_name
   ].filter(Boolean);
+  const addressParts = rawAddressParts.filter((part, idx) => idx === 0 || part !== rawAddressParts[idx - 1]);
 
   const isOnline = Boolean(
     node.is_online ||
     parentNode?.is_online ||
     node.online_setup_type ||
-    /\bonline\b/i.test(String(place.name || ''))
+    /\bonline\b/i.test(String(place.name || place.contextual_name || ''))
   );
 
   return normalizeExtractedRecord({
@@ -262,7 +483,7 @@ function buildRelayEventRecord(node, parentNode, context = {}, isRecurringOccurr
     end_date: end.date,
     end_time: end.time,
     is_online: isOnline,
-    venue_name: place.name || '',
+    venue_name: place.name || place.contextual_name || '',
     location_text: addressParts.join(', '),
     coordinates: coords,
     organizer_name: organizerName,
@@ -307,20 +528,25 @@ function extractFromRelayJson(text, context = {}) {
     }
   }
 
-  const results = [];
+  const mergedById = new Map();
   for (const root of candidates) {
-    const eventNodes = findRelayEventObjects(root);
-    for (const eventNode of eventNodes) {
-      const childNodes = eventNode.child_events?.nodes || eventNode.child_events || [];
-      if (Array.isArray(childNodes) && childNodes.length > 0) {
-        for (const child of childNodes) {
-          const record = buildRelayEventRecord(child, eventNode, context, true);
-          if (record && record.title) results.push(record);
-        }
-      } else {
-        const record = buildRelayEventRecord(eventNode, null, context, false);
+    collectRelayEventFragments(root, mergedById);
+  }
+
+  const results = [];
+  for (const eventNode of mergedById.values()) {
+    if (!Boolean(eventNode.name || eventNode.title) || !hasRelaySchedule(eventNode) || eventNode.is_canceled === true) {
+      continue;
+    }
+    const childNodes = eventNode.child_events?.nodes || eventNode.child_events || [];
+    if (Array.isArray(childNodes) && childNodes.length > 0) {
+      for (const child of childNodes) {
+        const record = buildRelayEventRecord(child, eventNode, context, true);
         if (record && record.title) results.push(record);
       }
+    } else {
+      const record = buildRelayEventRecord(eventNode, null, context, false);
+      if (record && record.title) results.push(record);
     }
   }
   return results;
@@ -505,6 +731,10 @@ export function extractFacebookEvents(payload, context = {}) {
     return extractFromIcs(text, context);
   }
 
+  if (isCometNonEntityRoute(text)) {
+    return [];
+  }
+
   const jsonLdEvents = extractFromJsonLd(text, context);
   if (jsonLdEvents.length > 0) {
     return jsonLdEvents;
@@ -527,19 +757,28 @@ export function extractFacebookEvents(payload, context = {}) {
 export function extractFacebookEventLinks(html) {
   if (!html || typeof html !== 'string') return [];
   if (html.includes('BEGIN:VCALENDAR')) return [];
+  if (isCometNonEntityRoute(html)) return [];
 
   const normalizedHtml = html.replace(/\\\//g, '/');
-  const linkRegex = /(?:https?:\/\/(?:[a-z0-9-]+\.)?(?:facebook\.com|fb\.com))?\/events\/(?:[^/"'\s<>?]+\/)?(\d{5,})/gi;
+  const fbUrlOrRootRelativeRegex = /(?:https?:\/\/(?:[a-z0-9-]+\.)?(?:facebook\.com|fb\.com|fb\.me)|(?:^|["'\s]))\/events\/(?:[^/"'\s<>?]+\/)?(\d{5,})/gi;
+  const relayEventForwardRegex = /"__typename"\s*:\s*"Event"[^{}]*?"id"\s*:\s*"(\d{5,})"/g;
+  const relayEventReverseRegex = /"id"\s*:\s*"(\d{5,})"[^{}]*?"__typename"\s*:\s*"Event"/g;
+
   const seen = new Set();
   const links = [];
 
-  let match;
-  while ((match = linkRegex.exec(normalizedHtml)) !== null) {
-    const eventId = match[1];
+  const recordId = (eventId) => {
     if (!seen.has(eventId)) {
       seen.add(eventId);
       const url = normalizeFacebookUrl(`https://www.facebook.com/events/${eventId}/`) || `https://www.facebook.com/events/${eventId}`;
       links.push({ eventId, url });
+    }
+  };
+
+  for (const regex of [fbUrlOrRootRelativeRegex, relayEventForwardRegex, relayEventReverseRegex]) {
+    let match;
+    while ((match = regex.exec(normalizedHtml)) !== null) {
+      recordId(match[1]);
     }
   }
 

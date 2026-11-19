@@ -113,6 +113,20 @@ export function normalizeFacebookUrl(rawUrlOrParsed) {
     return null;
   }
 
+  if (parsed.hash && parsed.hash.startsWith('#!')) {
+    const hashTarget = parsed.hash.slice(2).trim();
+    if (hashTarget.startsWith('/') && (parsed.pathname === '/' || !parsed.pathname)) {
+      const hashUrl = new URL(hashTarget, 'https://www.facebook.com');
+      parsed.pathname = hashUrl.pathname;
+      for (const [key, value] of hashUrl.searchParams.entries()) {
+        if (!parsed.searchParams.has(key)) {
+          parsed.searchParams.set(key, value);
+        }
+      }
+    }
+    parsed.hash = '';
+  }
+
   if (hasPathPrefix(parsed, FACEBOOK_INTERSTITIAL_PATH_PREFIXES)) {
     return null;
   }
@@ -130,5 +144,68 @@ export function normalizeFacebookUrl(rawUrlOrParsed) {
     }
   }
 
+  return parsed.href;
+}
+
+const FACEBOOK_PAGE_TABS = new Set([
+  'about',
+  'posts',
+  'photos',
+  'videos',
+  'reels',
+  'mentions',
+  'community',
+  'reviews',
+  'followers',
+  'following'
+]);
+
+/**
+ * Derives the dedicated `/events` tab URL for a Facebook Organizer Page, Public Group,
+ * or `profile.php?id=...` URL while leaving `/events` and `/events/<id>` URLs unchanged.
+ *
+ * @param {string | URL} rawUrlOrParsed
+ * @returns {string | null}
+ */
+export function deriveFacebookEventsTabUrl(rawUrlOrParsed) {
+  const normalized = normalizeFacebookUrl(rawUrlOrParsed);
+  if (!normalized) {
+    return null;
+  }
+
+  const parsed = new URL(normalized);
+  const segments = parsed.pathname.split('/').filter(Boolean);
+  if (segments.length === 0) {
+    return normalized;
+  }
+
+  const lowerSegments = segments.map(s => s.toLowerCase());
+  const isAlreadyEventsRoute =
+    lowerSegments[0] === 'events' ||
+    lowerSegments[lowerSegments.length - 1] === 'events' ||
+    (lowerSegments[0] === 'groups' && segments.length >= 3 && lowerSegments[2] === 'events');
+  if (isAlreadyEventsRoute) {
+    return normalized;
+  }
+
+  if (segments.length === 1 && lowerSegments[0] === 'profile.php') {
+    if (parsed.searchParams.has('id')) {
+      parsed.searchParams.set('sk', 'events');
+      return parsed.href;
+    }
+    return normalized;
+  }
+
+  if (lowerSegments[0] === 'groups' && segments.length >= 2) {
+    parsed.pathname = `/groups/${segments[1]}/events`;
+    return parsed.href;
+  }
+
+  if (segments.length === 2 && FACEBOOK_PAGE_TABS.has(lowerSegments[1])) {
+    parsed.pathname = `/${segments[0]}/events`;
+    return parsed.href;
+  }
+
+  parsed.pathname = `/${segments.join('/')}/events`;
   return parsed.href;
 }
