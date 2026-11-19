@@ -535,7 +535,7 @@ function buildRelayEventRecord(node, parentNode, context = {}, isRecurringOccurr
   }, context.sourceUrl);
 }
 
-function extractFromRelayJson(text, context = {}) {
+function parseRelayJsonCandidates(text) {
   const candidates = [];
 
   const trimmed = text.trim();
@@ -570,6 +570,12 @@ function extractFromRelayJson(text, context = {}) {
       }
     }
   }
+
+  return candidates;
+}
+
+function extractFromRelayJson(text, context = {}) {
+  const candidates = parseRelayJsonCandidates(text);
 
   const mergedById = new Map();
   for (const root of candidates) {
@@ -795,6 +801,14 @@ export function extractFacebookEvents(payload, context = {}) {
   return extractFromOpenGraph(text, context);
 }
 
+function appendUniqueEventLink(eventId, seen, links) {
+  const idStr = String(eventId || '').trim();
+  if (!/^\d{5,}$/.test(idStr) || seen.has(idStr)) return;
+  seen.add(idStr);
+  const url = normalizeFacebookUrl(`https://www.facebook.com/events/${idStr}/`) || `https://www.facebook.com/events/${idStr}`;
+  links.push({ eventId: idStr, url });
+}
+
 /**
  * Discovers unique `/events/<id>` detail links from an Organizer Facebook Page HTML payload.
  *
@@ -814,19 +828,69 @@ export function extractFacebookEventLinks(html) {
   const seen = new Set();
   const links = [];
 
-  const recordId = (eventId) => {
-    if (!seen.has(eventId)) {
-      seen.add(eventId);
-      const url = normalizeFacebookUrl(`https://www.facebook.com/events/${eventId}/`) || `https://www.facebook.com/events/${eventId}`;
-      links.push({ eventId, url });
-    }
-  };
-
   for (const regex of [fbUrlOrRootRelativeRegex, relayEventForwardRegex, relayEventReverseRegex]) {
     let match;
     while ((match = regex.exec(normalizedHtml)) !== null) {
-      recordId(match[1]);
+      appendUniqueEventLink(match[1], seen, links);
     }
+  }
+
+  return links;
+}
+
+function collectConnectionEventIds(connection, seen, links) {
+  if (!connection || typeof connection !== 'object') return;
+  if (Array.isArray(connection)) {
+    for (const item of connection) collectConnectionEventIds(item, seen, links);
+    return;
+  }
+  const id = connection.id || connection.event_id;
+  if (id) {
+    appendUniqueEventLink(id, seen, links);
+  }
+  if (connection.node) collectConnectionEventIds(connection.node, seen, links);
+  if (Array.isArray(connection.nodes)) collectConnectionEventIds(connection.nodes, seen, links);
+  if (Array.isArray(connection.edges)) collectConnectionEventIds(connection.edges, seen, links);
+}
+
+/**
+ * Extracts deduplicated 1-hop related event links from `event_suggested_events` and `friends_cut`
+ * connections embedded in a hydrated Facebook Event detail page payload.
+ *
+ * @param {string | object} payload
+ * @param {{ excludeEventId?: string }} [options={}]
+ * @returns {Array<{ eventId: string, url: string }>}
+ */
+export function extractRelatedFacebookEventLinks(payload, { excludeEventId } = {}) {
+  if (!payload) return [];
+  const text = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  if (text.includes('BEGIN:VCALENDAR') || isCometNonEntityRoute(text)) {
+    return [];
+  }
+
+  const seen = new Set(excludeEventId ? [String(excludeEventId).trim()] : []);
+  const links = [];
+
+  const walk = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+    if (node.event_suggested_events) {
+      collectConnectionEventIds(node.event_suggested_events, seen, links);
+    }
+    if (node.friends_cut) {
+      collectConnectionEventIds(node.friends_cut, seen, links);
+    }
+    for (const [key, val] of Object.entries(node)) {
+      if (key === 'event_suggested_events' || key === 'friends_cut') continue;
+      if (val && typeof val === 'object') walk(val);
+    }
+  };
+
+  for (const root of parseRelayJsonCandidates(text)) {
+    walk(root);
   }
 
   return links;

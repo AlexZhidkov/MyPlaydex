@@ -18,6 +18,7 @@ import {
   extractFacebookEventIdFromUrl,
   extractFacebookEventLinks,
   extractFacebookEvents,
+  extractRelatedFacebookEventLinks,
   isCometNonEntityRoute
 } from './facebook-parser.js';
 import { createFirestoreAdapter, initFirestoreFromEnv } from './firestore-adapter.js';
@@ -254,16 +255,26 @@ async function fetchTargetWithEventsTabFallback({ url, ...transport }) {
 }
 
 async function hydrateDiscoveredEventLinks(target, rawEvents, { fetchFn, cacheStore, refresh, facebookCookie, remainingLimit, now, logger }) {
+  const relatedLinksByEventId = new Map();
   if (target.format === 'ics' || typeof target.body !== 'string') {
-    return { events: rawEvents, failedFetches: 0 };
+    return { events: rawEvents, relatedLinksByEventId, failedFetches: 0 };
   }
-  if (extractFacebookEventIdFromUrl(target.sourceUrl)) {
-    return { events: rawEvents, failedFetches: 0 };
+  const targetEventId = extractFacebookEventIdFromUrl(target.sourceUrl);
+  if (targetEventId) {
+    relatedLinksByEventId.set(
+      String(targetEventId),
+      extractRelatedFacebookEventLinks(target.body, { excludeEventId: targetEventId })
+    );
+    return {
+      events: rawEvents,
+      relatedLinksByEventId,
+      failedFetches: 0
+    };
   }
 
   const discoveredLinks = extractFacebookEventLinks(target.body);
   if (discoveredLinks.length === 0) {
-    return { events: rawEvents, failedFetches: 0 };
+    return { events: rawEvents, relatedLinksByEventId, failedFetches: 0 };
   }
 
   const discoveredIdSet = new Set(discoveredLinks.map(l => l.eventId));
@@ -288,6 +299,10 @@ async function hydrateDiscoveredEventLinks(target, rawEvents, { fetchFn, cacheSt
         targetEventId: link.eventId,
         now
       }));
+      relatedLinksByEventId.set(
+        String(link.eventId),
+        extractRelatedFacebookEventLinks(detail.body, { excludeEventId: link.eventId })
+      );
     } catch (err) {
       failedFetches += 1;
       logger?.warn?.(`[Facebook Sync] Skipping discovered event ${link.url}: ${err.message}`);
@@ -300,8 +315,91 @@ async function hydrateDiscoveredEventLinks(target, rawEvents, { fetchFn, cacheSt
       ...rawEvents.filter(ev => !hydratedIds.has(ev.eventId)),
       ...hydratedEvents
     ],
+    relatedLinksByEventId,
     failedFetches
   };
+}
+
+function ingestExtractedEvent(ev, { venuesCatalog, organizersCatalog, parentOrganizer, isOneHop, now }) {
+  if (ev.is_online) {
+    return { status: 'filtered_online' };
+  }
+
+  const schedule = parseSchedule(ev, now.toISOString());
+  const expireAt = computeActivityExpireAt(schedule);
+  if (expireAt && expireAt.getTime() <= now.getTime()) {
+    return { status: 'filtered_expired' };
+  }
+
+  const eventSubcategory = ev.subcategory || ev.sport || normalizeSport(`${ev.title || ''} ${ev.description || ''}`);
+  if (isOneHop && eventSubcategory === 'other') {
+    return { status: 'filtered_non_sport' };
+  }
+
+  const effectiveParentOrganizer = isOneHop ? null : parentOrganizer;
+  const resolved = resolveActivityVenueAndCoordinates(ev, {
+    venuesCatalog,
+    organizersCatalog,
+    parentOrganizer: effectiveParentOrganizer
+  });
+  if (resolved.outOfArea) {
+    return { status: 'filtered_out_of_area' };
+  }
+
+  const organizerInput = ev.organizer_name
+    ? { name: ev.organizer_name }
+    : (effectiveParentOrganizer ? { id: effectiveParentOrganizer.id, name: effectiveParentOrganizer.name } : undefined);
+
+  const sanitized = sanitizeActivity({
+    ...ev,
+    source: 'facebook',
+    source_id: ev.source_id,
+    source_url: ev.source_url,
+    verified: true,
+    subcategory: eventSubcategory,
+    coordinates: resolved.coordinates,
+    geohash: resolved.geohash,
+    venue_name: resolved.venueOverride?.name || ev.venue_name || ev.title,
+    organizer: organizerInput,
+    schedule
+  });
+
+  const reconciled = reconcileListingWithCatalog(
+    sanitized,
+    { venuesCatalog, organizersCatalog },
+    'activity'
+  );
+
+  if (resolved.venueOverride) {
+    reconciled.venue = {
+      ...reconciled.venue,
+      ...resolved.venueOverride
+    };
+  }
+  if (resolved.fallbackReviewReason) {
+    reconciled.needs_review = true;
+    reconciled.review_reason = resolved.fallbackReviewReason;
+    if (resolved.fallbackReviewReason === 'unmatched_venue') {
+      reconciled.venue = {
+        ...reconciled.venue,
+        id: null
+      };
+    }
+  }
+
+  if (!isOneHop && reconciled.subcategory === 'other') {
+    const matchedOrg = (reconciled.organizer?.id
+      ? organizersCatalog.find(o => o.id === reconciled.organizer.id)
+      : null) || parentOrganizer;
+    const inheritedSport = resolveOrganizerSubcategory(matchedOrg);
+    if (inheritedSport) {
+      reconciled.subcategory = inheritedSport;
+    }
+  }
+
+  reconciled.verified = true;
+  reconciled.source_url = normalizeFacebookUrl(ev.source_url) || ev.source_url;
+  return { status: 'valid', activity: reconciled };
 }
 
 /**
@@ -371,8 +469,21 @@ export async function runFacebookSync({
   let filteredOnline = 0;
   let filteredOutOfArea = 0;
   let filteredExpired = 0;
+  let filteredNonSport = 0;
   const activities = [];
   const seenIds = new Set();
+  const seenEventIds = new Set();
+
+  const recordOutcome = (outcome) => {
+    if (outcome.status === 'filtered_online') filteredOnline += 1;
+    else if (outcome.status === 'filtered_out_of_area') filteredOutOfArea += 1;
+    else if (outcome.status === 'filtered_expired') filteredExpired += 1;
+    else if (outcome.status === 'filtered_non_sport') filteredNonSport += 1;
+    else if (outcome.status === 'valid' && !seenIds.has(outcome.activity.id)) {
+      seenIds.add(outcome.activity.id);
+      activities.push(outcome.activity);
+    }
+  };
 
   for (const spec of targetSpecs) {
     if (limit !== undefined && activities.length >= limit) {
@@ -424,91 +535,64 @@ export async function runFacebookSync({
 
     extractedCount += rawEvents.length;
 
+    const oneHopCandidates = [];
     for (const ev of rawEvents) {
+      if (ev.eventId) seenEventIds.add(String(ev.eventId));
       if (limit !== undefined && activities.length >= limit) {
         break;
       }
-      if (ev.is_online) {
-        filteredOnline += 1;
-        continue;
-      }
-
-      const schedule = parseSchedule(ev, nowIso);
-      const expireAt = computeActivityExpireAt(schedule);
-      if (expireAt && expireAt.getTime() <= now.getTime()) {
-        filteredExpired += 1;
-        continue;
-      }
-
-      const resolved = resolveActivityVenueAndCoordinates(ev, {
+      const outcome = ingestExtractedEvent(ev, {
         venuesCatalog,
         organizersCatalog,
-        parentOrganizer: target.organizer
+        parentOrganizer: target.organizer,
+        isOneHop: false,
+        now
       });
-      if (resolved.outOfArea) {
-        filteredOutOfArea += 1;
+      recordOutcome(outcome);
+      if (outcome.status === 'valid' && ev.eventId && hydrated.relatedLinksByEventId.has(String(ev.eventId))) {
+        oneHopCandidates.push(...hydrated.relatedLinksByEventId.get(String(ev.eventId)));
+      }
+    }
+
+    for (const related of oneHopCandidates) {
+      if (limit !== undefined && activities.length >= limit) {
+        break;
+      }
+      if (seenEventIds.has(related.eventId)) {
         continue;
       }
+      seenEventIds.add(related.eventId);
 
-      const organizerInput = ev.organizer_name
-        ? { name: ev.organizer_name }
-        : (target.organizer ? { id: target.organizer.id, name: target.organizer.name } : undefined);
-
-      const eventSubcategory = ev.subcategory || ev.sport || normalizeSport(`${ev.title || ''} ${ev.description || ''}`);
-
-      const sanitized = sanitizeActivity({
-        ...ev,
-        source: 'facebook',
-        source_id: ev.source_id,
-        source_url: ev.source_url,
-        verified: true,
-        subcategory: eventSubcategory,
-        coordinates: resolved.coordinates,
-        geohash: resolved.geohash,
-        venue_name: resolved.venueOverride?.name || ev.venue_name || ev.title,
-        organizer: organizerInput,
-        schedule
-      });
-
-      const reconciled = reconcileListingWithCatalog(
-        sanitized,
-        { venuesCatalog, organizersCatalog },
-        'activity'
-      );
-
-      if (resolved.venueOverride) {
-        reconciled.venue = {
-          ...reconciled.venue,
-          ...resolved.venueOverride
-        };
-      }
-      if (resolved.fallbackReviewReason) {
-        reconciled.needs_review = true;
-        reconciled.review_reason = resolved.fallbackReviewReason;
-        if (resolved.fallbackReviewReason === 'unmatched_venue') {
-          reconciled.venue = {
-            ...reconciled.venue,
-            id: null
-          };
+      try {
+        const detail = await fetchTargetPayload({
+          url: related.url,
+          fetchFn,
+          cacheStore,
+          refresh,
+          facebookCookie,
+          logger
+        });
+        const candidateEvents = extractFacebookEvents(detail.body, {
+          sourceUrl: detail.sourceUrl,
+          targetEventId: related.eventId,
+          now
+        });
+        extractedCount += candidateEvents.length;
+        for (const ev of candidateEvents) {
+          if (limit !== undefined && activities.length >= limit) {
+            break;
+          }
+          recordOutcome(ingestExtractedEvent(ev, {
+            venuesCatalog,
+            organizersCatalog,
+            parentOrganizer: null,
+            isOneHop: true,
+            now
+          }));
         }
-      }
-
-      if (reconciled.subcategory === 'other') {
-        const matchedOrg = (reconciled.organizer?.id
-          ? organizersCatalog.find(o => o.id === reconciled.organizer.id)
-          : null) || target.organizer;
-        const inheritedSport = resolveOrganizerSubcategory(matchedOrg);
-        if (inheritedSport) {
-          reconciled.subcategory = inheritedSport;
-        }
-      }
-
-      reconciled.verified = true;
-      reconciled.source_url = normalizeFacebookUrl(ev.source_url) || ev.source_url;
-
-      if (!seenIds.has(reconciled.id)) {
-        seenIds.add(reconciled.id);
-        activities.push(reconciled);
+      } catch (err) {
+        failedTargets += 1;
+        logger?.warn?.(`[Facebook Sync] Skipping 1-hop related listing ${related.url}: ${err.message}`);
       }
     }
   }
@@ -528,6 +612,7 @@ export async function runFacebookSync({
     filteredOnline,
     filteredOutOfArea,
     filteredExpired,
+    filteredNonSport,
     valid: activities.length,
     upserted,
     dryRun,

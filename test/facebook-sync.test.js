@@ -4,7 +4,10 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { extractFacebookEventLinks } from '../src/facebook-parser.js';
+import {
+  extractFacebookEventLinks,
+  extractRelatedFacebookEventLinks
+} from '../src/facebook-parser.js';
 import {
   extractFacebookEvents,
   main,
@@ -1456,6 +1459,35 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
       if (url === 'https://www.facebook.com/events/555666777/') {
         return { ok: true, status: 200, text: async () => detailHtml };
       }
+      if (url === 'https://www.facebook.com/events/999888777/') {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => `
+            <html><body>
+              <script type="application/json">${JSON.stringify({
+                require: [['ScheduledServerJS', 'handle', null, [{
+                  __bbox: {
+                    result: {
+                      data: {
+                        event: {
+                          id: '999888777',
+                          name: 'Sidebar Suggested Gig',
+                          day_time_sentence: 'Sun, Jun 20, 2027 at 8\u202fPM',
+                          is_canceled: false,
+                          url: 'https://www.facebook.com/events/999888777/',
+                          event_description: { text: 'Live orchestral concert.' },
+                          event_place: { name: 'Perth Concert Hall', location: { latitude: -31.9565, longitude: 115.8626 } }
+                        }
+                      }
+                    }
+                  }
+                }]]]
+              })}</script>
+            </body></html>
+          `
+        };
+      }
       throw new Error(`Unexpected URL: ${url}`);
     };
 
@@ -1480,7 +1512,8 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
 
     assert.deepEqual(fetchCalls, [
       'https://www.facebook.com/uwatennis/events',
-      'https://www.facebook.com/events/555666777/'
+      'https://www.facebook.com/events/555666777/',
+      'https://www.facebook.com/events/999888777/'
     ]);
     assert.ok(cacheMap.has('https://www.facebook.com/events/555666777/'));
     assert.equal(res.valid, 1);
@@ -1489,5 +1522,260 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
     assert.equal(res.activities[0].description, 'Full hydrated description from detail page.');
     assert.equal(res.activities[0].source_url, 'https://www.facebook.com/events/555666777/');
     assert.deepEqual(res.activities[0].venue.coordinates, { lat: -31.9812, lng: 115.8194 });
+  });
+
+  it('Seam 2 (Issue #24): extractRelatedFacebookEventLinks extracts deduplicated 1-hop event IDs from event_suggested_events and friends_cut', () => {
+    const detailHtml = `
+      <html><body>
+        <script type="application/json">${JSON.stringify({
+          require: [['ScheduledServerJS', 'handle', null, [{
+            __bbox: {
+              result: {
+                data: {
+                  event: {
+                    id: '2468013579',
+                    name: 'Primary Club Training',
+                    event_suggested_events: {
+                      nodes: [
+                        { __typename: 'Event', id: '111222333', name: 'Suggested Pickleball' },
+                        { __typename: 'Event', id: '999888777', name: 'Suggested Food Festival' },
+                        { __typename: 'Event', id: '2468013579', name: 'Self Reference' }
+                      ]
+                    },
+                    friends_cut: {
+                      edges: [
+                        { node: { __typename: 'Event', id: '111222333', name: 'Duplicate Suggested Pickleball' } },
+                        { node: { __typename: 'Event', id: '444555666', name: 'Friends Badminton Night' } }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }]]]
+        })}</script>
+      </body></html>
+    `;
+
+    const related = extractRelatedFacebookEventLinks(detailHtml, { excludeEventId: '2468013579' });
+    assert.deepEqual(related, [
+      { eventId: '111222333', url: 'https://www.facebook.com/events/111222333/' },
+      { eventId: '999888777', url: 'https://www.facebook.com/events/999888777/' },
+      { eventId: '444555666', url: 'https://www.facebook.com/events/444555666/' }
+    ]);
+
+    assert.deepEqual(extractRelatedFacebookEventLinks('BEGIN:VCALENDAR\nEND:VCALENDAR'), []);
+    assert.deepEqual(extractRelatedFacebookEventLinks('{"canonicalRouteName":"comet.fbweb.CometErrorRoute"}'), []);
+  });
+
+  it('Seam 4 (Issue #24): runFacebookSync discovers 1-hop sports Activities from hydrated Perth detail pages, reconciles Organizers, excludes non-sport/out-of-area events, and enforces --limit and deduplication', async () => {
+    const now = new Date('2026-11-19T14:00:00+08:00');
+    const makeDetailHtml = (eventObj) => `
+      <html><body>
+        <script type="application/json">${JSON.stringify({
+          require: [['ScheduledServerJS', 'handle', null, [{
+            __bbox: { result: { data: { event: eventObj } } }
+          }]]]
+        })}</script>
+      </body></html>
+    `;
+
+    const eventsTabHtml = `
+      <html><body>
+        <script type="application/json">${JSON.stringify({
+          require: [['ScheduledServerJS', 'handle', null, [{
+            __bbox: {
+              result: {
+                data: {
+                  node: {
+                    __typename: 'Event',
+                    id: '555666777',
+                    name: 'Sunday Social Tennis',
+                    day_time_sentence: 'Sun, Jun 20, 2027 at 5\u202fPM',
+                    is_canceled: false
+                  }
+                }
+              }
+            }
+          }]]]
+        })}</script>
+      </body></html>
+    `;
+
+    const seedDetailHtml = makeDetailHtml({
+      id: '555666777',
+      name: 'Sunday Social Tennis',
+      day_time_sentence: 'Sun, Jun 20, 2027 at 5\u202fPM',
+      is_canceled: false,
+      url: 'https://www.facebook.com/events/555666777/',
+      event_description: { text: 'Social tennis doubles at UWA.' },
+      event_place: { name: 'UWA Tennis Club', location: { latitude: -31.9812, longitude: 115.8194 } },
+      event_hosts_meet_your_host: [{ name: 'UWA Tennis Club' }],
+      event_suggested_events: {
+        nodes: [
+          { __typename: 'Event', id: '999888777', name: 'Perth Night Market & Food Festival' },
+          { __typename: 'Event', id: '111222333', name: 'Saturday Morning Pickleball' },
+          { __typename: 'Event', id: '555666777', name: 'Duplicate Seed Event' }
+        ]
+      },
+      friends_cut: {
+        nodes: [
+          { __typename: 'Event', id: '222333444', name: 'Social Volleyball Night' },
+          { __typename: 'Event', id: '333444555', name: 'Sydney Harbour Volleyball' },
+          { __typename: 'Event', id: '111222333', name: 'Duplicate Suggested Pickleball' }
+        ]
+      }
+    });
+
+    const pages = {
+      'https://www.facebook.com/uwatennis/events': eventsTabHtml,
+      'https://www.facebook.com/events/555666777/': seedDetailHtml,
+      'https://www.facebook.com/events/999888777/': makeDetailHtml({
+        id: '999888777',
+        name: 'Perth Night Market & Food Festival',
+        day_time_sentence: 'Sun, Jun 20, 2027 at 6\u202fPM',
+        is_canceled: false,
+        url: 'https://www.facebook.com/events/999888777/',
+        event_description: { text: 'Street food, live music, and artisan stalls in Perth.' },
+        event_place: { name: 'Forrest Place', location: { latitude: -31.9522, longitude: 115.8589 } },
+        event_hosts_meet_your_host: [{ name: 'Perth Night Markets' }]
+      }),
+      'https://www.facebook.com/events/111222333/': makeDetailHtml({
+        id: '111222333',
+        name: 'Saturday Morning Pickleball',
+        day_time_sentence: 'Sat, Jun 26, 2027 at 9\u202fAM',
+        is_canceled: false,
+        url: 'https://www.facebook.com/events/111222333/',
+        event_description: { text: 'Open pickleball rally games, paddles supplied.' },
+        event_place: { name: 'Kings Park Courts', location: { latitude: -31.9612, longitude: 115.8394 } },
+        event_hosts_meet_your_host: [{ name: 'Perth Pickleball Club' }],
+        event_suggested_events: {
+          nodes: [{ __typename: 'Event', id: '444555666', name: '2-Hop Should Never Be Fetched' }]
+        }
+      }),
+      'https://www.facebook.com/events/222333444/': makeDetailHtml({
+        id: '222333444',
+        name: 'Social Volleyball Night',
+        day_time_sentence: 'Fri, Jun 25, 2027 at 7\u202fPM',
+        is_canceled: false,
+        url: 'https://www.facebook.com/events/222333444/',
+        event_description: { text: 'Casual volleyball doubles for all levels.' },
+        event_place: { name: 'Kings Park Courts', location: { latitude: -31.9612, longitude: 115.8394 } },
+        event_hosts: [{ name: 'Unmatched Volleyball Group' }]
+      }),
+      'https://www.facebook.com/events/333444555/': makeDetailHtml({
+        id: '333444555',
+        name: 'Sydney Harbour Volleyball',
+        day_time_sentence: 'Sat, Jun 26, 2027 at 10\u202fAM',
+        is_canceled: false,
+        url: 'https://www.facebook.com/events/333444555/',
+        event_description: { text: 'Beach volleyball in Sydney.' },
+        event_place: { name: 'Bondi Beach', location: { latitude: -33.8915, longitude: 151.2767 } },
+        event_hosts_meet_your_host: [{ name: 'Sydney Beach Club' }]
+      })
+    };
+
+    const cacheMap = new Map();
+    const cacheStore = {
+      read: async (k) => cacheMap.get(k) || null,
+      write: async (k, v) => { cacheMap.set(k, v); }
+    };
+    const fetchCalls = [];
+    const mockFetch = async (url) => {
+      fetchCalls.push(url);
+      if (pages[url]) {
+        return { ok: true, status: 200, text: async () => pages[url] };
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    };
+
+    const mockAdapter = {
+      async scanVenues() {
+        return [
+          {
+            id: 'venue_uwa_tennis',
+            name: 'UWA Tennis Club',
+            coordinates: { lat: -31.9812, lng: 115.8194 },
+            geohash: 'qd66h0000'
+          },
+          {
+            id: 'venue_kings_park_courts',
+            name: 'Kings Park Courts',
+            coordinates: { lat: -31.9612, lng: 115.8394 },
+            geohash: 'qd66h1111'
+          }
+        ];
+      },
+      async scanOrganizers() {
+        return [
+          {
+            id: 'org_uwa_tennis',
+            name: 'UWA Tennis Club',
+            subcategory: 'tennis',
+            coordinates: { lat: -31.9812, lng: 115.8194 },
+            contact: { facebook: 'https://www.facebook.com/uwatennis' }
+          },
+          {
+            id: 'org_perth_pickleball',
+            name: 'Perth Pickleball Club',
+            subcategory: 'pickleball',
+            coordinates: { lat: -31.9612, lng: 115.8394 }
+          }
+        ];
+      }
+    };
+
+    const res = await runFacebookSync({
+      adapter: mockAdapter,
+      fetchFn: mockFetch,
+      cacheStore,
+      options: { dryRun: true, now },
+      logger: { log: () => {}, warn: () => {} }
+    });
+
+    // 2-hop candidate 444555666 must never be fetched; 111222333 and 555666777 must not be fetched twice
+    assert.ok(!fetchCalls.includes('https://www.facebook.com/events/444555666/'));
+    assert.equal(fetchCalls.filter(u => u === 'https://www.facebook.com/events/111222333/').length, 1);
+    assert.equal(fetchCalls.filter(u => u === 'https://www.facebook.com/events/555666777/').length, 1);
+    assert.ok(cacheMap.has('https://www.facebook.com/events/111222333/'));
+
+    // Seed tennis + 1-hop pickleball + 1-hop volleyball (food festival & Sydney excluded)
+    assert.equal(res.valid, 3);
+    const byId = new Map(res.activities.map(a => [a.id, a]));
+    assert.ok(byId.has('facebook_555666777'));
+    assert.ok(byId.has('facebook_111222333'));
+    assert.ok(byId.has('facebook_222333444'));
+    assert.ok(!byId.has('facebook_999888777'));
+    assert.ok(!byId.has('facebook_333444555'));
+
+    // 111222333 reconciled to canonical Perth Pickleball Club, not UWA Tennis Club
+    const pickleball = byId.get('facebook_111222333');
+    assert.equal(pickleball.subcategory, 'pickleball');
+    assert.equal(pickleball.organizer.id, 'org_perth_pickleball');
+    assert.equal(pickleball.organizer.name, 'Perth Pickleball Club');
+    assert.equal(pickleball.needs_review, false);
+
+    // 222333444 keeps its unmatched Organizer name and is flagged needs_review: true (unmatched_organizer)
+    const volleyball = byId.get('facebook_222333444');
+    assert.equal(volleyball.subcategory, 'volleyball');
+    assert.equal(volleyball.organizer.name, 'Unmatched Volleyball Group');
+    assert.notEqual(volleyball.organizer.id, 'org_uwa_tennis');
+    assert.equal(volleyball.needs_review, true);
+    assert.equal(volleyball.review_reason, 'unmatched_organizer');
+
+    // Bounded by --limit=2
+    const limitedFetchCalls = [];
+    const limitedRes = await runFacebookSync({
+      adapter: mockAdapter,
+      fetchFn: async (url) => {
+        limitedFetchCalls.push(url);
+        return mockFetch(url);
+      },
+      cacheStore: { read: async () => null, write: async () => {} },
+      options: { dryRun: true, limit: 2, now },
+      logger: { log: () => {}, warn: () => {} }
+    });
+    assert.equal(limitedRes.valid, 2);
+    assert.ok(!limitedFetchCalls.includes('https://www.facebook.com/events/222333444/'));
   });
 });
