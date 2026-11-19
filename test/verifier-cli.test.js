@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { runVerifier } from '../src/verifier-cli.js';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { main, runVerifier } from '../src/verifier-cli.js';
 
 test('Seam 2: runVerifier scans, recovers URLs, probes reachable/unreachable links, and updates Firestore', async () => {
   const initialActivities = [
@@ -489,6 +492,28 @@ test('Seam 2: runVerifier scans and updates Organizer and Venue Listings alongsi
   assert.equal(venueUpdates[0].id, 'venue_park_qd66h1');
   assert.equal(venueUpdates[0].verified, true);
   assert.equal(venueUpdates[0].source_url, 'https://parkvenue.org.au/');
+});
+
+test('main writes timestamped INFO logs to disk when configured with --log-file', async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'myplaydex-verifier-log-'));
+  const logFilePath = path.join(tmpDir, 'verifier-cli.log');
+
+  try {
+    const summary = await main(
+      ['--dry-run', `--log-file=${logFilePath}`],
+      {},
+      {
+        logger: { log: () => {}, warn: () => {}, error: () => {} }
+      }
+    );
+
+    assert.equal(summary.dryRun, true);
+    const logContent = await fs.readFile(logFilePath, 'utf8');
+    assert.match(logContent, /^\[\d{4}-\d{2}-\d{2}T.*Z\] \[INFO\] \[URL Verifier CLI\] Initializing verifier/m);
+    assert.match(logContent, /^\[\d{4}-\d{2}-\d{2}T.*Z\] \[INFO\] \n--- URL Verification Summary Report ---/m);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
 });
 
 

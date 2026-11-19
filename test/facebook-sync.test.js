@@ -963,4 +963,32 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
     assert.ok(warnings.some(w => w.includes('555666777') && w.includes('HTTP 404')));
     assert.ok(logs.some(l => l.includes('Failed: 2')));
   });
+
+  it('writes timestamped INFO and WARN logs to disk via --log-file and .gitignore ignores .scratch/logs/', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'myplaydex-fb-log-'));
+    const logFilePath = path.join(tmpDir, 'facebook-sync.log');
+
+    try {
+      const gitignore = await fs.readFile(path.resolve(process.cwd(), '.gitignore'), 'utf8');
+      assert.ok(gitignore.split(/\r?\n/).some(line => line.trim() === '.scratch/logs/'));
+
+      const res = await main(
+        ['--url=https://www.facebook.com/broken-page', '--dry-run', `--log-file=${logFilePath}`],
+        {},
+        {
+          fetchFn: async () => ({ ok: false, status: 400, text: async () => '' }),
+          cacheStore: { read: async () => null, write: async () => {} },
+          logger: { log: () => {}, warn: () => {}, error: () => {} }
+        }
+      );
+
+      assert.equal(res.failedTargets, 1);
+      const logContent = await fs.readFile(logFilePath, 'utf8');
+      assert.match(logContent, /^\[\d{4}-\d{2}-\d{2}T.*Z\] \[INFO\] \[Facebook Sync\] Initializing run/m);
+      assert.match(logContent, /^\[\d{4}-\d{2}-\d{2}T.*Z\] \[WARN\] \[Facebook Sync\] Skipping target/m);
+      assert.match(logContent, /^\[\d{4}-\d{2}-\d{2}T.*Z\] \[INFO\] \[Facebook Sync\] Targets: 0, Failed: 1/m);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
 });

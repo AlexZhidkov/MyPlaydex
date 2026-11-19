@@ -4,6 +4,7 @@
  * and writes idempotent batches to Cloud Firestore.
  */
 
+import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { sanitizeListing, resolveListingType, extractCanonicalEntities } from './sanitizer.js';
 import { reconcileListingWithCatalog } from './entity-matcher.js';
@@ -15,10 +16,24 @@ import { createVolleyballWaCrawler } from './crawlers/volleyball-wa-crawler.js';
 import { createEventbriteCrawler } from './crawlers/eventbrite-crawler.js';
 import { createMeetupCrawler } from './crawlers/meetup-crawler.js';
 import { createMockCrawler } from './crawlers/mock-crawler.js';
-import { formatStepSummaryTable, writeStepSummary } from './crawler-reporter.js';
+import {
+  createFileLogger,
+  DEFAULT_LOG_DIR,
+  formatStepSummaryTable,
+  resolveCliLogger,
+  writeStepSummary
+} from './crawler-reporter.js';
 import { loadDotEnv } from './places-sync.js';
 
-export { formatStepSummaryTable, writeStepSummary };
+export {
+  createFileLogger,
+  DEFAULT_LOG_DIR,
+  formatStepSummaryTable,
+  resolveCliLogger,
+  writeStepSummary
+};
+
+export const DEFAULT_CRAWLER_LOG_PATH = resolve(DEFAULT_LOG_DIR, 'crawler-runner.log');
 
 /** Maximum fraction of invalid records allowed before triggering ERR_SCHEMA_DRIFT */
 export const MAX_INVALID_DROP_RATE = 0.20;
@@ -300,7 +315,7 @@ export async function main(argv = process.argv.slice(2), env = process.env, opti
   }
 
   const args = argv;
-  const logger = options.logger || console;
+  const logger = resolveCliLogger('crawler-runner.log', argv, options, env);
   const isDryRunArg = args.includes('--dry-run');
   const isSeed = args.includes('--seed');
   const crawlerArgMatch = args.find(a => a.startsWith('--crawler='));
@@ -370,8 +385,9 @@ export async function main(argv = process.argv.slice(2), env = process.env, opti
 
 // Auto-run if executed as main CLI script
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch(err => {
-    console.error('[Crawler Harness Fatal Error]', err);
+  const cliLogger = resolveCliLogger('crawler-runner.log', process.argv.slice(2), {}, process.env);
+  main(process.argv.slice(2), process.env, { logger: cliLogger }).catch(err => {
+    cliLogger.error('[Crawler Harness Fatal Error]', err);
     process.exit(1);
   });
 }

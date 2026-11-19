@@ -7,11 +7,13 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { DEFAULT_LOG_DIR, resolveCliLogger } from './crawler-reporter.js';
 import { calculateDistanceKm } from './discovery-engine.js';
 import { createFirestoreAdapter, initFirestoreFromEnv } from './firestore-adapter.js';
 import { PERTH_SUBURB_CENTROIDS } from './perth-centroids.js';
 import { normalizeSubcategories, sanitizeOrganizer, sanitizeVenue } from './sanitizer.js';
 
+export const DEFAULT_PLACES_LOG_PATH = path.resolve(DEFAULT_LOG_DIR, 'places-sync.log');
 export const PLACES_NEARBY_SEARCH_URL = 'https://places.googleapis.com/v1/places:searchNearby';
 export const PRO_TIER_FIELD_MASK = [
   'places.id',
@@ -487,7 +489,8 @@ export async function main(argv = process.argv.slice(2), env = process.env, opti
   }
 
   const parsedArgs = parseCliArgs(argv, env);
-  const logger = options.logger || console;
+  const logger = resolveCliLogger('places-sync.log', argv, options, env);
+  logger.log?.(`[Places Sync] Initializing run (project: ${parsedArgs.project}, entity: ${parsedArgs.entity}, suburb: ${parsedArgs.suburb || 'all'}, dry-run: ${parsedArgs.dryRun}, refresh: ${parsedArgs.refresh})`);
   const apiKey = options.apiKey || env.GOOGLE_PLACES_API_KEY || '';
 
   if (!apiKey && !options.fetchFn) {
@@ -527,8 +530,9 @@ export async function main(argv = process.argv.slice(2), env = process.env, opti
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch(err => {
-    console.error('[Places Sync Fatal Error]', err);
+  const cliLogger = resolveCliLogger('places-sync.log', process.argv.slice(2), {}, process.env);
+  main(process.argv.slice(2), process.env, { logger: cliLogger }).catch(err => {
+    cliLogger.error('[Places Sync Fatal Error]', err);
     process.exit(1);
   });
 }

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runPlacesSync, parseCliArgs, main } from '../src/places-sync.js';
@@ -483,6 +484,30 @@ test('Seam 3: main loads GOOGLE_PLACES_API_KEY from .env when not already set in
     assert.equal(env.GOOGLE_PLACES_API_KEY, 'env-file-key');
     assert.equal(capturedApiKey, 'env-file-key');
     assert.equal(summary.dryRun, true);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('main writes timestamped INFO logs to disk when configured with --log-file', async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'myplaydex-places-log-'));
+  const logFilePath = path.join(tmpDir, 'places-sync.log');
+
+  try {
+    const summary = await main(
+      ['--suburb=Perth', '--dry-run', '--entity=organizers', `--log-file=${logFilePath}`],
+      { GOOGLE_PLACES_API_KEY: 'test-key' },
+      {
+        fetchFn: async () => ({ ok: true, status: 200, async json() { return { places: [] }; } }),
+        cacheStore: { read: async () => null, write: async () => {} },
+        logger: { log: () => {}, warn: () => {}, error: () => {} }
+      }
+    );
+
+    assert.equal(summary.dryRun, true);
+    const logContent = await fs.readFile(logFilePath, 'utf8');
+    assert.match(logContent, /^\[\d{4}-\d{2}-\d{2}T.*Z\] \[INFO\] \[Places Sync\] Initializing run/m);
+    assert.match(logContent, /^\[\d{4}-\d{2}-\d{2}T.*Z\] \[INFO\] \[Places Sync\] Suburbs: 1/m);
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }

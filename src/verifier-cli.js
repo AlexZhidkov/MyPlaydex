@@ -4,10 +4,14 @@
  * HTTP probing, and batch-updates canonical source URLs or Unverified Listing states.
  */
 
+import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { DEFAULT_LOG_DIR, resolveCliLogger } from './crawler-reporter.js';
 import { createUrlVerifier } from './url-verifier.js';
 import { createFirestoreAdapter, initFirestoreFromEnv, resolveCollectionForListingId } from './firestore-adapter.js';
 import { loadDotEnv } from './places-sync.js';
+
+export const DEFAULT_VERIFIER_LOG_PATH = resolve(DEFAULT_LOG_DIR, 'verifier-cli.log');
 
 /**
  * Runs the standalone verifier pipeline against an activities collection.
@@ -219,7 +223,7 @@ export async function main(argv = process.argv.slice(2), env = process.env, opti
   }
 
   const parsedArgs = parseCliArgs(argv, env);
-  const logger = options.logger || console;
+  const logger = resolveCliLogger('verifier-cli.log', argv, options, env);
 
   const isDryRunArg = parsedArgs.dryRun;
   const targetProject = parsedArgs.project;
@@ -273,8 +277,9 @@ export async function main(argv = process.argv.slice(2), env = process.env, opti
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch(err => {
-    console.error('[URL Verifier Fatal Error]', err);
+  const cliLogger = resolveCliLogger('verifier-cli.log', process.argv.slice(2), {}, process.env);
+  main(process.argv.slice(2), process.env, { logger: cliLogger }).catch(err => {
+    cliLogger.error('[URL Verifier Fatal Error]', err);
     process.exit(1);
   });
 }

@@ -10,3 +10,4 @@ firebase-adminsdk-*.json
 firebase-debug.log
 .scratch/places-sync-cache.json
 .scratch/facebook-sync-cache.json
+.scratch/logs/

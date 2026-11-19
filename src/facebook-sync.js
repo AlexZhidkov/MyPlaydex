@@ -13,6 +13,7 @@ import {
   matchVenueByNameOnly,
   reconcileListingWithCatalog
 } from './entity-matcher.js';
+import { DEFAULT_LOG_DIR, resolveCliLogger } from './crawler-reporter.js';
 import { extractFacebookEventLinks, extractFacebookEvents } from './facebook-parser.js';
 import { createFirestoreAdapter, initFirestoreFromEnv } from './firestore-adapter.js';
 import { encodeGeohash } from './geohash.js';
@@ -32,6 +33,7 @@ export { extractFacebookEvents };
 export const PERTH_CENTROID = { lat: -31.9505, lng: 115.8605 };
 export const MAX_PERTH_RADIUS_KM = 85;
 export const DEFAULT_FACEBOOK_CACHE_PATH = path.resolve(process.cwd(), '.scratch/facebook-sync-cache.json');
+export const DEFAULT_FACEBOOK_LOG_PATH = path.resolve(DEFAULT_LOG_DIR, 'facebook-sync.log');
 
 const NON_WA_LOCATION_REGEX = /\b(NSW|VIC|QLD|SA|TAS|ACT|NT|New South Wales|Victoria|Queensland|South Australia|Tasmania|Northern Territory|Sydney|Melbourne|Brisbane|Adelaide|Hobart|Canberra|Darwin)\b/i;
 const WA_LOCATION_REGEX = /\b(WA|Western Australia|Perth)\b/i;
@@ -495,7 +497,9 @@ export async function main(argv = process.argv.slice(2), env = process.env, opti
   }
 
   const parsedArgs = parseCliArgs(argv, env);
-  const logger = options.logger || console;
+  const logger = resolveCliLogger('facebook-sync.log', argv, options, env);
+
+  logger.log?.(`[Facebook Sync] Initializing run (project: ${parsedArgs.project}, dry-run: ${parsedArgs.dryRun}, refresh: ${parsedArgs.refresh})`);
 
   const firestoreEnv = options.firestoreEnv || (parsedArgs.dryRun
     ? { db: null, dryRun: true, projectId: parsedArgs.project }
@@ -532,8 +536,9 @@ export async function main(argv = process.argv.slice(2), env = process.env, opti
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch(err => {
-    console.error('[Facebook Sync Fatal Error]', err);
+  const cliLogger = resolveCliLogger('facebook-sync.log', process.argv.slice(2), {}, process.env);
+  main(process.argv.slice(2), process.env, { logger: cliLogger }).catch(err => {
+    cliLogger.error('[Facebook Sync Fatal Error]', err);
     process.exit(1);
   });
 }

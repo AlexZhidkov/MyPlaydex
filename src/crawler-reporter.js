@@ -3,8 +3,107 @@
  * Generates formatted GitHub Step Summary Markdown tables and handles step report file writing.
  */
 
-import { appendFileSync, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { format } from 'node:util';
+
+export const DEFAULT_LOG_DIR = resolve(process.cwd(), '.scratch/logs');
+
+/**
+ * Creates a logger that tees console output (`log`, `info`, `warn`, `error`)
+ * into a timestamped log file on disk.
+ *
+ * @param {object} [params]
+ * @param {string} [params.filePath] - Target log file path
+ * @param {object} [params.baseLogger=console] - Underlying console/logger to mirror to
+ * @param {boolean} [params.truncate=false] - Whether to clear an existing log file on creation
+ * @returns {object} Logger instance
+ */
+export function createFileLogger({ filePath, baseLogger = console, truncate = false } = {}) {
+  if (truncate && filePath) {
+    try {
+      mkdirSync(dirname(filePath), { recursive: true });
+      writeFileSync(filePath, '', 'utf8');
+    } catch {
+      // Never abort a crawler run if log file initialization fails
+    }
+  }
+
+  function writeToFile(level, args) {
+    if (!filePath) return;
+    try {
+      const message = format(...args);
+      const timestamp = new Date().toISOString();
+      mkdirSync(dirname(filePath), { recursive: true });
+      appendFileSync(filePath, `[${timestamp}] [${level}] ${message}\n`, 'utf8');
+    } catch {
+      // Never crash a crawl due to log file write failures
+    }
+  }
+
+  return {
+    isFileLogger: true,
+    logFilePath: filePath,
+    log(...args) {
+      baseLogger?.log?.(...args);
+      writeToFile('INFO', args);
+    },
+    info(...args) {
+      (baseLogger?.info || baseLogger?.log)?.call(baseLogger, ...args);
+      writeToFile('INFO', args);
+    },
+    warn(...args) {
+      baseLogger?.warn?.(...args);
+      writeToFile('WARN', args);
+    },
+    error(...args) {
+      baseLogger?.error?.(...args);
+      writeToFile('ERROR', args);
+    }
+  };
+}
+
+/**
+ * Resolves the CLI logger, enabling file-backed logging by default unless disabled
+ * or overridden by an in-process custom logger without an explicit log file.
+ *
+ * @param {string} defaultFileName - Default log filename under DEFAULT_LOG_DIR
+ * @param {Array<string>} [argv=[]] - CLI arguments
+ * @param {object} [options={}] - Entrypoint options
+ * @param {object} [env=process.env] - Environment variables
+ * @returns {object} Logger instance
+ */
+export function resolveCliLogger(defaultFileName, argv = [], options = {}, env = process.env) {
+  if (options.logger?.isFileLogger) {
+    return options.logger;
+  }
+  if (options.logFile === false || argv.includes('--no-log-file')) {
+    return options.logger || console;
+  }
+
+  const logFileArg = argv.find(a => a.startsWith('--log-file='));
+  const cliLogFile = logFileArg ? logFileArg.slice('--log-file='.length) : undefined;
+  const explicitLogFile = options.logFile || cliLogFile || env.CRAWLER_LOG_FILE;
+
+  if (explicitLogFile) {
+    return createFileLogger({
+      filePath: resolve(process.cwd(), explicitLogFile),
+      baseLogger: options.logger || console,
+      truncate: Boolean(options.truncateLog)
+    });
+  }
+
+  if (!options.logger) {
+    const logDir = env.CRAWLER_LOG_DIR ? resolve(process.cwd(), env.CRAWLER_LOG_DIR) : DEFAULT_LOG_DIR;
+    return createFileLogger({
+      filePath: resolve(logDir, defaultFileName),
+      baseLogger: console,
+      truncate: Boolean(options.truncateLog)
+    });
+  }
+
+  return options.logger;
+}
 
 /**
  * Sanitizes text to be safely displayed inside a single Markdown table cell.

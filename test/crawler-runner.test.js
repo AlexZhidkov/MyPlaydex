@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { runCrawlerHarness, formatStepSummaryTable, writeStepSummary, getDefaultCrawlers, main } from '../src/crawler-runner.js';
+import { runCrawlerHarness, formatStepSummaryTable, writeStepSummary, getDefaultCrawlers, createFileLogger, main } from '../src/crawler-runner.js';
 
 const execFileAsync = promisify(execFile);
 import { createFirestoreAdapter } from '../src/firestore-adapter.js';
@@ -421,7 +421,7 @@ test('Seam 4C: CLI exits with status 1 on anomaly and writes GITHUB_STEP_SUMMARY
       ['src/crawler-runner.js', '--dry-run', '--crawler=mock', '--include-mock'],
       {
         cwd: process.cwd(),
-        env: { ...process.env, GITHUB_STEP_SUMMARY: summaryFile }
+        env: { ...process.env, GITHUB_STEP_SUMMARY: summaryFile, CRAWLER_LOG_DIR: tmpDir }
       }
     );
     assert.equal(successResult.stderr, '');
@@ -434,7 +434,7 @@ test('Seam 4C: CLI exits with status 1 on anomaly and writes GITHUB_STEP_SUMMARY
         ['src/crawler-runner.js', '--dry-run', '--crawler=mock', '--include-mock', '--min-expected=100'],
         {
           cwd: process.cwd(),
-          env: { ...process.env, GITHUB_STEP_SUMMARY: summaryFile }
+          env: { ...process.env, GITHUB_STEP_SUMMARY: summaryFile, CRAWLER_LOG_DIR: tmpDir }
         }
       );
     } catch (err) {
@@ -448,6 +448,11 @@ test('Seam 4C: CLI exits with status 1 on anomaly and writes GITHUB_STEP_SUMMARY
     const summaryContent = readFileSync(summaryFile, 'utf8');
     assert.match(summaryContent, /ERR_ZERO_YIELD/);
     assert.match(summaryContent, /FAILED/);
+
+    const logContent = readFileSync(join(tmpDir, 'crawler-runner.log'), 'utf8');
+    assert.match(logContent, /\[INFO\] \[Crawler Harness\] Initializing run/);
+    assert.match(logContent, /\[INFO\] \[Harness\] Finished mock:/);
+    assert.match(logContent, /\[ERROR\] \[Crawler Harness\] Encountered 1 crawler failure/);
   } finally {
     rmSync(tmpDir, { recursive: true, force: true });
   }
@@ -1316,6 +1321,47 @@ test('main loads FIREBASE_SERVICE_ACCOUNT_KEY and project config from .env when 
     assert.ok(cliErr, 'CLI should fail when .env contains a malformed service account key');
     assert.match(cliErr.stderr, /Failed to parse FIREBASE_SERVICE_ACCOUNT_KEY/);
     assert.doesNotMatch(cliErr.stderr, /Missing required secret/);
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('createFileLogger and crawler-runner main write timestamped INFO, WARN, and ERROR entries to log file', async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'crawler-runner-logfile-'));
+  const logFilePath = join(tmpDir, 'custom-crawler.log');
+
+  try {
+    const mirrored = [];
+    const fileLogger = createFileLogger({
+      filePath: logFilePath,
+      baseLogger: {
+        log: (...args) => mirrored.push(['log', ...args]),
+        info: (...args) => mirrored.push(['info', ...args]),
+        warn: (...args) => mirrored.push(['warn', ...args]),
+        error: (...args) => mirrored.push(['error', ...args])
+      }
+    });
+
+    fileLogger.info('Info check', 1);
+    fileLogger.warn('Warn check', 'be careful');
+    fileLogger.error('Error check', new Error('boom').message);
+
+    await main(
+      ['--dry-run', '--crawler=mock', '--include-mock', `--log-file=${logFilePath}`],
+      {},
+      {
+        firestoreEnv: { db: null, dryRun: true, projectId: null },
+        logger: { log: () => {}, warn: () => {}, error: () => {} }
+      }
+    );
+
+    const content = readFileSync(logFilePath, 'utf8');
+    assert.match(content, /^\[\d{4}-\d{2}-\d{2}T.*Z\] \[INFO\] Info check 1$/m);
+    assert.match(content, /^\[\d{4}-\d{2}-\d{2}T.*Z\] \[WARN\] Warn check be careful$/m);
+    assert.match(content, /^\[\d{4}-\d{2}-\d{2}T.*Z\] \[ERROR\] Error check boom$/m);
+    assert.match(content, /\[INFO\] \[Crawler Harness\] Initializing run/);
+    assert.match(content, /\[INFO\] \n--- Ingestion Summary Report ---/);
+    assert.equal(mirrored.length, 3);
   } finally {
     rmSync(tmpDir, { recursive: true, force: true });
   }
