@@ -243,3 +243,103 @@ test('Seam 5 (Issue #19): DLGSC Crawler extracts Facebook into contact.facebook 
   assert.equal(neither.source_url, 'https://kidsport.dlgsc.wa.gov.au/find-a-club/?club=org-neither');
   assert.equal(neither.raw_source_url, 'https://kidsport.dlgsc.wa.gov.au/find-a-club/?club=org-neither');
 });
+
+test('Seam 5: DLGSC Crawler paginates past 3 pages by default until morerecords is false', async () => {
+  const requestedPages = [];
+  const pages = {
+    1: {
+      clubs: {
+        morerecords: true,
+        data: [
+          {
+            Id: 'dlgsc-page-1',
+            Name: 'Perth Club Page 1',
+            Sports: 'Soccer',
+            Latitude: '-31.9505',
+            Longitude: '115.8605'
+          }
+        ]
+      }
+    },
+    2: {
+      clubs: {
+        morerecords: true,
+        data: [
+          {
+            Id: 'dlgsc-page-2',
+            Name: 'Perth Club Page 2',
+            Sports: 'Tennis',
+            Latitude: '-31.9510',
+            Longitude: '115.8610'
+          }
+        ]
+      }
+    },
+    3: {
+      clubs: {
+        morerecords: true,
+        data: [
+          {
+            Id: 'dlgsc-page-3',
+            Name: 'Perth Club Page 3',
+            Sports: 'Basketball',
+            Latitude: '-31.9515',
+            Longitude: '115.8615'
+          }
+        ]
+      }
+    },
+    4: {
+      clubs: {
+        morerecords: true,
+        data: [
+          {
+            Id: 'dlgsc-page-4',
+            Name: 'Perth Club Page 4',
+            Sports: 'Volleyball',
+            Latitude: '-31.9520',
+            Longitude: '115.8620',
+            Facebook: 'https://www.facebook.com/PerthClubPage4'
+          }
+        ]
+      }
+    },
+    5: {
+      clubs: {
+        morerecords: false,
+        data: [
+          {
+            Id: 'dlgsc-page-5',
+            Name: 'Perth Club Page 5',
+            Sports: 'Badminton',
+            Latitude: '-31.9525',
+            Longitude: '115.8625'
+          }
+        ]
+      }
+    }
+  };
+
+  const crawler = createDlgscCrawler({
+    fetchFn: async (url) => {
+      const parsed = new URL(url);
+      const page = Number(parsed.searchParams.get('page'));
+      requestedPages.push(page);
+      return {
+        ok: true,
+        async json() {
+          return pages[page] || { clubs: { morerecords: false, data: [] } };
+        }
+      };
+    }
+  });
+
+  const listings = await crawler.fetchListings();
+  assert.deepEqual(requestedPages, [1, 2, 3, 4, 5]);
+  assert.equal(listings.length, 5);
+  assert.deepEqual(
+    listings.map(l => l.source_id),
+    ['dlgsc-page-1', 'dlgsc-page-2', 'dlgsc-page-3', 'dlgsc-page-4', 'dlgsc-page-5']
+  );
+  assert.equal(listings[3].contact.facebook, 'https://www.facebook.com/PerthClubPage4');
+});

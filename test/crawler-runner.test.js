@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { runCrawlerHarness, formatStepSummaryTable, writeStepSummary, getDefaultCrawlers } from '../src/crawler-runner.js';
+import { runCrawlerHarness, formatStepSummaryTable, writeStepSummary, getDefaultCrawlers, main } from '../src/crawler-runner.js';
 
 const execFileAsync = promisify(execFile);
 import { createFirestoreAdapter } from '../src/firestore-adapter.js';
@@ -1261,5 +1261,63 @@ test('Seam 4 (Issue #17): runCrawlerHarness reconciles confident, uncertain, unm
   assert.ok(newDirOrg);
   assert.equal(newDirOrg.needs_review, true);
   assert.equal(newDirOrg.review_reason, 'crawler_created');
+});
+
+test('main loads FIREBASE_SERVICE_ACCOUNT_KEY and project config from .env when executed', async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'crawler-runner-dotenv-'));
+  const envFilePath = join(tmpDir, '.env');
+  const scriptPath = resolve(process.cwd(), 'src/crawler-runner.js');
+
+  try {
+    writeFileSync(
+      envFilePath,
+      'FIREBASE_PROJECT_ID="env-crawler-proj"\nFIREBASE_SERVICE_ACCOUNT_KEY="not-valid-json-key"\n',
+      'utf8'
+    );
+
+    const env = {};
+    const logs = [];
+    const summary = await main(
+      ['--dry-run', '--crawler=mock', '--include-mock'],
+      env,
+      {
+        envFilePath,
+        firestoreEnv: { db: null, dryRun: true, projectId: null },
+        logger: {
+          log: (...args) => logs.push(args.join(' ')),
+          warn: (...args) => logs.push(args.join(' ')),
+          error: (...args) => logs.push(args.join(' '))
+        }
+      }
+    );
+
+    assert.equal(env.FIREBASE_PROJECT_ID, 'env-crawler-proj');
+    assert.equal(env.FIREBASE_SERVICE_ACCOUNT_KEY, 'not-valid-json-key');
+    assert.equal(summary.successfulCrawlers, 1);
+    assert.ok(logs.some(line => line.includes('project: env-crawler-proj')));
+
+    // Verify CLI execution reads .env from cwd before checking FIREBASE_SERVICE_ACCOUNT_KEY
+    const childEnv = { ...process.env };
+    delete childEnv.FIREBASE_SERVICE_ACCOUNT_KEY;
+    delete childEnv.FIREBASE_USE_ADC;
+    delete childEnv.FIREBASE_PROJECT_ID;
+
+    let cliErr = null;
+    try {
+      await execFileAsync(
+        process.execPath,
+        [scriptPath, '--crawler=mock', '--include-mock'],
+        { cwd: tmpDir, env: childEnv }
+      );
+    } catch (err) {
+      cliErr = err;
+    }
+
+    assert.ok(cliErr, 'CLI should fail when .env contains a malformed service account key');
+    assert.match(cliErr.stderr, /Failed to parse FIREBASE_SERVICE_ACCOUNT_KEY/);
+    assert.doesNotMatch(cliErr.stderr, /Missing required secret/);
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
 

@@ -16,6 +16,7 @@ import { createEventbriteCrawler } from './crawlers/eventbrite-crawler.js';
 import { createMeetupCrawler } from './crawlers/meetup-crawler.js';
 import { createMockCrawler } from './crawlers/mock-crawler.js';
 import { formatStepSummaryTable, writeStepSummary } from './crawler-reporter.js';
+import { loadDotEnv } from './places-sync.js';
 
 export { formatStepSummaryTable, writeStepSummary };
 
@@ -287,67 +288,84 @@ export function getDefaultCrawlers(options = {}) {
 
 /**
  * CLI Entry point
+ *
+ * @param {Array<string>} [argv=process.argv.slice(2)]
+ * @param {object} [env=process.env]
+ * @param {object} [options={}]
+ * @returns {Promise<object>} Summary report
  */
-async function main() {
-  const args = process.argv.slice(2);
+export async function main(argv = process.argv.slice(2), env = process.env, options = {}) {
+  if (env === process.env || options.envFilePath) {
+    await loadDotEnv(options.envFilePath, env);
+  }
+
+  const args = argv;
+  const logger = options.logger || console;
   const isDryRunArg = args.includes('--dry-run');
   const isSeed = args.includes('--seed');
   const crawlerArgMatch = args.find(a => a.startsWith('--crawler='));
   const targetCrawler = crawlerArgMatch ? crawlerArgMatch.split('=')[1] : 'all';
   const projectArgMatch = args.find(a => a.startsWith('--project='));
-  const targetProject = projectArgMatch ? projectArgMatch.split('=')[1] : (process.env.FIREBASE_PROJECT_ID || 'myplaydex');
+  const targetProject = projectArgMatch ? projectArgMatch.split('=')[1] : (env.FIREBASE_PROJECT_ID || 'myplaydex');
   const minExpectedArgMatch = args.find(a => a.startsWith('--min-expected=') || a.startsWith('--min-expected-listings='));
   const minExpectedListings = minExpectedArgMatch ? parseInt(minExpectedArgMatch.split('=')[1], 10) : undefined;
-  const useAdc = args.includes('--use-adc') || isSeed || Boolean(process.env.FIREBASE_USE_ADC);
+  const useAdc = args.includes('--use-adc') || isSeed || Boolean(env.FIREBASE_USE_ADC);
 
-  console.log(`[Crawler Harness] Initializing run (crawler: ${targetCrawler}, dry-run: ${isDryRunArg}, seed: ${isSeed}, project: ${targetProject})`);
+  logger.log?.(`[Crawler Harness] Initializing run (crawler: ${targetCrawler}, dry-run: ${isDryRunArg}, seed: ${isSeed}, project: ${targetProject})`);
 
   // Initialize Firestore from environment credentials (enforce key if live run and not using ADC)
-  const firestoreEnv = await initFirestoreFromEnv(process.env, {
-    requireCredentials: !isDryRunArg && !useAdc,
-    useAdc,
-    projectId: targetProject
-  });
+  const firestoreEnv = options.firestoreEnv || (isDryRunArg
+    ? { db: null, dryRun: true, projectId: targetProject }
+    : await initFirestoreFromEnv(env, {
+        requireCredentials: !isDryRunArg && !useAdc,
+        useAdc,
+        projectId: targetProject
+      }));
   const effectiveDryRun = isDryRunArg || firestoreEnv.dryRun;
 
-  const adapter = createFirestoreAdapter({
+  const adapter = options.adapter || createFirestoreAdapter({
     db: firestoreEnv.db,
     dryRun: effectiveDryRun
   });
 
   if (effectiveDryRun) {
-    console.log('[Crawler Harness] Running in DRY-RUN mode (no Firestore writes will be committed).');
+    logger.log?.('[Crawler Harness] Running in DRY-RUN mode (no Firestore writes will be committed).');
   } else {
-    console.log(`[Crawler Harness] Connected to Firestore project: ${firestoreEnv.projectId}`);
+    logger.log?.(`[Crawler Harness] Connected to Firestore project: ${firestoreEnv.projectId}`);
   }
 
   const includeMock = targetCrawler === 'mock' || isSeed || args.includes('--include-mock');
   const includeEventbrite = targetCrawler.toLowerCase() === 'eventbrite' || args.includes('--include-eventbrite');
-  const crawlers = getDefaultCrawlers({ includeMock, includeEventbrite });
+  const crawlers = options.crawlers || getDefaultCrawlers({ includeMock, includeEventbrite });
 
   const summary = await runCrawlerHarness({
     crawlers,
     adapter,
     options: {
       crawler: targetCrawler,
-      minExpectedListings
+      minExpectedListings,
+      logger
     }
   });
 
-  console.log('\n--- Ingestion Summary Report ---');
-  console.log(`Total Crawlers: ${summary.totalCrawlers}`);
-  console.log(`Successful:     ${summary.successfulCrawlers}`);
-  console.log(`Failed:         ${summary.failedCrawlers}`);
-  console.log(`Raw Records:    ${summary.totalRaw}`);
-  console.log(`Valid Records:  ${summary.totalValid}`);
-  console.log(`Invalid Dropped:${summary.totalInvalid}`);
-  console.log(`Total Upserted: ${summary.totalUpserted}`);
-  console.log('--------------------------------\n');
+  logger.log?.('\n--- Ingestion Summary Report ---');
+  logger.log?.(`Total Crawlers: ${summary.totalCrawlers}`);
+  logger.log?.(`Successful:     ${summary.successfulCrawlers}`);
+  logger.log?.(`Failed:         ${summary.failedCrawlers}`);
+  logger.log?.(`Raw Records:    ${summary.totalRaw}`);
+  logger.log?.(`Valid Records:  ${summary.totalValid}`);
+  logger.log?.(`Invalid Dropped:${summary.totalInvalid}`);
+  logger.log?.(`Total Upserted: ${summary.totalUpserted}`);
+  logger.log?.('--------------------------------\n');
 
   if (summary.failedCrawlers > 0) {
-    console.error(`[Crawler Harness] Encountered ${summary.failedCrawlers} crawler failure(s).`);
-    process.exit(1);
+    logger.error?.(`[Crawler Harness] Encountered ${summary.failedCrawlers} crawler failure(s).`);
+    if (options.exitOnFailure !== false) {
+      process.exit(1);
+    }
   }
+
+  return summary;
 }
 
 // Auto-run if executed as main CLI script

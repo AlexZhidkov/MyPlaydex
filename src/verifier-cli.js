@@ -7,6 +7,7 @@
 import { pathToFileURL } from 'node:url';
 import { createUrlVerifier } from './url-verifier.js';
 import { createFirestoreAdapter, initFirestoreFromEnv, resolveCollectionForListingId } from './firestore-adapter.js';
+import { loadDotEnv } from './places-sync.js';
 
 /**
  * Runs the standalone verifier pipeline against an activities collection.
@@ -175,16 +176,17 @@ export async function runVerifier({
  * Parses CLI arguments.
  *
  * @param {Array<string>} [argv=process.argv.slice(2)]
+ * @param {object} [env=process.env]
  * @returns {object}
  */
-export function parseCliArgs(argv = process.argv.slice(2)) {
+export function parseCliArgs(argv = process.argv.slice(2), env = process.env) {
   const isDryRun = argv.includes('--dry-run');
   const onlyUnverified = argv.includes('--only-unverified');
   const force = argv.includes('--force');
-  const useAdc = argv.includes('--use-adc') || Boolean(process.env.FIREBASE_USE_ADC);
+  const useAdc = argv.includes('--use-adc') || Boolean(env.FIREBASE_USE_ADC);
 
   const projectArgMatch = argv.find(a => a.startsWith('--project='));
-  const project = projectArgMatch ? projectArgMatch.split('=')[1] : (process.env.FIREBASE_PROJECT_ID || 'myplaydex');
+  const project = projectArgMatch ? projectArgMatch.split('=')[1] : (env.FIREBASE_PROJECT_ID || 'myplaydex');
 
   const concurrencyArgMatch = argv.find(a => a.startsWith('--concurrency='));
   const concurrency = concurrencyArgMatch ? parseInt(concurrencyArgMatch.split('=')[1], 10) : undefined;
@@ -212,7 +214,11 @@ export function parseCliArgs(argv = process.argv.slice(2)) {
  * @returns {Promise<object>} Summary report
  */
 export async function main(argv = process.argv.slice(2), env = process.env, options = {}) {
-  const parsedArgs = parseCliArgs(argv);
+  if (env === process.env || options.envFilePath) {
+    await loadDotEnv(options.envFilePath, env);
+  }
+
+  const parsedArgs = parseCliArgs(argv, env);
   const logger = options.logger || console;
 
   const isDryRunArg = parsedArgs.dryRun;

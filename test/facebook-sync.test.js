@@ -870,4 +870,97 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
     assert.equal(ev9104.needs_review, true);
     assert.equal(ev9104.review_reason, 'unmatched_venue');
   });
+
+  it('Seam 4: runFacebookSync sends browser navigation headers and isolates per-target HTTP 400/404 errors', async () => {
+    const fetchRequests = [];
+    const warnings = [];
+    const logs = [];
+
+    const mockAdapter = {
+      async scanVenues() { return []; },
+      async scanOrganizers() {
+        return [
+          {
+            id: 'org_broken_fb',
+            name: 'Hunter Ballet Forte',
+            coordinates: { lat: -31.9505, lng: 115.8605 },
+            contact: { facebook: 'https://www.facebook.com/hunter.balletforte' }
+          },
+          {
+            id: 'org_healthy_fb',
+            name: 'Perth Social Tennis',
+            coordinates: { lat: -31.9505, lng: 115.8605 },
+            contact: { facebook: 'https://www.facebook.com/perthsocialtennis' }
+          }
+        ];
+      },
+      async batchUpsertActivities(activities) {
+        return { upserted: activities.length };
+      }
+    };
+
+    const mockFetch = async (url, init) => {
+      fetchRequests.push({ url, headers: init?.headers || {} });
+      if (url === 'https://www.facebook.com/hunter.balletforte') {
+        return { ok: false, status: 400, text: async () => '' };
+      }
+      if (url === 'https://www.facebook.com/events/555666777/') {
+        return { ok: false, status: 404, text: async () => '' };
+      }
+      return {
+        ok: true,
+        status: 200,
+        text: async () => `
+          <html>
+            <head>
+              <script type="application/ld+json">
+                {
+                  "@type": "SportsEvent",
+                  "name": "Wednesday Night Tennis",
+                  "url": "https://www.facebook.com/events/999000111/",
+                  "startDate": "2027-05-05T18:00:00+08:00",
+                  "location": { "@type": "Place", "name": "Perth", "geo": { "latitude": -31.9505, "longitude": 115.8605 } }
+                }
+              </script>
+            </head>
+            <body>
+              <a href="/events/555666777/">Broken Event Link</a>
+            </body>
+          </html>
+        `
+      };
+    };
+
+    const res = await runFacebookSync({
+      adapter: mockAdapter,
+      fetchFn: mockFetch,
+      cacheStore: { read: async () => null, write: async () => {} },
+      options: {},
+      logger: {
+        log: (...args) => logs.push(args.join(' ')),
+        warn: (...args) => warnings.push(args.join(' '))
+      }
+    });
+
+    // Browser navigation headers sent on outgoing requests
+    assert.ok(fetchRequests.length >= 2);
+    for (const req of fetchRequests) {
+      assert.equal(req.headers['Accept-Language'], 'en-AU,en-US;q=0.9,en;q=0.8');
+      assert.equal(req.headers['Sec-Fetch-Dest'], 'document');
+      assert.equal(req.headers['Sec-Fetch-Mode'], 'navigate');
+      assert.equal(req.headers['Sec-Fetch-Site'], 'none');
+      assert.equal(req.headers['Sec-Fetch-User'], '?1');
+      assert.equal(req.headers['Upgrade-Insecure-Requests'], '1');
+    }
+
+    // Per-target HTTP 400 and HTTP 404 errors are logged as warnings without aborting healthy organizer ingestion
+    assert.equal(res.targets, 1);
+    assert.equal(res.failedTargets, 2);
+    assert.equal(res.valid, 1);
+    assert.equal(res.upserted, 1);
+    assert.equal(res.activities[0].id, 'facebook_999000111');
+    assert.ok(warnings.some(w => w.includes('hunter.balletforte') && w.includes('HTTP 400')));
+    assert.ok(warnings.some(w => w.includes('555666777') && w.includes('HTTP 404')));
+    assert.ok(logs.some(l => l.includes('Failed: 2')));
+  });
 });

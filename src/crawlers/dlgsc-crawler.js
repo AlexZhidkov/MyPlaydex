@@ -61,7 +61,7 @@ function cleanText(str) {
  * @param {number} [options.maxDistanceKm=DEFAULT_MAX_DISTANCE_KM]
  * @param {string} [options.keyword='']
  * @param {string} [options.suburb]
- * @param {number} [options.maxPages=3]
+ * @param {number} [options.maxPages]
  * @returns {object} Crawler instance with name and fetchListings method
  */
 export function createDlgscCrawler(options = {}) {
@@ -73,7 +73,9 @@ export function createDlgscCrawler(options = {}) {
   const keyword = options.keyword !== undefined ? options.keyword : '';
   const suburb = options.suburb;
   const singlePage = options.page !== undefined ? options.page : null;
-  const maxPages = singlePage ? 1 : (options.maxPages || 3);
+  const maxPages = singlePage
+    ? 1
+    : (typeof options.maxPages === 'number' && options.maxPages > 0 ? options.maxPages : Infinity);
 
   return {
     name: 'dlgsc',
@@ -85,14 +87,16 @@ export function createDlgscCrawler(options = {}) {
         'Accept': 'application/json'
       };
 
-      const signal = options.signal || (typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(timeoutMs) : undefined);
       const filteredListings = [];
       const seenIds = new Set();
 
       const startPage = singlePage || 1;
-      const endPage = singlePage ? singlePage : (startPage + maxPages - 1);
+      const endPage = singlePage
+        ? singlePage
+        : (Number.isFinite(maxPages) ? startPage + maxPages - 1 : Infinity);
 
       for (let currentPage = startPage; currentPage <= endPage; currentPage++) {
+        const signal = options.signal || (typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(timeoutMs) : undefined);
         let url = `${DLGSC_ENDPOINT}?basic=true&keyword=${encodeURIComponent(keyword)}&page=${currentPage}&count=${pageSize}`;
         if (suburb) {
           url += `&suburb=${encodeURIComponent(suburb)}`;
@@ -110,6 +114,7 @@ export function createDlgscCrawler(options = {}) {
 
         const json = await response.json();
         const rawClubs = json.clubs?.data || json.data || [];
+        let newRawClubsOnPage = 0;
 
         for (let i = 0; i < rawClubs.length; i++) {
           const item = rawClubs[i];
@@ -118,6 +123,9 @@ export function createDlgscCrawler(options = {}) {
           if (seenIds.has(clubId)) {
             continue;
           }
+
+          seenIds.add(clubId);
+          newRawClubsOnPage++;
 
           // Parse coordinates
           const lat = parseFloat(item.Latitude || item.LLat);
@@ -132,8 +140,6 @@ export function createDlgscCrawler(options = {}) {
           if (distance > maxDistanceKm) {
             continue;
           }
-
-          seenIds.add(clubId);
 
           const rawOrganizerName = item.Name || item.RegisteredName || 'Sports Organizer';
           const organizerName = cleanText(rawOrganizerName);
@@ -189,7 +195,7 @@ export function createDlgscCrawler(options = {}) {
         }
 
         // If upstream has no more records, stop paginating
-        if (json.clubs?.morerecords === false || rawClubs.length === 0) {
+        if (json.clubs?.morerecords === false || rawClubs.length === 0 || newRawClubsOnPage === 0) {
           break;
         }
       }

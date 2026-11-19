@@ -194,7 +194,13 @@ async function fetchTargetPayload({ url, fetchFn, cacheStore, refresh, facebookC
 
   const headers = {
     'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-    Accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8'
+    Accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-AU,en-US;q=0.9,en;q=0.8',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'Upgrade-Insecure-Requests': '1'
   };
   if (facebookCookie) {
     headers.Cookie = facebookCookie;
@@ -217,37 +223,46 @@ async function fetchTargetPayload({ url, fetchFn, cacheStore, refresh, facebookC
   return { body, fromCache: false, sourceUrl: canonicalUrl };
 }
 
-async function hydrateDiscoveredEventLinks(target, rawEvents, { fetchFn, cacheStore, refresh, facebookCookie, remainingLimit }) {
+async function hydrateDiscoveredEventLinks(target, rawEvents, { fetchFn, cacheStore, refresh, facebookCookie, remainingLimit, logger }) {
   if (target.format === 'ics' || typeof target.body !== 'string') {
-    return rawEvents;
+    return { events: rawEvents, failedFetches: 0 };
   }
 
   const completeIds = new Set(rawEvents.filter(ev => ev.start_date).map(ev => ev.eventId));
   const discoveredLinks = extractFacebookEventLinks(target.body).filter(l => !completeIds.has(l.eventId));
   if (discoveredLinks.length === 0) {
-    return rawEvents;
+    return { events: rawEvents, failedFetches: 0 };
   }
 
   const hydratedEvents = [];
+  let failedFetches = 0;
   for (const link of discoveredLinks) {
     if (remainingLimit !== undefined && (rawEvents.length + hydratedEvents.length) >= remainingLimit) {
       break;
     }
-    const detail = await fetchTargetPayload({
-      url: link.url,
-      fetchFn,
-      cacheStore,
-      refresh,
-      facebookCookie
-    });
-    hydratedEvents.push(...extractFacebookEvents(detail.body, { sourceUrl: detail.sourceUrl }));
+    try {
+      const detail = await fetchTargetPayload({
+        url: link.url,
+        fetchFn,
+        cacheStore,
+        refresh,
+        facebookCookie
+      });
+      hydratedEvents.push(...extractFacebookEvents(detail.body, { sourceUrl: detail.sourceUrl }));
+    } catch (err) {
+      failedFetches += 1;
+      logger?.warn?.(`[Facebook Sync] Skipping discovered event ${link.url}: ${err.message}`);
+    }
   }
 
   const hydratedIds = new Set(hydratedEvents.map(ev => ev.eventId));
-  return [
-    ...rawEvents.filter(ev => ev.start_date || !hydratedIds.has(ev.eventId)),
-    ...hydratedEvents
-  ];
+  return {
+    events: [
+      ...rawEvents.filter(ev => ev.start_date || !hydratedIds.has(ev.eventId)),
+      ...hydratedEvents
+    ],
+    failedFetches
+  };
 }
 
 /**
@@ -281,19 +296,25 @@ export async function runFacebookSync({
     : null;
 
   const targets = [];
+  let failedTargets = 0;
   if (options.input) {
     const ext = path.extname(options.input).toLowerCase().replace(/^\./, '');
     const body = await fs.readFile(options.input, 'utf8');
     targets.push({ body, format: ext, sourceUrl: options.url || '', organizer: explicitOrganizer });
   } else if (options.url) {
-    const fetched = await fetchTargetPayload({
-      url: options.url,
-      fetchFn,
-      cacheStore,
-      refresh,
-      facebookCookie
-    });
-    targets.push({ body: fetched.body, sourceUrl: fetched.sourceUrl, organizer: explicitOrganizer });
+    try {
+      const fetched = await fetchTargetPayload({
+        url: options.url,
+        fetchFn,
+        cacheStore,
+        refresh,
+        facebookCookie
+      });
+      targets.push({ body: fetched.body, sourceUrl: fetched.sourceUrl, organizer: explicitOrganizer });
+    } catch (err) {
+      failedTargets += 1;
+      logger.warn?.(`[Facebook Sync] Skipping target ${options.url}: ${err.message}`);
+    }
   } else {
     let seededOrgs = organizersCatalog.filter(o => Boolean(normalizeFacebookUrl(o?.contact?.facebook)));
     if (options.organizer) {
@@ -303,14 +324,19 @@ export async function runFacebookSync({
       seededOrgs = seededOrgs.slice(0, limit);
     }
     for (const org of seededOrgs) {
-      const fetched = await fetchTargetPayload({
-        url: org.contact.facebook,
-        fetchFn,
-        cacheStore,
-        refresh,
-        facebookCookie
-      });
-      targets.push({ body: fetched.body, sourceUrl: fetched.sourceUrl, organizer: org });
+      try {
+        const fetched = await fetchTargetPayload({
+          url: org.contact.facebook,
+          fetchFn,
+          cacheStore,
+          refresh,
+          facebookCookie
+        });
+        targets.push({ body: fetched.body, sourceUrl: fetched.sourceUrl, organizer: org });
+      } catch (err) {
+        failedTargets += 1;
+        logger.warn?.(`[Facebook Sync] Skipping organizer ${org.id} (${org.contact.facebook}): ${err.message}`);
+      }
     }
   }
 
@@ -331,13 +357,16 @@ export async function runFacebookSync({
       format: target.format
     });
 
-    rawEvents = await hydrateDiscoveredEventLinks(target, rawEvents, {
+    const hydrated = await hydrateDiscoveredEventLinks(target, rawEvents, {
       fetchFn,
       cacheStore,
       refresh,
       facebookCookie,
-      remainingLimit: limit !== undefined ? Math.max(0, limit - activities.length) : undefined
+      remainingLimit: limit !== undefined ? Math.max(0, limit - activities.length) : undefined,
+      logger
     });
+    rawEvents = hydrated.events;
+    failedTargets += hydrated.failedFetches;
 
     extractedCount += rawEvents.length;
 
@@ -436,10 +465,11 @@ export async function runFacebookSync({
     upserted = res?.upserted ?? activities.length;
   }
 
-  logger.log?.(`[Facebook Sync] Targets: ${targets.length}, Extracted: ${extractedCount}, Valid: ${activities.length}, Upserted: ${upserted} (dryRun=${dryRun})`);
+  logger.log?.(`[Facebook Sync] Targets: ${targets.length}, Failed: ${failedTargets}, Extracted: ${extractedCount}, Valid: ${activities.length}, Upserted: ${upserted} (dryRun=${dryRun})`);
 
   return {
     targets: targets.length,
+    failedTargets,
     extracted: extractedCount,
     filteredOnline,
     filteredOutOfArea,
