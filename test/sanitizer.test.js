@@ -8,7 +8,8 @@ import {
   resolveListingType,
   normalizeSport,
   normalizeSubcategories,
-  extractCanonicalEntities
+  extractCanonicalEntities,
+  mergeEntityDocuments
 } from '../src/sanitizer.js';
 
 test('Seam 1: normalizeSport maps various sport aliases to canonical MVP taxonomy', () => {
@@ -100,7 +101,7 @@ test('Seam 1: sanitizeActivity produces a valid canonical ActivityDocument with 
   assert.equal(entities.organizer.id, 'org_scarborough_beach_sports_club');
   assert.equal(entities.organizer.name, 'Scarborough Beach Sports Club');
   assert.equal(entities.organizer.website, 'https://scarboroughbeachsports.com.au');
-  assert.deepEqual(entities.organizer.contact, { email: null, phone: null });
+  assert.deepEqual(entities.organizer.contact, { email: null, phone: null, facebook: null });
 
   assert.equal(entities.region.id, 'perth');
   assert.equal(entities.region.name, 'Greater Perth');
@@ -286,7 +287,7 @@ test('Seam 1: sanitizeOrganizer produces canonical Organizer Listing with geohas
   assert.equal(organizer.subcategory, 'volleyball');
   assert.deepEqual(organizer.subcategories, ['volleyball', 'basketball']);
   assert.equal(organizer.website, 'https://perthcoastal.org.au');
-  assert.deepEqual(organizer.contact, { email: 'info@perthcoastal.org.au', phone: '08 9000 1111' });
+  assert.deepEqual(organizer.contact, { email: 'info@perthcoastal.org.au', phone: '08 9000 1111', facebook: null });
   assert.equal(organizer.cost_description, 'KidSport eligible');
   assert.deepEqual(organizer.demographics, { gender: 'women_only', age: 'juniors' });
   assert.equal(organizer.source_url, 'https://perthcoastal.org.au/join');
@@ -532,4 +533,81 @@ test('Seam 1: sanitizeActivity computes expire_at as Date (end_date or start_dat
   });
 
   assert.equal(weeklyRecurring.expire_at, null);
+});
+
+test('Seam 1 (Issue #19): sanitizeOrganizer, extractCanonicalEntities, and mergeEntityDocuments support and preserve contact.facebook', () => {
+  // 1. sanitizeOrganizer normalizes explicit contact.facebook
+  const orgExplicitFb = sanitizeOrganizer({
+    source: 'dlgsc',
+    source_id: 'fb-1',
+    name: 'Fremantle Runners',
+    subcategory: 'running',
+    coordinates: { lat: -32.0569, lng: 115.7439 },
+    website: 'https://fremantlerunners.org.au',
+    contact: {
+      email: 'run@fremantle.org.au',
+      phone: '0400 000 111',
+      facebook: 'http://m.facebook.com/FremantleRunners?fbclid=abc123'
+    }
+  });
+  assert.deepEqual(orgExplicitFb.contact, {
+    email: 'run@fremantle.org.au',
+    phone: '0400 000 111',
+    facebook: 'https://www.facebook.com/FremantleRunners'
+  });
+
+  // 2. sanitizeOrganizer auto-populates contact.facebook when website is a Facebook URL
+  const orgFbWebsite = sanitizeOrganizer({
+    source: 'dlgsc',
+    source_id: 'fb-2',
+    name: 'Perth Pickleball Social',
+    subcategory: 'pickleball',
+    coordinates: { lat: -31.9505, lng: 115.8605 },
+    website: 'https://fb.me/PerthPickleball?ref=page_internal'
+  });
+  assert.deepEqual(orgFbWebsite.contact, {
+    email: null,
+    phone: null,
+    facebook: 'https://www.facebook.com/PerthPickleball'
+  });
+
+  // 3. extractCanonicalEntities populates contact.facebook from Facebook website/source_url
+  const activity = sanitizeActivity({
+    source: 'facebook',
+    source_id: 'act-1',
+    title: 'Social Basketball Night',
+    sport: 'basketball',
+    organizer_name: 'Subiaco Hoops',
+    venue_name: 'Lords Recreation Centre',
+    coordinates: { lat: -31.9445, lng: 115.8280 },
+    start_time: '2026-11-25T18:00:00+08:00',
+    source_url: 'https://www.facebook.com/SubiacoHoops'
+  });
+  const entities = extractCanonicalEntities(activity, {
+    website: 'https://m.facebook.com/SubiacoHoops?__tn__=C'
+  });
+  assert.deepEqual(entities.organizer.contact, {
+    email: null,
+    phone: null,
+    facebook: 'https://www.facebook.com/SubiacoHoops'
+  });
+
+  // 4. mergeEntityDocuments preserves contact.facebook across merges
+  const mergedFromPrev = mergeEntityDocuments(
+    {
+      id: 'org_subiaco_hoops',
+      subcategories: ['basketball'],
+      contact: { email: null, phone: null, facebook: 'https://www.facebook.com/SubiacoHoops' }
+    },
+    {
+      id: 'org_subiaco_hoops',
+      subcategories: ['basketball'],
+      contact: { email: 'info@subiacohoops.org.au', phone: null, facebook: null }
+    }
+  );
+  assert.deepEqual(mergedFromPrev.contact, {
+    email: 'info@subiacohoops.org.au',
+    phone: null,
+    facebook: 'https://www.facebook.com/SubiacoHoops'
+  });
 });

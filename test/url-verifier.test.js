@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { recoverUrl, probeUrl, createUrlProber, createUrlVerifier } from '../src/url-verifier.js';
+import { recoverUrl, probeUrl, createUrlProber, createUrlVerifier, normalizeFacebookUrl } from '../src/url-verifier.js';
 
 test('Seam 1: recoverUrl normalizes schemes, upgrades http, trims malformed characters, and preserves paths', () => {
   // 1. Missing protocol prepends https://
@@ -414,6 +414,123 @@ test('Seam 3: verifyListings verifies Organizer and Venue Listings, deduplicates
   assert.equal(healedVenue.verified, true);
   assert.equal(healedVenue.source_url, 'https://healedvenue.org.au/');
   assert.equal(healedVenue.raw_source_url, 'http://healedvenue.org.au');
+});
+
+test('Seam 1 (Issue #19): normalizeFacebookUrl and recoverUrl canonicalize Facebook hosts, strip tracking params, and reject interstitials', () => {
+  // Hostname normalization & http -> https upgrade
+  assert.equal(normalizeFacebookUrl('http://m.facebook.com/perthsoccerclub'), 'https://www.facebook.com/perthsoccerclub');
+  assert.equal(normalizeFacebookUrl('https://mbasic.facebook.com/perthsoccerclub'), 'https://www.facebook.com/perthsoccerclub');
+  assert.equal(normalizeFacebookUrl('https://web.facebook.com/perthsoccerclub'), 'https://www.facebook.com/perthsoccerclub');
+  assert.equal(normalizeFacebookUrl('http://fb.me/perthsoccerclub'), 'https://www.facebook.com/perthsoccerclub');
+  assert.equal(normalizeFacebookUrl('fb.com/perthsoccerclub'), 'https://www.facebook.com/perthsoccerclub');
+  assert.equal(normalizeFacebookUrl('https://facebook.com/perthsoccerclub'), 'https://www.facebook.com/perthsoccerclub');
+
+  // Strips tracking params while preserving route identifiers
+  assert.equal(
+    normalizeFacebookUrl('https://m.facebook.com/events/123456789/?acontext=%7B%22ref%22%3A1%7D&fbclid=IwAR0xyz&ref=page_internal&aref=123&__cft__[0]=abc&__tn__=def'),
+    'https://www.facebook.com/events/123456789/'
+  );
+  assert.equal(
+    normalizeFacebookUrl('https://www.facebook.com/profile.php?id=100064512345678&fbclid=abc&__tn__=C'),
+    'https://www.facebook.com/profile.php?id=100064512345678'
+  );
+
+  // Rejects interstitial paths (/login, /checkpoint, /sharer) and non-Facebook URLs
+  assert.equal(normalizeFacebookUrl('https://www.facebook.com/login'), null);
+  assert.equal(normalizeFacebookUrl('https://m.facebook.com/login.php?next=https%3A%2F%2Fwww.facebook.com%2Fclub'), null);
+  assert.equal(normalizeFacebookUrl('https://www.facebook.com/checkpoint/12345'), null);
+  assert.equal(normalizeFacebookUrl('https://www.facebook.com/sharer/sharer.php?u=https://example.com'), null);
+  assert.equal(normalizeFacebookUrl('https://example.com/perthsoccerclub'), null);
+  assert.equal(normalizeFacebookUrl(''), null);
+
+  // recoverUrl delegates Facebook URLs to canonicalization
+  assert.equal(
+    recoverUrl('http://m.facebook.com/events/987654321?fbclid=xyz'),
+    'https://www.facebook.com/events/987654321'
+  );
+  assert.equal(recoverUrl('https://www.facebook.com/login'), null);
+});
+
+test('Seam 2 & 3 (Issue #19): URL verifier bypasses probing for valid Facebook URLs and probeUrl rejects /login and /checkpoint redirect overwrites', async () => {
+  const probedUrls = [];
+  const mockFetch = async (url, init) => {
+    probedUrls.push({ url, method: init.method });
+    if (url === 'https://example.com/organizer-login-redirect') {
+      return {
+        ok: true,
+        status: 200,
+        url: 'https://example.com/login?next=%2Forganizer',
+        body: null
+      };
+    }
+    if (url === 'https://example.com/organizer-checkpoint-redirect') {
+      if (init.method === 'HEAD') {
+        return { ok: false, status: 405, url, body: null };
+      }
+      return {
+        ok: true,
+        status: 200,
+        url: 'https://example.com/checkpoint/challenge',
+        body: { cancel() {} }
+      };
+    }
+    return { ok: true, status: 200, url, body: null };
+  };
+
+  // 1. probeUrl never overwrites candidate URL with /login or /checkpoint redirect destination
+  const loginRedirectRes = await probeUrl('https://example.com/organizer-login-redirect', { fetch: mockFetch });
+  assert.equal(loginRedirectRes.reachable, true);
+  assert.equal(loginRedirectRes.url, 'https://example.com/organizer-login-redirect');
+
+  const checkpointRedirectRes = await probeUrl('https://example.com/organizer-checkpoint-redirect', { fetch: mockFetch });
+  assert.equal(checkpointRedirectRes.reachable, true);
+  assert.equal(checkpointRedirectRes.url, 'https://example.com/organizer-checkpoint-redirect');
+
+  // 2. createUrlVerifier bypasses probing for valid Facebook URLs and degrades interstitials without network calls
+  probedUrls.length = 0;
+  const verifier = createUrlVerifier({ fetch: mockFetch, force: true });
+  const results = await verifier.verifyListings([
+    {
+      id: 'org_fb_organizer',
+      source_url: 'http://m.facebook.com/PerthVolleyballOrganizer?fbclid=IwAR123&ref=bookmarks'
+    },
+    {
+      id: 'act_fb_activity',
+      source_url: 'https://fb.me/events/555666777?acontext=%7B%7D'
+    },
+    {
+      id: 'org_fb_login',
+      source_url: 'https://www.facebook.com/login.php?next=123'
+    },
+    {
+      id: 'org_normal_site',
+      source_url: 'https://example.com/organizer-login-redirect'
+    }
+  ]);
+
+  // Zero network requests to Facebook domains
+  assert.equal(probedUrls.some(p => p.url.includes('facebook.com') || p.url.includes('fb.me')), false);
+  assert.equal(probedUrls.length, 1);
+  assert.equal(probedUrls[0].url, 'https://example.com/organizer-login-redirect');
+
+  const fbOrganizer = results.find(r => r.id === 'org_fb_organizer');
+  assert.equal(fbOrganizer.verified, true);
+  assert.equal(fbOrganizer.source_url, 'https://www.facebook.com/PerthVolleyballOrganizer');
+  assert.equal(fbOrganizer.raw_source_url, 'http://m.facebook.com/PerthVolleyballOrganizer?fbclid=IwAR123&ref=bookmarks');
+
+  const fbActivity = results.find(r => r.id === 'act_fb_activity');
+  assert.equal(fbActivity.verified, true);
+  assert.equal(fbActivity.source_url, 'https://www.facebook.com/events/555666777');
+  assert.equal(fbActivity.raw_source_url, 'https://fb.me/events/555666777?acontext=%7B%7D');
+
+  const fbLogin = results.find(r => r.id === 'org_fb_login');
+  assert.equal(fbLogin.verified, false);
+  assert.equal(fbLogin.source_url, null);
+  assert.equal(fbLogin.raw_source_url, 'https://www.facebook.com/login.php?next=123');
+
+  const normalSite = results.find(r => r.id === 'org_normal_site');
+  assert.equal(normalSite.verified, true);
+  assert.equal(normalSite.source_url, 'https://example.com/organizer-login-redirect');
 });
 
 

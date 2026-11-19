@@ -6,6 +6,16 @@
  */
 
 import { encodeGeohash } from './geohash.js';
+import { normalizeFacebookUrl } from './url-utils.js';
+
+function buildOrganizerContact(contactInput = {}, raw = {}, website = null) {
+  const rawFacebook = contactInput?.facebook || raw.facebook || raw.organizer?.facebook || null;
+  return {
+    email: contactInput?.email || raw.email || raw.organizer?.email || null,
+    phone: contactInput?.phone || raw.phone || raw.organizer?.phone || null,
+    facebook: normalizeFacebookUrl(rawFacebook) || normalizeFacebookUrl(website)
+  };
+}
 
 export class SanitizationError extends Error {
   constructor(message, details = {}) {
@@ -698,7 +708,8 @@ export function mergeEntityDocuments(prevDoc, nextDoc) {
   if (prevDoc.contact || nextDoc.contact) {
     merged.contact = {
       email: nextDoc.contact?.email || prevDoc.contact?.email || null,
-      phone: nextDoc.contact?.phone || prevDoc.contact?.phone || null
+      phone: nextDoc.contact?.phone || prevDoc.contact?.phone || null,
+      facebook: nextDoc.contact?.facebook || prevDoc.contact?.facebook || null
     };
   }
 
@@ -752,10 +763,11 @@ export function extractCanonicalEntities(activity, raw = {}) {
     activityVerified
   );
 
-  const organizerContact = raw.contact || raw.organizer?.contact || {
-    email: raw.email || raw.organizer?.email || null,
-    phone: raw.phone || raw.organizer?.phone || null
-  };
+  const organizerContact = buildOrganizerContact(
+    raw.contact || raw.organizer?.contact || {},
+    raw,
+    organizerWebsite
+  );
 
   const venue = {
     id: activity.venue?.id,
@@ -894,17 +906,14 @@ export function sanitizeOrganizer(raw = {}, options = {}) {
   const base = sanitizeEntityListingBase(raw, options, 'organizer');
   const website = typeof raw.website === 'string' && raw.website.trim() ? raw.website.trim() : null;
   const verification = resolveVerificationFields(raw, website || '');
+  const resolvedWebsite = verification.verified ? (website || verification.source_url) : website;
 
-  const contactInput = raw.contact || {};
-  const contact = {
-    email: contactInput.email || raw.email || null,
-    phone: contactInput.phone || raw.phone || null
-  };
+  const contact = buildOrganizerContact(raw.contact || {}, raw, resolvedWebsite);
 
   return {
     ...base,
     address: typeof raw.address === 'string' ? raw.address.trim() : '',
-    website: verification.verified ? (website || verification.source_url) : website,
+    website: resolvedWebsite,
     contact,
     cost_description: typeof raw.cost_description === 'string' ? raw.cost_description.trim() : '',
     demographics: extractDemographics(raw),

@@ -124,7 +124,7 @@ test('Seam 5: DLGSC Crawler parses public club search JSON, filters for Greater 
   assert.equal(sanitized.geohash.length, 9);
   assert.equal(sanitized.address, 'Rosalie Park, Onslow Road, Subiaco');
   assert.equal(sanitized.website, 'https://subiacosoccer.org.au');
-  assert.deepEqual(sanitized.contact, { email: 'info@subiacosoccer.org.au', phone: '08 9381 0000' });
+  assert.deepEqual(sanitized.contact, { email: 'info@subiacosoccer.org.au', phone: '08 9381 0000', facebook: null });
   assert.equal(sanitized.cost_description, 'KidSport eligible');
   assert.deepEqual(sanitized.demographics, { gender: 'all', age: 'juniors' });
   assert.equal(sanitized.source_url, 'https://subiacosoccer.org.au');
@@ -176,4 +176,70 @@ test('Seam 5: DLGSC Crawler throws descriptive error on HTTP failure', async () 
     () => crawler.fetchListings(),
     /DLGSC API responded with HTTP 403: Forbidden/
   );
+});
+
+test('Seam 5 (Issue #19): DLGSC Crawler extracts Facebook into contact.facebook and uses it as source_url fallback ahead of KidSport', async () => {
+  const mockPayload = {
+    clubs: {
+      totalcount: 3,
+      morerecords: false,
+      data: [
+        {
+          Id: 'org-with-both',
+          Name: 'Perth Tennis Organizer',
+          Sports: 'Tennis',
+          Latitude: '-31.9505',
+          Longitude: '115.8605',
+          Website: 'https://perthtennis.org.au',
+          Facebook: 'm.facebook.com/PerthTennisOrganizer?ref=bookmarks'
+        },
+        {
+          Id: 'org-fb-only',
+          Name: 'Perth Badminton Organizer',
+          Sports: 'Badminton',
+          Latitude: '-31.9510',
+          Longitude: '115.8610',
+          Website: '',
+          Facebook: 'http://fb.me/PerthBadminton?fbclid=IwAR123'
+        },
+        {
+          Id: 'org-neither',
+          Name: 'Perth Squash Organizer',
+          Sports: 'Squash',
+          Latitude: '-31.9520',
+          Longitude: '115.8620',
+          Website: '',
+          Facebook: 'https://www.facebook.com/login'
+        }
+      ]
+    }
+  };
+
+  const crawler = createDlgscCrawler({
+    fetchFn: async () => ({
+      ok: true,
+      async json() {
+        return mockPayload;
+      }
+    })
+  });
+
+  const listings = await crawler.fetchListings();
+  assert.equal(listings.length, 3);
+
+  const both = listings.find(l => l.source_id === 'org-with-both');
+  assert.equal(both.contact.facebook, 'https://www.facebook.com/PerthTennisOrganizer');
+  assert.equal(both.source_url, 'https://perthtennis.org.au');
+  assert.equal(both.raw_source_url, 'https://perthtennis.org.au');
+
+  const fbOnly = listings.find(l => l.source_id === 'org-fb-only');
+  assert.equal(fbOnly.website, null);
+  assert.equal(fbOnly.contact.facebook, 'https://www.facebook.com/PerthBadminton');
+  assert.equal(fbOnly.source_url, 'https://www.facebook.com/PerthBadminton');
+  assert.equal(fbOnly.raw_source_url, 'https://www.facebook.com/PerthBadminton');
+
+  const neither = listings.find(l => l.source_id === 'org-neither');
+  assert.equal(neither.contact.facebook, null);
+  assert.equal(neither.source_url, 'https://kidsport.dlgsc.wa.gov.au/find-a-club/?club=org-neither');
+  assert.equal(neither.raw_source_url, 'https://kidsport.dlgsc.wa.gov.au/find-a-club/?club=org-neither');
 });

@@ -5,6 +5,7 @@
  */
 
 import { slugify, normalizeSubcategories } from '../sanitizer.js';
+import { normalizeFacebookUrl } from '../url-utils.js';
 import { encodeGeohash } from '../geohash.js';
 import { calculateDistanceKm } from '../discovery-engine.js';
 
@@ -146,8 +147,9 @@ export function createDlgscCrawler(options = {}) {
           );
           const subcategory = subcategories[0] || 'other';
           const website = item.Website && item.Website.startsWith('http') ? item.Website : (item.Website ? `https://${item.Website}` : null);
+          const facebook = normalizeFacebookUrl(item.Facebook) || normalizeFacebookUrl(website);
           const fallbackUrl = `https://kidsport.dlgsc.wa.gov.au/find-a-club/?club=${clubId}`;
-          const referralUrl = website || fallbackUrl;
+          const referralUrl = website || facebook || fallbackUrl;
           const streetAddr = cleanText(item.StreetAddress);
           const suburbName = cleanText(item.Suburb);
           const address = [streetAddr, suburbName].filter(Boolean).join(', ') || cleanText(item.PostalAddress) || 'Greater Perth, WA';
@@ -175,7 +177,8 @@ export function createDlgscCrawler(options = {}) {
             website,
             contact: {
               email: item.Email || null,
-              phone: item.Phone || item.Mobile || null
+              phone: item.Phone || item.Mobile || null,
+              facebook
             },
             cost_description: costDescription,
             demographics: {

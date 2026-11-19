@@ -6,6 +6,14 @@
  */
 
 import { resolveCollectionForListingId } from './firestore-adapter.js';
+import {
+  parseNormalizedUrl,
+  isFacebookUrl,
+  isLoginOrCheckpointPath,
+  normalizeFacebookUrl
+} from './url-utils.js';
+
+export { normalizeFacebookUrl, isFacebookUrl };
 
 export const DEFAULT_PROBE_TIMEOUT_MS = 6000;
 export const DEFAULT_CONCURRENCY = 8;
@@ -21,41 +29,23 @@ export const DEFAULT_CONCURRENCY = 8;
  * @returns {string | null}
  */
 export function recoverUrl(rawUrl) {
-  if (typeof rawUrl !== 'string') {
+  const parsed = parseNormalizedUrl(rawUrl);
+  if (!parsed) {
     return null;
   }
 
-  let cleaned = rawUrl.trim();
-  if (!cleaned) {
-    return null;
+  if (isFacebookUrl(parsed)) {
+    return normalizeFacebookUrl(parsed);
   }
 
-  // Strip leading/trailing quotes, angle brackets, parentheses, brackets
-  cleaned = cleaned.replace(/^["'<(\[]+|[>"')\]]+$/g, '').trim();
-  if (!cleaned) {
-    return null;
-  }
+  return parsed.href;
+}
 
-  // Upgrade http:// to https://
-  if (/^http:\/\//i.test(cleaned)) {
-    cleaned = cleaned.replace(/^http:\/\//i, 'https://');
-  } else if (/^\/\//.test(cleaned)) {
-    cleaned = `https:${cleaned}`;
-  } else if (!/^https:\/\//i.test(cleaned)) {
-    // If no valid protocol prefix, prepend https://
-    cleaned = `https://${cleaned}`;
+function resolveFinalProbeUrl(redirectedUrl, candidateUrl) {
+  if (!redirectedUrl || isLoginOrCheckpointPath(redirectedUrl)) {
+    return candidateUrl;
   }
-
-  try {
-    const parsed = new URL(cleaned);
-    if (!parsed.hostname || !parsed.hostname.includes('.')) {
-      return null;
-    }
-    // Return reconstructed normalized URL string
-    return parsed.href;
-  } catch {
-    return null;
-  }
+  return redirectedUrl;
 }
 
 /**
@@ -85,7 +75,7 @@ export async function probeUrl(url, options = {}) {
     if (headRes.ok) {
       return {
         reachable: true,
-        url: headRes.url || url,
+        url: resolveFinalProbeUrl(headRes.url, url),
         status: headRes.status
       };
     }
@@ -140,7 +130,7 @@ async function executeGetFallback(url, fetchFn, timeoutMs) {
     if (getRes.ok) {
       return {
         reachable: true,
-        url: getRes.url || url,
+        url: resolveFinalProbeUrl(getRes.url, url),
         status: getRes.status
       };
     }
@@ -329,8 +319,15 @@ export function createUrlVerifier(options = {}) {
         if (!force && existing && existing.verified === true) {
           const existingUrl = existing.source_url || existing.raw_source_url || existing.external_url || existing.url || existing.website;
           if (existingUrl === candidateUrl || existing.source_url === candidateUrl) {
-            item.verified = true;
-            item.source_url = existing.source_url || candidateUrl;
+            const matchedUrl = existing.source_url || candidateUrl;
+            if (isFacebookUrl(matchedUrl)) {
+              const canonicalFb = normalizeFacebookUrl(matchedUrl);
+              item.verified = Boolean(canonicalFb);
+              item.source_url = canonicalFb;
+            } else {
+              item.verified = true;
+              item.source_url = matchedUrl;
+            }
             continue;
           }
         }
@@ -356,6 +353,16 @@ export function createUrlVerifier(options = {}) {
           item.verified = false;
           item.source_url = null;
           runCache.set(candidateUrl, { reachable: false, url: null });
+          continue;
+        }
+
+        // Bypass HTTP probing for valid Facebook URLs (ADR 0007)
+        if (isFacebookUrl(recovered)) {
+          const fbResult = { reachable: true, url: recovered };
+          item.verified = true;
+          item.source_url = recovered;
+          runCache.set(candidateUrl, fbResult);
+          runCache.set(recovered, fbResult);
           continue;
         }
 

@@ -956,7 +956,7 @@ test('Seam 4: runCrawlerHarness preserves raw venue address, organizer contact, 
   const org1 = writtenDocs.get('organizers/org_city_of_stirling');
   assert.ok(org1);
   assert.equal(org1.website, 'https://www.stirling.wa.gov.au');
-  assert.deepEqual(org1.contact, { email: 'recreation@stirling.wa.gov.au', phone: '08 9205 8555' });
+  assert.deepEqual(org1.contact, { email: 'recreation@stirling.wa.gov.au', phone: '08 9205 8555', facebook: null });
   assert.equal(org1.verified, true);
 
   assert.ok(writtenDocs.has('regions/perth'));
