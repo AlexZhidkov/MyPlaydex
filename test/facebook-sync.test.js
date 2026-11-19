@@ -509,7 +509,10 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
       logger: { log: () => {} }
     });
 
-    assert.deepEqual(fetchedUrls, ['https://www.facebook.com/alphaclub/events']);
+    assert.deepEqual(fetchedUrls, [
+      'https://www.facebook.com/alphaclub/events',
+      'https://www.facebook.com/events/333444555/'
+    ]);
     assert.equal(res.targets, 1);
     assert.equal(res.upserted, 1);
     assert.equal(res.activities[0].organizer.id, 'org_alpha');
@@ -573,7 +576,9 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
     });
     assert.deepEqual(fetchedUrls, [
       'https://www.facebook.com/alphaclub/events',
-      'https://www.facebook.com/betaclub/events'
+      'https://www.facebook.com/events/444555666/',
+      'https://www.facebook.com/betaclub/events',
+      'https://www.facebook.com/events/444555666/'
     ]);
 
     // With --organizer=org_beta: seeds only org_beta
@@ -585,7 +590,10 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
       options: { organizer: 'org_beta' },
       logger: { log: () => {} }
     });
-    assert.deepEqual(fetchedUrls, ['https://www.facebook.com/betaclub/events']);
+    assert.deepEqual(fetchedUrls, [
+      'https://www.facebook.com/betaclub/events',
+      'https://www.facebook.com/events/444555666/'
+    ]);
     assert.equal(filteredRes.targets, 1);
     assert.equal(filteredRes.activities[0].organizer.id, 'org_beta');
   });
@@ -1347,5 +1355,139 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
     });
     assert.deepEqual(fetchCalls, ['https://www.facebook.com/pageok/events']);
     assert.equal(refreshRes.valid, 1);
+  });
+
+  it('Seam 2 (Issue #23): extractFacebookEvents merges keyless data.event detail fragments with typed Event header fragments', () => {
+    const now = new Date('2026-11-19T14:00:00+08:00');
+    const detailHtml = `
+      <html><body>
+        <script type="application/json">{"require":[["ScheduledServerJS","handle",null,[{"__bbox":{"result":{"data":{"node":{"__typename":"Event","id":"2468013579","name":"Twilight Pickleball Session","day_time_sentence":"Sun, Jun 20, 2027 at 5\\u202fPM","is_canceled":false,"event_place":{"__typename":"Page","name":"Kings Park Courts"}}}}}}]]]}</script>
+        <script type="application/json">{"require":[["ScheduledServerJS","handle",null,[{"__bbox":{"result":{"data":{"event":{"id":"2468013579","url":"https://www.facebook.com/events/2468013579/","event_description":{"text":"All skill levels welcome. Paddles provided."},"event_place":{"name":"Kings Park Courts","location":{"latitude":-31.9612,"longitude":115.8394},"city":{"contextual_name":"Perth, WA"}},"event_hosts_meet_your_host":[{"name":"Perth Pickleball Club"}]}}}}}]]]}</script>
+      </body></html>
+    `;
+
+    const events = extractFacebookEvents(detailHtml, {
+      sourceUrl: 'https://www.facebook.com/events/2468013579/',
+      now
+    });
+
+    assert.equal(events.length, 1);
+    assert.equal(events[0].eventId, '2468013579');
+    assert.equal(events[0].title, 'Twilight Pickleball Session');
+    assert.equal(events[0].description, 'All skill levels welcome. Paddles provided.');
+    assert.equal(events[0].source_url, 'https://www.facebook.com/events/2468013579/');
+    assert.equal(events[0].start_date, '2027-06-20');
+    assert.equal(events[0].start_time, '17:00');
+    assert.equal(events[0].venue_name, 'Kings Park Courts');
+    assert.deepEqual(events[0].coordinates, { lat: -31.9612, lng: 115.8394 });
+    assert.equal(events[0].organizer_name, 'Perth Pickleball Club');
+  });
+
+  it('Seam 2 (Issue #23): extractFacebookEvents scopes detail page extraction to target event ID and its child_events, ignoring event_suggested_events and friends_cut', () => {
+    const now = new Date('2026-11-19T14:00:00+08:00');
+    const detailHtmlWithSidebar = `
+      <html><body>
+        <script type="application/json">{"require":[["ScheduledServerJS","handle",null,[{"__bbox":{"result":{"data":{"event":{"id":"2468013579","name":"Primary Club Training","day_time_sentence":"Sun, Jun 20, 2027 at 5\\u202fPM","is_canceled":false,"url":"https://www.facebook.com/events/2468013579/","child_events":{"nodes":[{"id":"24680135791","start_timestamp":1813482000,"end_timestamp":1813489200},{"id":"24680135792","start_timestamp":1814086800,"end_timestamp":1814094000}]},"event_suggested_events":{"nodes":[{"__typename":"Event","id":"999111222","name":"Unrelated Suggested Concert","day_time_sentence":"Sun, Jun 20, 2027 at 8\\u202fPM","is_canceled":false}]},"friends_cut":{"nodes":[{"__typename":"Event","id":"888111222","name":"Unrelated Friends Event","day_time_sentence":"Sun, Jun 20, 2027 at 9\\u202fPM","is_canceled":false}]}}}}}}]]]}</script>
+        <script type="application/json">{"require":[["ScheduledServerJS","handle",null,[{"__bbox":{"result":{"data":{"node":{"__typename":"Event","id":"777111222","name":"Another Sidebar Event","day_time_sentence":"Sun, Jun 20, 2027 at 7\\u202fPM","is_canceled":false}}}}}]]]}</script>
+      </body></html>
+    `;
+
+    const events = extractFacebookEvents(detailHtmlWithSidebar, {
+      sourceUrl: 'https://www.facebook.com/events/2468013579/',
+      now
+    });
+
+    assert.equal(events.length, 2);
+    assert.ok(events.every(e => e.eventId === '2468013579'));
+    assert.deepEqual(events.map(e => e.source_id), ['2468013579_20270620', '2468013579_20270627']);
+  });
+
+  it('Seam 4 (Issue #23): runFacebookSync always hydrates /events/<id> detail pages even when summary cards have start dates and excludes sidebar events', async () => {
+    const now = new Date('2026-11-19T14:00:00+08:00');
+    const eventsTabHtml = `
+      <html><body>
+        <script type="application/json">{"require":[["ScheduledServerJS","handle",null,[{"__bbox":{"result":{"data":{"node":{"__typename":"Event","id":"555666777","name":"Sunday Social Tennis","day_time_sentence":"Sun, Jun 20, 2027 at 5\\u202fPM","is_canceled":false}}}}}]]]}</script>
+      </body></html>
+    `;
+    const detailHtml = `
+      <html><body>
+        <script type="application/json">{"require":[["ScheduledServerJS","handle",null,[{"__bbox":{"result":{"data":{"node":{"__typename":"Event","id":"555666777","name":"Sunday Social Tennis","day_time_sentence":"Sun, Jun 20, 2027 at 5\\u202fPM","is_canceled":false}}}}}]]]}</script>
+        <script type="application/json">${JSON.stringify({
+          require: [['ScheduledServerJS', 'handle', null, [{
+            __bbox: {
+              result: {
+                data: {
+                  event: {
+                    id: '555666777',
+                    url: 'https://www.facebook.com/events/555666777/',
+                    event_description: { text: 'Full hydrated description from detail page.' },
+                    event_place: { name: 'UWA Tennis Club', location: { latitude: -31.9812, longitude: 115.8194 } },
+                    event_hosts_meet_your_host: [{ name: 'UWA Tennis Club' }],
+                    event_suggested_events: {
+                      nodes: [{
+                        __typename: 'Event',
+                        id: '999888777',
+                        name: 'Sidebar Suggested Gig',
+                        day_time_sentence: 'Sun, Jun 20, 2027 at 8\u202fPM',
+                        is_canceled: false,
+                        event_place: { name: 'Perth Concert Hall', location: { latitude: -31.9565, longitude: 115.8626 } }
+                      }]
+                    }
+                  }
+                }
+              }
+            }
+          }]]]
+        })}</script>
+      </body></html>
+    `;
+
+    const cacheMap = new Map();
+    const cacheStore = {
+      read: async (k) => cacheMap.get(k) || null,
+      write: async (k, v) => { cacheMap.set(k, v); }
+    };
+    const fetchCalls = [];
+    const mockFetch = async (url) => {
+      fetchCalls.push(url);
+      if (url === 'https://www.facebook.com/uwatennis/events') {
+        return { ok: true, status: 200, text: async () => eventsTabHtml };
+      }
+      if (url === 'https://www.facebook.com/events/555666777/') {
+        return { ok: true, status: 200, text: async () => detailHtml };
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    };
+
+    const res = await runFacebookSync({
+      adapter: {
+        async scanVenues() { return []; },
+        async scanOrganizers() {
+          return [{
+            id: 'org_uwa_tennis',
+            name: 'UWA Tennis Club',
+            subcategory: 'tennis',
+            coordinates: { lat: -31.9812, lng: 115.8194 },
+            contact: { facebook: 'https://www.facebook.com/uwatennis' }
+          }];
+        }
+      },
+      fetchFn: mockFetch,
+      cacheStore,
+      options: { dryRun: true, now },
+      logger: { log: () => {}, warn: () => {} }
+    });
+
+    assert.deepEqual(fetchCalls, [
+      'https://www.facebook.com/uwatennis/events',
+      'https://www.facebook.com/events/555666777/'
+    ]);
+    assert.ok(cacheMap.has('https://www.facebook.com/events/555666777/'));
+    assert.equal(res.valid, 1);
+    assert.equal(res.activities.length, 1);
+    assert.equal(res.activities[0].id, 'facebook_555666777');
+    assert.equal(res.activities[0].description, 'Full hydrated description from detail page.');
+    assert.equal(res.activities[0].source_url, 'https://www.facebook.com/events/555666777/');
+    assert.deepEqual(res.activities[0].venue.coordinates, { lat: -31.9812, lng: 115.8194 });
   });
 });

@@ -15,6 +15,7 @@ import {
 } from './entity-matcher.js';
 import { DEFAULT_LOG_DIR, resolveCliLogger } from './crawler-reporter.js';
 import {
+  extractFacebookEventIdFromUrl,
   extractFacebookEventLinks,
   extractFacebookEvents,
   isCometNonEntityRoute
@@ -256,17 +257,21 @@ async function hydrateDiscoveredEventLinks(target, rawEvents, { fetchFn, cacheSt
   if (target.format === 'ics' || typeof target.body !== 'string') {
     return { events: rawEvents, failedFetches: 0 };
   }
+  if (extractFacebookEventIdFromUrl(target.sourceUrl)) {
+    return { events: rawEvents, failedFetches: 0 };
+  }
 
-  const completeIds = new Set(rawEvents.filter(ev => ev.start_date).map(ev => ev.eventId));
-  const discoveredLinks = extractFacebookEventLinks(target.body).filter(l => !completeIds.has(l.eventId));
+  const discoveredLinks = extractFacebookEventLinks(target.body);
   if (discoveredLinks.length === 0) {
     return { events: rawEvents, failedFetches: 0 };
   }
 
+  const discoveredIdSet = new Set(discoveredLinks.map(l => l.eventId));
+  const nonHydratableRawCount = rawEvents.filter(ev => !discoveredIdSet.has(ev.eventId)).length;
   const hydratedEvents = [];
   let failedFetches = 0;
   for (const link of discoveredLinks) {
-    if (remainingLimit !== undefined && (rawEvents.length + hydratedEvents.length) >= remainingLimit) {
+    if (remainingLimit !== undefined && (nonHydratableRawCount + hydratedEvents.length) >= remainingLimit) {
       break;
     }
     try {
@@ -278,7 +283,11 @@ async function hydrateDiscoveredEventLinks(target, rawEvents, { fetchFn, cacheSt
         facebookCookie,
         logger
       });
-      hydratedEvents.push(...extractFacebookEvents(detail.body, { sourceUrl: detail.sourceUrl, now }));
+      hydratedEvents.push(...extractFacebookEvents(detail.body, {
+        sourceUrl: detail.sourceUrl,
+        targetEventId: link.eventId,
+        now
+      }));
     } catch (err) {
       failedFetches += 1;
       logger?.warn?.(`[Facebook Sync] Skipping discovered event ${link.url}: ${err.message}`);
@@ -288,7 +297,7 @@ async function hydrateDiscoveredEventLinks(target, rawEvents, { fetchFn, cacheSt
   const hydratedIds = new Set(hydratedEvents.map(ev => ev.eventId));
   return {
     events: [
-      ...rawEvents.filter(ev => ev.start_date || !hydratedIds.has(ev.eventId)),
+      ...rawEvents.filter(ev => !hydratedIds.has(ev.eventId)),
       ...hydratedEvents
     ],
     failedFetches

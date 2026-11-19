@@ -216,7 +216,7 @@ function formatDateInAwst(dateInput) {
   };
 }
 
-function extractFacebookEventIdFromUrl(url) {
+export function extractFacebookEventIdFromUrl(url) {
   if (!url || typeof url !== 'string') return null;
   const match = url.match(/\/events\/(?:[^/]+\/)?(\d+)/i);
   return match ? match[1] : null;
@@ -374,8 +374,11 @@ function mergeRelayFragment(target, source) {
     ) {
       const nextNested = { ...cur };
       for (const [subKey, subVal] of Object.entries(val)) {
+        const curSub = nextNested[subKey];
+        const isEmptyCurObj =
+          curSub && typeof curSub === 'object' && !Array.isArray(curSub) && Object.keys(curSub).length === 0;
         if (
-          (nextNested[subKey] === undefined || nextNested[subKey] === null || nextNested[subKey] === '') &&
+          (curSub === undefined || curSub === null || curSub === '' || isEmptyCurObj) &&
           subVal !== undefined &&
           subVal !== null &&
           subVal !== ''
@@ -388,18 +391,33 @@ function mergeRelayFragment(target, source) {
   }
 }
 
-function collectRelayEventFragments(node, mergedById = new Map()) {
+function hasRelayDetailFields(node) {
+  if (!node || typeof node !== 'object') return false;
+  return (
+    node.event_description !== undefined ||
+    node.event_place !== undefined ||
+    node.event_hosts_meet_your_host !== undefined ||
+    node.event_hosts !== undefined
+  );
+}
+
+function collectRelayEventFragments(node, mergedById = new Map(), parentKey = null) {
   if (!node || typeof node !== 'object') return mergedById;
   if (Array.isArray(node)) {
-    for (const item of node) collectRelayEventFragments(item, mergedById);
+    for (const item of node) collectRelayEventFragments(item, mergedById, parentKey);
     return mergedById;
   }
 
-  const isTypedEvent = node.__typename === 'Event' && Boolean(node.id || node.event_id);
-  const isLegacyEvent = Boolean(node.id || node.event_id) && Boolean(node.name || node.title) && hasRelaySchedule(node);
+  const eventId = node.id || node.event_id;
+  const isTypedEvent = node.__typename === 'Event' && Boolean(eventId);
+  const isTypelessDataEvent = parentKey === 'event' && Boolean(eventId);
+  const isLegacyOrDetailEvent = Boolean(eventId) && (
+    (Boolean(node.name || node.title) && hasRelaySchedule(node)) ||
+    hasRelayDetailFields(node)
+  );
 
-  if (isTypedEvent || isLegacyEvent) {
-    const key = String(node.id || node.event_id);
+  if (isTypedEvent || isTypelessDataEvent || isLegacyOrDetailEvent) {
+    const key = String(eventId);
     if (!mergedById.has(key)) {
       mergedById.set(key, { ...node });
     } else {
@@ -408,12 +426,33 @@ function collectRelayEventFragments(node, mergedById = new Map()) {
   }
 
   for (const [key, val] of Object.entries(node)) {
-    if (key === 'child_events') continue;
+    if (key === 'child_events' || key === 'event_suggested_events' || key === 'friends_cut') continue;
     if (val && typeof val === 'object') {
-      collectRelayEventFragments(val, mergedById);
+      collectRelayEventFragments(val, mergedById, key);
     }
   }
   return mergedById;
+}
+
+function extractFirstHostName(hostsSource) {
+  if (!hostsSource) return '';
+  if (Array.isArray(hostsSource)) {
+    for (const item of hostsSource) {
+      const name = item?.name || item?.node?.name;
+      if (name) return name;
+    }
+    return '';
+  }
+  if (typeof hostsSource === 'object') {
+    if (hostsSource.name) return hostsSource.name;
+    return (
+      extractFirstHostName(hostsSource.nodes) ||
+      extractFirstHostName(hostsSource.edges) ||
+      extractFirstHostName(hostsSource.hosts) ||
+      ''
+    );
+  }
+  return '';
 }
 
 function buildRelayEventRecord(node, parentNode, context = {}, isRecurringOccurrence = false) {
@@ -439,10 +478,14 @@ function buildRelayEventRecord(node, parentNode, context = {}, isRecurringOccurr
   const locationObj = place.location || place.geo || {};
   const coords = parseCoordinates(locationObj);
 
-  const hosts = node.event_hosts || parentNode?.event_hosts || [];
-  const firstHost = Array.isArray(hosts) && hosts.length > 0 ? hosts[0] : null;
+  const hostCandidates = [
+    node.event_hosts_meet_your_host,
+    parentNode?.event_hosts_meet_your_host,
+    node.event_hosts,
+    parentNode?.event_hosts
+  ];
   const organizerName =
-    firstHost?.name ||
+    hostCandidates.map(extractFirstHostName).find(Boolean) ||
     node.organizer?.name ||
     parentNode?.organizer?.name ||
     node.event_creator?.name ||
@@ -533,8 +576,12 @@ function extractFromRelayJson(text, context = {}) {
     collectRelayEventFragments(root, mergedById);
   }
 
+  const targetEventId = context.targetEventId || extractFacebookEventIdFromUrl(context.sourceUrl);
   const results = [];
-  for (const eventNode of mergedById.values()) {
+  for (const [mergedId, eventNode] of mergedById.entries()) {
+    if (targetEventId && mergedId !== String(targetEventId)) {
+      continue;
+    }
     if (!Boolean(eventNode.name || eventNode.title) || !hasRelaySchedule(eventNode) || eventNode.is_canceled === true) {
       continue;
     }
