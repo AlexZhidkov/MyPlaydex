@@ -50,6 +50,205 @@ function cleanText(str) {
   }
 }
 
+const STRING_PROP_START_REGEX = /^\s*"[A-Za-z0-9_]+"?\s*:\s*"/;
+const COMPLETE_STRING_PROP_REGEX = /^\s*"[A-Za-z0-9_]+"?\s*:\s*"[\s\S]*"\s*,?\s*$/;
+const VALID_NEXT_JSON_TOKEN_REGEX = /^\s*(?:[{}\[\]]|"[A-Za-z0-9_]+"?\s*:)/;
+const STRING_PROP_LINE_REGEX = /^(\s*"[A-Za-z0-9_]+"?\s*:\s*)"([\s\S]*)"(\s*,?\s*)$/;
+
+/**
+ * Escapes unescaped double quotes, bare/trailing backslashes, and raw control
+ * characters inside a JSON string property value while preserving valid escapes.
+ *
+ * @param {string} inner
+ * @returns {string}
+ */
+function escapeInnerJsonString(inner) {
+  let out = '';
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i];
+    if (ch === '\\') {
+      const next = inner[i + 1];
+      if (next === undefined) {
+        out += '\\\\';
+      } else if (
+        next === '"' ||
+        next === '\\' ||
+        next === '/' ||
+        next === 'b' ||
+        next === 'f' ||
+        next === 'n' ||
+        next === 'r' ||
+        next === 't'
+      ) {
+        out += ch + next;
+        i++;
+      } else if (next === 'u' && /^[0-9a-fA-F]{4}$/.test(inner.slice(i + 2, i + 6))) {
+        out += inner.slice(i, i + 6);
+        i += 5;
+      } else {
+        out += '\\\\';
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      out += '\\"';
+      continue;
+    }
+
+    const code = ch.charCodeAt(0);
+    if (code < 0x20) {
+      if (code === 0x0a) out += '\\n';
+      else if (code === 0x0d) out += '\\r';
+      else if (code === 0x09) out += '\\t';
+      else if (code === 0x08) out += '\\b';
+      else if (code === 0x0c) out += '\\f';
+      else out += `\\u${code.toString(16).padStart(4, '0')}`;
+      continue;
+    }
+
+    out += ch;
+  }
+  return out;
+}
+
+/**
+ * Repairs malformed DLGSC JSON containing raw multiline string properties,
+ * unescaped double quotes, and bare or trailing backslashes.
+ *
+ * @param {string} rawText
+ * @returns {string}
+ */
+export function repairMalformedDlgscJson(rawText = '') {
+  if (!rawText || typeof rawText !== 'string') {
+    return rawText;
+  }
+
+  const rawLines = rawText.split(/\r?\n/);
+  const mergedLines = [];
+
+  for (const line of rawLines) {
+    if (mergedLines.length > 0) {
+      const prev = mergedLines[mergedLines.length - 1];
+      if (STRING_PROP_START_REGEX.test(prev)) {
+        const prevComplete = COMPLETE_STRING_PROP_REGEX.test(prev);
+        const nextStartsValidToken = VALID_NEXT_JSON_TOKEN_REGEX.test(line);
+        if (!prevComplete || (line.trim() !== '' && !nextStartsValidToken)) {
+          mergedLines[mergedLines.length - 1] = `${prev}\n${line}`;
+          continue;
+        }
+      }
+    }
+    mergedLines.push(line);
+  }
+
+  return mergedLines
+    .map(line => {
+      const match = line.match(STRING_PROP_LINE_REGEX);
+      if (!match) {
+        return line;
+      }
+      const [, prefix, inner, suffix] = match;
+      return `${prefix}"${escapeInnerJsonString(inner)}"${suffix}`;
+    })
+    .join('\n');
+}
+
+function extractIndividualClubObjects(text) {
+  const dataMatch = text.match(/"data"\s*:\s*\[/i);
+  if (!dataMatch) {
+    return null;
+  }
+
+  const clubs = [];
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  let objStart = -1;
+
+  for (let i = dataMatch.index + dataMatch[0].length; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escape) {
+        escape = false;
+      } else if (ch === '\\') {
+        escape = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (ch === '{') {
+      if (depth === 0) {
+        objStart = i;
+      }
+      depth++;
+    } else if (ch === '}') {
+      if (depth > 0) {
+        depth--;
+        if (depth === 0 && objStart !== -1) {
+          const candidate = text.slice(objStart, i + 1);
+          try {
+            const parsed = JSON.parse(candidate);
+            if (parsed && typeof parsed === 'object') {
+              clubs.push(parsed);
+            }
+          } catch {
+            try {
+              const parsed = JSON.parse(repairMalformedDlgscJson(candidate));
+              if (parsed && typeof parsed === 'object') {
+                clubs.push(parsed);
+              }
+            } catch {
+              // Skip single irreconcilable club record
+            }
+          }
+          objStart = -1;
+        }
+      }
+    } else if (ch === ']' && depth === 0) {
+      break;
+    }
+  }
+
+  return clubs;
+}
+
+/**
+ * Parses a raw DLGSC response payload with repair and per-club fallback tiers.
+ *
+ * @param {string} rawText
+ * @returns {object}
+ */
+export function parseDlgscPayload(rawText) {
+  try {
+    return JSON.parse(rawText);
+  } catch (initialError) {
+    const repaired = repairMalformedDlgscJson(rawText);
+    try {
+      return JSON.parse(repaired);
+    } catch {
+      const clubs = extractIndividualClubObjects(repaired) || extractIndividualClubObjects(rawText);
+      if (clubs && clubs.length > 0) {
+        const moreMatch = rawText.match(/"morerecords"\s*:\s*(true|false)/i);
+        return {
+          clubs: {
+            ...(moreMatch ? { morerecords: moreMatch[1].toLowerCase() === 'true' } : {}),
+            data: clubs
+          }
+        };
+      }
+      throw initialError;
+    }
+  }
+}
+
 /**
  * Creates a WA DLGSC Sports Club Directory crawler instance.
  *
@@ -112,7 +311,9 @@ export function createDlgscCrawler(options = {}) {
           throw new Error(`DLGSC API responded with HTTP ${response.status}: ${response.statusText}`);
         }
 
-        const json = await response.json();
+        const json = typeof response.text === 'function'
+          ? parseDlgscPayload(await response.text())
+          : await response.json();
         const rawClubs = json.clubs?.data || json.data || [];
         let newRawClubsOnPage = 0;
 

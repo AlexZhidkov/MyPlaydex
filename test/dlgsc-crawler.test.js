@@ -343,3 +343,109 @@ test('Seam 5: DLGSC Crawler paginates past 3 pages by default until morerecords 
   );
   assert.equal(listings[3].contact.facebook, 'https://www.facebook.com/PerthClubPage4');
 });
+
+test('Seam 5: DLGSC Crawler repairs malformed JSON with unescaped quotes, backslashes, and raw newlines', async () => {
+  const malformedRawPayload = `{
+  "clubs": {
+    "totalcount": 2,
+    "morerecords": false,
+    "data": [
+      {
+        "Id": "dlgsc-malformed-1",
+        "Name": "Perth \\"A\\" & "B" Volleyball Club",
+        "Sports": "Volleyball",
+        "Latitude": "-31.9505",
+        "Longitude": "115.8605",
+        "StreetAddress": "Lot 12 "The Arena" Road",
+        "Suburb": "Perth",
+        "Website": "https://www.facebook.com/perthvolley\\",
+        "PostalAddress": "PO Box 10\\nPerth\\South"
+      },
+      {
+        "Id": "dlgsc-malformed-2",
+        "Name": "Subiaco Social Netball",
+        "Sports": "Netball",
+        "Latitude": "-31.9445",
+        "Longitude": "115.8280",
+        "StreetAddress": "Rosalie Park,
+Onslow Road",
+        "Suburb": "Subiaco",
+        "PostalAddress": "Level 1
+PO Box 456, Subiaco WA 6008"
+      }
+    ]
+  }
+}`;
+
+  const crawler = createDlgscCrawler({
+    fetchFn: async () => ({
+      ok: true,
+      async text() {
+        return malformedRawPayload;
+      }
+    })
+  });
+
+  const listings = await crawler.fetchListings();
+  assert.equal(listings.length, 2);
+
+  const first = listings[0];
+  assert.equal(first.source_id, 'dlgsc-malformed-1');
+  assert.equal(first.name, 'Perth "A" & "B" Volleyball Club');
+  assert.equal(first.address, 'Lot 12 "The Arena" Road, Perth');
+  assert.equal(first.contact.facebook, 'https://www.facebook.com/perthvolley/');
+
+  const second = listings[1];
+  assert.equal(second.source_id, 'dlgsc-malformed-2');
+  assert.equal(second.name, 'Subiaco Social Netball');
+  assert.equal(second.address, 'Rosalie Park,\nOnslow Road, Subiaco');
+});
+
+test('Seam 5: DLGSC Crawler falls back to per-club recovery when a single record is irreconcilable', async () => {
+  const mixedPayload = `{
+  "clubs": {
+    "morerecords": false,
+    "data": [
+      {
+        "Id": "dlgsc-healthy-1",
+        "Name": "Healthy Club One",
+        "Sports": "Soccer",
+        "Latitude": "-31.9505",
+        "Longitude": "115.8605",
+        "Facebook": "https://www.facebook.com/HealthyClubOne"
+      },
+      {
+        "Id": "dlgsc-broken-2",
+        "Name": unquoted_corrupt_value,
+        "Latitude": "-31.9510",
+        "Longitude": "115.8610"
+      },
+      {
+        "Id": "dlgsc-healthy-3",
+        "Name": "Healthy "Club" Three",
+        "Sports": "Tennis",
+        "Latitude": "-31.9520",
+        "Longitude": "115.8620"
+      }
+    ]
+  }
+}`;
+
+  const crawler = createDlgscCrawler({
+    fetchFn: async () => ({
+      ok: true,
+      async text() {
+        return mixedPayload;
+      }
+    })
+  });
+
+  const listings = await crawler.fetchListings();
+  assert.equal(listings.length, 2);
+  assert.deepEqual(
+    listings.map(l => l.source_id),
+    ['dlgsc-healthy-1', 'dlgsc-healthy-3']
+  );
+  assert.equal(listings[0].contact.facebook, 'https://www.facebook.com/HealthyClubOne');
+  assert.equal(listings[1].name, 'Healthy "Club" Three');
+});
