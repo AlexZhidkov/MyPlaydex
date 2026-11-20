@@ -39,6 +39,29 @@ export { extractFacebookEvents };
 export const PERTH_CENTROID = { lat: -31.9505, lng: 115.8605 };
 export const MAX_PERTH_RADIUS_KM = 85;
 export const DEFAULT_FACEBOOK_CACHE_PATH = path.resolve(process.cwd(), '.scratch/facebook-sync-cache.json');
+
+/**
+ * Checks whether a Facebook URL is recorded in the local Facebook sync cache
+ * as a Comet error or home non-entity route.
+ *
+ * @param {string} rawUrl
+ * @param {{ read: (key: string) => Promise<object|null> } | null | undefined} cacheStore
+ * @returns {Promise<boolean>}
+ */
+export async function isCachedFacebookNonEntity(rawUrl, cacheStore) {
+  if (!cacheStore || typeof rawUrl !== 'string' || !rawUrl.trim()) {
+    return false;
+  }
+  const canonicalUrl = normalizeFacebookUrl(rawUrl);
+  const keys = Array.from(new Set([canonicalUrl, rawUrl.trim()].filter(Boolean)));
+  for (const key of keys) {
+    const cached = await cacheStore.read(key);
+    if (cached && typeof cached.body === 'string' && isCometNonEntityRoute(cached.body)) {
+      return true;
+    }
+  }
+  return false;
+}
 export const DEFAULT_FACEBOOK_LOG_PATH = path.resolve(DEFAULT_LOG_DIR, 'facebook-sync.log');
 
 const NON_WA_LOCATION_REGEX = /\b(NSW|VIC|QLD|SA|TAS|ACT|NT|New South Wales|Victoria|Queensland|South Australia|Tasmania|Northern Territory|Sydney|Melbourne|Brisbane|Adelaide|Hobart|Canberra|Darwin)\b/i;

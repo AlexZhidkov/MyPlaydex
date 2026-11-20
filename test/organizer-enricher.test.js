@@ -73,6 +73,7 @@ test('Seam 1: resolveOrganizerFacebookUrl normalizes Page and Group URLs, resolv
   assert.equal(resolveOrganizerFacebookUrl('https://www.facebook.com/events/123456789/'), null);
   assert.equal(resolveOrganizerFacebookUrl('https://www.facebook.com/photo?fbid=123'), null);
   assert.equal(resolveOrganizerFacebookUrl('https://www.facebook.com/reel/123456789/'), null);
+  assert.equal(resolveOrganizerFacebookUrl('https://www.facebook.com/group.php?gid=123456789'), null);
   assert.equal(resolveOrganizerFacebookUrl('https://www.facebook.com/'), null);
 
   // Generic CMS / platform social handles ignored (case-insensitive)
@@ -301,7 +302,7 @@ test('Seam 3: runOrganizerEnricher filters eligible Organizers, isolates HTTP er
 
 test('Seam 4: parseCliArgs, main dry-run, and package.json script registration', async () => {
   const parsed = parseCliArgs(
-    ['--organizer=org_123', '--limit=5', '--dry-run', '--refresh', '--use-adc', '--project=custom-proj'],
+    ['--organizer=org_123', '--limit=5', '--dry-run', '--refresh', '--force', '--use-adc', '--project=custom-proj'],
     {}
   );
   assert.deepEqual(parsed, {
@@ -309,6 +310,7 @@ test('Seam 4: parseCliArgs, main dry-run, and package.json script registration',
     limit: 5,
     dryRun: true,
     refresh: true,
+    force: true,
     useAdc: true,
     project: 'custom-proj'
   });
@@ -317,6 +319,7 @@ test('Seam 4: parseCliArgs, main dry-run, and package.json script registration',
   assert.equal(envParsed.useAdc, true);
   assert.equal(envParsed.project, 'env-proj');
   assert.equal(envParsed.dryRun, false);
+  assert.equal(envParsed.force, false);
 
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'myplaydex-org-main-'));
   try {
@@ -355,4 +358,288 @@ test('Seam 4: parseCliArgs, main dry-run, and package.json script registration',
   const pkgRaw = await fs.readFile(path.resolve(process.cwd(), 'package.json'), 'utf8');
   const pkg = JSON.parse(pkgRaw);
   assert.equal(pkg.scripts['enrich:organizers'], 'node src/organizer-enricher.js');
+});
+
+test('Seam 5: runOrganizerEnricher repairs legacy group.php and CometErrorRoute handles and promotes fallback/unverified source_url', async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'myplaydex-org-repair-'));
+  const fbCacheStore = createFileCacheStore(path.join(tmpDir, 'fb-cache.json'));
+  const enrichCacheStore = createFileCacheStore(path.join(tmpDir, 'enrich-cache.json'));
+
+  try {
+    await fbCacheStore.write('https://www.facebook.com/StaleErrorClub', {
+      url: 'https://www.facebook.com/StaleErrorClub',
+      fetchedAt: '2026-11-20T00:00:00.000Z',
+      body: '<html><script>{"canonicalRouteName":"comet.fbweb.CometErrorRoute"}</script></html>'
+    });
+    await fbCacheStore.write('https://www.facebook.com/SameStaleClub', {
+      url: 'https://www.facebook.com/SameStaleClub',
+      fetchedAt: '2026-11-20T00:00:00.000Z',
+      body: '<html><script>{"canonicalRouteName":"comet.fbweb.CometErrorRoute"}</script></html>'
+    });
+    await fbCacheStore.write('https://www.facebook.com/DeadTargetClub', {
+      url: 'https://www.facebook.com/DeadTargetClub',
+      fetchedAt: '2026-11-20T00:00:00.000Z',
+      body: '<html><script>{"canonicalRouteName":"comet.fbweb.CometErrorRoute"}</script></html>'
+    });
+    await fbCacheStore.write('https://www.facebook.com/HealthyClub', {
+      url: 'https://www.facebook.com/HealthyClub',
+      fetchedAt: '2026-11-20T00:00:00.000Z',
+      body: '<html><meta property="og:title" content="Healthy Club" /></html>'
+    });
+
+    const orgs = [
+      {
+        id: 'org_legacy_group_php',
+        name: 'Legacy Group Club',
+        website: 'https://legacyclub.org.au',
+        verified: true,
+        source_url: 'https://kidsport.dlgsc.wa.gov.au/find-a-club/?club=42',
+        raw_source_url: 'https://kidsport.dlgsc.wa.gov.au/find-a-club/?club=42',
+        contact: {
+          email: 'info@legacyclub.org.au',
+          phone: null,
+          facebook: 'https://www.facebook.com/group.php?gid=123456'
+        }
+      },
+      {
+        id: 'org_comet_error',
+        name: 'Comet Error Club',
+        website: 'https://errorclub.org.au',
+        verified: false,
+        source_url: null,
+        raw_source_url: 'https://www.facebook.com/StaleErrorClub',
+        contact: {
+          email: null,
+          phone: '08 9000 1111',
+          facebook: 'https://www.facebook.com/StaleErrorClub'
+        }
+      },
+      {
+        id: 'org_newly_enriched_unverified',
+        name: 'Unverified Missing FB Club',
+        website: 'https://unverifiedclub.org.au',
+        verified: false,
+        source_url: null,
+        contact: {
+          email: null,
+          phone: null,
+          facebook: null
+        }
+      },
+      {
+        id: 'org_same_stale_comet',
+        name: 'Same Stale Comet Club',
+        website: 'https://samestale.org.au',
+        verified: false,
+        source_url: null,
+        contact: {
+          email: null,
+          phone: null,
+          facebook: 'https://www.facebook.com/SameStaleClub'
+        }
+      },
+      {
+        id: 'org_discovers_dead_fb',
+        name: 'Discovers Dead FB Club',
+        website: 'https://discoversdead.org.au',
+        verified: false,
+        source_url: null,
+        contact: {
+          email: null,
+          phone: null,
+          facebook: null
+        }
+      },
+      {
+        id: 'org_healthy_existing',
+        name: 'Healthy Club',
+        website: 'https://healthyclub.org.au',
+        verified: true,
+        source_url: 'https://healthyclub.org.au',
+        contact: {
+          email: null,
+          phone: null,
+          facebook: 'https://www.facebook.com/HealthyClub'
+        }
+      }
+    ];
+
+    const fetchCalls = [];
+    const fetchFn = async (url) => {
+      fetchCalls.push(url);
+      if (url === 'https://legacyclub.org.au/') {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => '<a href="https://www.facebook.com/groups/legacyclubwa">Group</a>'
+        };
+      }
+      if (url === 'https://errorclub.org.au/') {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => '<a href="https://www.facebook.com/ActiveErrorClub">Active Page</a>'
+        };
+      }
+      if (url === 'https://unverifiedclub.org.au/') {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => '<a href="https://www.facebook.com/UnverifiedClubActive">Active Page</a>'
+        };
+      }
+      if (url === 'https://samestale.org.au/') {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => '<a href="https://www.facebook.com/SameStaleClub">Same Stale Page</a>'
+        };
+      }
+      if (url === 'https://discoversdead.org.au/') {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => '<a href="https://www.facebook.com/DeadTargetClub">Dead Target Page</a>'
+        };
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    const upsertedBatches = [];
+    const adapter = {
+      async scanOrganizers() {
+        return orgs;
+      },
+      async batchUpsertOrganizers(items) {
+        upsertedBatches.push(items);
+        return { total: items.length, upserted: items.length, failed: 0, batches: 1, errors: [], dryRun: false };
+      }
+    };
+
+    const summary = await runOrganizerEnricher({
+      adapter,
+      fetchFn,
+      cacheStore: enrichCacheStore,
+      facebookCacheStore: fbCacheStore,
+      options: { dryRun: false },
+      logger: { log() {}, warn() {} }
+    });
+
+    assert.equal(summary.eligible, 5);
+    assert.equal(summary.scanned, 5);
+    assert.equal(summary.matched, 3);
+    assert.equal(summary.updated, 3);
+    assert.deepEqual(fetchCalls, [
+      'https://legacyclub.org.au/',
+      'https://errorclub.org.au/',
+      'https://unverifiedclub.org.au/',
+      'https://samestale.org.au/',
+      'https://discoversdead.org.au/'
+    ]);
+
+    const updatedById = new Map(upsertedBatches[0].map(item => [item.id, item]));
+    const repairedLegacy = updatedById.get('org_legacy_group_php');
+    assert.equal(repairedLegacy.contact.facebook, 'https://www.facebook.com/groups/legacyclubwa');
+    assert.equal(repairedLegacy.contact.email, 'info@legacyclub.org.au');
+    assert.equal(repairedLegacy.source_url, 'https://www.facebook.com/groups/legacyclubwa');
+    assert.equal(repairedLegacy.verified, true);
+
+    const repairedComet = updatedById.get('org_comet_error');
+    assert.equal(repairedComet.contact.facebook, 'https://www.facebook.com/ActiveErrorClub');
+    assert.equal(repairedComet.contact.phone, '08 9000 1111');
+    assert.equal(repairedComet.source_url, 'https://www.facebook.com/ActiveErrorClub');
+    assert.equal(repairedComet.verified, true);
+
+    const enrichedUnverified = updatedById.get('org_newly_enriched_unverified');
+    assert.equal(enrichedUnverified.contact.facebook, 'https://www.facebook.com/UnverifiedClubActive');
+    assert.equal(enrichedUnverified.source_url, 'https://www.facebook.com/UnverifiedClubActive');
+    assert.equal(enrichedUnverified.verified, true);
+
+    assert.equal(updatedById.has('org_same_stale_comet'), false);
+    assert.equal(updatedById.has('org_discovers_dead_fb'), false);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('Seam 6: --force re-enriches existing Organizers when Facebook handle differs and skips no-op matches', async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'myplaydex-org-force-'));
+  const enrichCacheStore = createFileCacheStore(path.join(tmpDir, 'enrich-cache.json'));
+  const fbCacheStore = createFileCacheStore(path.join(tmpDir, 'fb-cache.json'));
+
+  try {
+    const orgs = [
+      {
+        id: 'org_force_changed',
+        name: 'Force Changed Club',
+        website: 'https://forcechanged.org.au',
+        verified: true,
+        source_url: 'https://forcechanged.org.au',
+        contact: {
+          email: null,
+          phone: null,
+          facebook: 'https://www.facebook.com/OldHandle'
+        }
+      },
+      {
+        id: 'org_force_same',
+        name: 'Force Same Club',
+        website: 'https://forcesame.org.au',
+        verified: true,
+        source_url: 'https://forcesame.org.au',
+        contact: {
+          email: null,
+          phone: null,
+          facebook: 'https://www.facebook.com/SameHandle'
+        }
+      }
+    ];
+
+    const fetchFn = async (url) => {
+      if (url === 'https://forcechanged.org.au/') {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => '<a href="https://www.facebook.com/NewHandle">FB</a>'
+        };
+      }
+      if (url === 'https://forcesame.org.au/') {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => '<a href="https://www.facebook.com/SameHandle">FB</a>'
+        };
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    const adapter = {
+      async scanOrganizers() {
+        return orgs;
+      }
+    };
+
+    const summary = await main(
+      ['--dry-run', '--force'],
+      {},
+      {
+        adapter,
+        cacheStore: enrichCacheStore,
+        facebookCacheStore: fbCacheStore,
+        fetchFn,
+        logFile: false,
+        logger: { log() {}, warn() {} }
+      }
+    );
+
+    assert.equal(summary.eligible, 2);
+    assert.equal(summary.scanned, 2);
+    assert.equal(summary.matched, 1);
+    assert.equal(summary.updates[0].id, 'org_force_changed');
+    assert.equal(summary.updates[0].contact.facebook, 'https://www.facebook.com/NewHandle');
+    assert.equal(summary.updates[0].source_url, 'https://forcechanged.org.au');
+    assert.equal(summary.updates[0].verified, true);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
 });

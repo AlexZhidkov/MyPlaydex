@@ -232,6 +232,7 @@ const NON_ORGANIZER_FACEBOOK_PREFIXES = new Set([
   'reg',
   'r.php',
   'home.php',
+  'group.php',
   'events',
   'watch',
   'marketplace',
@@ -338,4 +339,22 @@ export function resolveOrganizerFacebookUrl(rawUrlOrParsed) {
   }
 
   return `https://www.facebook.com/${segments[0]}`;
+}
+
+/**
+ * Checks whether a URL is a generic directory fallback (e.g. KidSport or
+ * Volleyball WA club finder) rather than an Organizer's own website or social page.
+ *
+ * @param {string | URL} rawUrlOrParsed
+ * @returns {boolean}
+ */
+export function isGenericDirectoryFallbackUrl(rawUrlOrParsed) {
+  const parsed = rawUrlOrParsed instanceof URL
+    ? rawUrlOrParsed
+    : parseNormalizedUrl(rawUrlOrParsed);
+  if (!parsed) {
+    return false;
+  }
+  const pathLower = parsed.pathname.toLowerCase();
+  return pathLower.includes('/find-a-club');
 }
