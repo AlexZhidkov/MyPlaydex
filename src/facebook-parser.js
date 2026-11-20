@@ -15,12 +15,34 @@ const EVENT_SCHEMA_TYPES = new Set([
   'ChildrensEvent'
 ]);
 
+export function isFacebookRateLimited(text = '') {
+  if (typeof text !== 'string' || !text) return false;
+  return (
+    text.includes('You\\u2019re Temporarily Blocked') ||
+    text.includes('You\u2019re Temporarily Blocked') ||
+    text.includes("You're Temporarily Blocked") ||
+    text.includes('misusing this feature by going too fast') ||
+    text.includes('temporarily blocked from using it')
+  );
+}
+
+export function isCometEventsHomeRoute(text = '') {
+  return typeof text === 'string' && text.includes('"canonicalRouteName":"comet.fbweb.CometEventsHomeRoute"');
+}
+
 export function isCometNonEntityRoute(text = '') {
+  if (typeof text !== 'string' || !text || isFacebookRateLimited(text)) {
+    return false;
+  }
   return (
     text.includes('"canonicalRouteName":"comet.fbweb.CometErrorRoute"') ||
     text.includes('"canonicalRouteName":"comet.fbweb.CometHomeRoute"') ||
-    text.includes('"canonicalRouteName":"comet.fbweb.CometEventsHomeRoute"')
+    isCometEventsHomeRoute(text)
   );
+}
+
+function isNonExtractableFacebookPayload(text = '') {
+  return isFacebookRateLimited(text) || isCometNonEntityRoute(text);
 }
 
 const MONTH_NAME_MAP = {
@@ -785,7 +807,7 @@ export function extractFacebookEvents(payload, context = {}) {
     return extractFromIcs(text, context);
   }
 
-  if (isCometNonEntityRoute(text)) {
+  if (isNonExtractableFacebookPayload(text)) {
     return [];
   }
 
@@ -819,7 +841,7 @@ function appendUniqueEventLink(eventId, seen, links) {
 export function extractFacebookEventLinks(html) {
   if (!html || typeof html !== 'string') return [];
   if (html.includes('BEGIN:VCALENDAR')) return [];
-  if (isCometNonEntityRoute(html)) return [];
+  if (isNonExtractableFacebookPayload(html)) return [];
 
   const normalizedHtml = html.replace(/\\\//g, '/');
   const fbUrlOrRootRelativeRegex = /(?:https?:\/\/(?:[a-z0-9-]+\.)?(?:facebook\.com|fb\.com|fb\.me)|(?:^|["'\s]))\/events\/(?:[^/"'\s<>?]+\/)?(\d{5,})/gi;
@@ -865,7 +887,7 @@ function collectConnectionEventIds(connection, seen, links) {
 export function extractRelatedFacebookEventLinks(payload, { excludeEventId } = {}) {
   if (!payload) return [];
   const text = typeof payload === 'string' ? payload : JSON.stringify(payload);
-  if (text.includes('BEGIN:VCALENDAR') || isCometNonEntityRoute(text)) {
+  if (text.includes('BEGIN:VCALENDAR') || isNonExtractableFacebookPayload(text)) {
     return [];
   }
 

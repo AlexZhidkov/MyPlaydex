@@ -19,9 +19,11 @@ import {
   extractFacebookEventLinks,
   extractFacebookEvents,
   extractRelatedFacebookEventLinks,
-  isCometNonEntityRoute
+  isCometEventsHomeRoute,
+  isCometNonEntityRoute,
+  isFacebookRateLimited
 } from './facebook-parser.js';
-import { createFileCacheStore } from './file-cache.js';
+import { compactFileCache, createFileCacheStore } from './file-cache.js';
 import { createFirestoreAdapter, initFirestoreFromEnv } from './firestore-adapter.js';
 import { encodeGeohash } from './geohash.js';
 import { PERTH_SUBURB_CENTROIDS } from './perth-centroids.js';
@@ -44,6 +46,7 @@ export { extractFacebookEvents };
 export const PERTH_CENTROID = { lat: -31.9505, lng: 115.8605 };
 export const MAX_PERTH_RADIUS_KM = 85;
 export const DEFAULT_FACEBOOK_CACHE_PATH = path.resolve(process.cwd(), '.scratch/facebook-sync-cache.json');
+export const DEFAULT_FETCH_DELAY_MS = 3500;
 
 /**
  * Checks whether a Facebook URL is recorded in the local Facebook sync cache
@@ -61,13 +64,46 @@ export async function isCachedFacebookNonEntity(rawUrl, cacheStore) {
   const keys = Array.from(new Set([canonicalUrl, rawUrl.trim()].filter(Boolean)));
   for (const key of keys) {
     const cached = await cacheStore.read(key);
-    if (cached && typeof cached.body === 'string' && isCometNonEntityRoute(cached.body)) {
+    if (cached && typeof cached.body === 'string' && !isFacebookRateLimited(cached.body) && isCometNonEntityRoute(cached.body)) {
       return true;
     }
   }
   return false;
 }
 export const DEFAULT_FACEBOOK_LOG_PATH = path.resolve(DEFAULT_LOG_DIR, 'facebook-sync.log');
+
+/**
+ * Cleans poisoned rate-limited and CometEventsHomeRoute entries from a local
+ * Facebook sync cache and compresses remaining uncompressed `.body` sidecars to `.body.gz`.
+ *
+ * @param {string} [cachePath=DEFAULT_FACEBOOK_CACHE_PATH]
+ * @returns {Promise<object>}
+ */
+export async function cleanFacebookCache(cachePath = DEFAULT_FACEBOOK_CACHE_PATH) {
+  let removedRateLimited = 0;
+  let removedEventsHome = 0;
+  const stats = await compactFileCache(cachePath, ({ body }) => {
+    if (typeof body !== 'string') return false;
+    if (isFacebookRateLimited(body)) {
+      removedRateLimited += 1;
+      return true;
+    }
+    if (isCometEventsHomeRoute(body)) {
+      removedEventsHome += 1;
+      return true;
+    }
+    return false;
+  });
+
+  return {
+    total: stats.total,
+    removedRateLimited,
+    removedEventsHome,
+    compressedSidecars: stats.compressedSidecars,
+    removedOrphanedSidecars: stats.removedOrphanedSidecars,
+    remaining: stats.remaining
+  };
+}
 
 const NON_WA_LOCATION_REGEX = /\b(NSW|VIC|QLD|SA|TAS|ACT|NT|New South Wales|Victoria|Queensland|South Australia|Tasmania|Northern Territory|Sydney|Melbourne|Brisbane|Adelaide|Hobart|Canberra|Darwin)\b/i;
 const WA_LOCATION_REGEX = /\b(WA|Western Australia|Perth)\b/i;
@@ -95,6 +131,14 @@ export function parseCliArgs(argv = process.argv.slice(2), env = process.env) {
   const rawLimit = getArgValue(argv, 'limit');
   const limit = rawLimit ? parseInt(rawLimit, 10) : undefined;
 
+  const rawMaxFetches = getArgValue(argv, 'max-fetches');
+  const parsedMaxFetches = rawMaxFetches !== undefined ? parseInt(rawMaxFetches, 10) : NaN;
+  const maxFetches = Number.isFinite(parsedMaxFetches) && parsedMaxFetches > 0 ? parsedMaxFetches : undefined;
+
+  const rawDelayMs = getArgValue(argv, 'delay-ms');
+  const parsedDelayMs = rawDelayMs !== undefined ? parseInt(rawDelayMs, 10) : NaN;
+  const delayMs = Number.isFinite(parsedDelayMs) && parsedDelayMs >= 0 ? parsedDelayMs : DEFAULT_FETCH_DELAY_MS;
+
   const useAdc = argv.includes('--use-adc') || Boolean(env.FIREBASE_USE_ADC);
   const project = getArgValue(argv, 'project') || env.FIREBASE_PROJECT_ID || 'myplaydex';
 
@@ -105,6 +149,8 @@ export function parseCliArgs(argv = process.argv.slice(2), env = process.env) {
     dryRun,
     refresh,
     limit: Number.isNaN(limit) ? undefined : limit,
+    maxFetches,
+    delayMs,
     useAdc,
     project
   };
@@ -243,7 +289,36 @@ function isFacebookCacheExpired(cached, canonicalUrl, now) {
   return (nowMs - fetchedAtMs) > ttlMs;
 }
 
-async function fetchTargetPayload({ url, fetchFn, cacheStore, refresh, facebookCookie, logger, now, failedFetchesByUrl }) {
+class RateLimitedError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'RateLimitedError';
+  }
+}
+
+class FetchBudgetExhaustedError extends Error {
+  constructor(message = 'Live fetch budget exhausted') {
+    super(message);
+    this.name = 'FetchBudgetExhaustedError';
+  }
+}
+
+class CircuitBreakerTrippedError extends Error {
+  constructor(message = 'Rate-limit circuit breaker tripped') {
+    super(message);
+    this.name = 'CircuitBreakerTrippedError';
+  }
+}
+
+const defaultSleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+function computeJitteredDelayMs(delayMs, randomFn = Math.random) {
+  if (!Number.isFinite(delayMs) || delayMs <= 0) return 0;
+  const factor = 0.7 + randomFn() * 0.6;
+  return Math.round(delayMs * factor);
+}
+
+async function fetchTargetPayload({ url, fetchFn, cacheStore, refresh, facebookCookie, logger, now, failedFetchesByUrl, runState }) {
   const parsedNow = now instanceof Date ? now : (now ? new Date(now) : new Date());
   const runNow = Number.isFinite(parsedNow.getTime()) ? parsedNow : new Date();
   const canonicalUrl = normalizeFacebookUrl(url) || url;
@@ -252,7 +327,8 @@ async function fetchTargetPayload({ url, fetchFn, cacheStore, refresh, facebookC
   }
   if (!refresh && cacheStore) {
     const cached = await cacheStore.read(canonicalUrl);
-    if (cached && cached.body && !isFacebookCacheExpired(cached, canonicalUrl, runNow)) {
+    if (cached && cached.body && !isFacebookRateLimited(cached.body) && !isFacebookCacheExpired(cached, canonicalUrl, runNow)) {
+      if (runState) runState.cacheHits += 1;
       return { body: cached.body, fromCache: true, sourceUrl: canonicalUrl };
     }
   }
@@ -273,12 +349,47 @@ async function fetchTargetPayload({ url, fetchFn, cacheStore, refresh, facebookC
 
   let body;
   try {
+    if (runState?.maxFetches !== undefined && runState.liveFetches >= runState.maxFetches) {
+      runState.stoppedReason = 'max_fetches';
+      throw new FetchBudgetExhaustedError();
+    }
+    if (runState && runState.liveFetches > 0 && runState.delayMs > 0) {
+      const waitMs = computeJitteredDelayMs(runState.delayMs, runState.randomFn);
+      if (waitMs > 0) {
+        await runState.sleepFn(waitMs);
+      }
+    }
     const response = await fetchFn(canonicalUrl, { headers });
+    if (runState) runState.liveFetches += 1;
+    if (response.status === 429) {
+      throw new RateLimitedError(`Rate-limited fetching Facebook URL ${canonicalUrl}: HTTP 429`);
+    }
     if (!response.ok) {
+      if (runState) runState.consecutiveRateLimits = 0;
       throw new Error(`Failed to fetch Facebook URL ${canonicalUrl}: HTTP ${response.status}`);
     }
     body = await response.text();
+    if (isFacebookRateLimited(body)) {
+      throw new RateLimitedError(`Rate-limited fetching Facebook URL ${canonicalUrl}: Temporarily Blocked`);
+    }
+    if (runState) runState.consecutiveRateLimits = 0;
   } catch (err) {
+    if (err instanceof FetchBudgetExhaustedError || err instanceof CircuitBreakerTrippedError) {
+      throw err;
+    }
+    if (err instanceof RateLimitedError) {
+      if (runState) {
+        runState.rateLimitedResponses += 1;
+        runState.consecutiveRateLimits += 1;
+        if (runState.consecutiveRateLimits >= 3) {
+          runState.circuitBreakerTripped = true;
+          runState.stoppedReason = 'circuit_breaker';
+          logger?.warn?.('[Facebook Sync] Circuit breaker tripped after 3 consecutive rate-limited responses; halting further network requests.');
+          throw new CircuitBreakerTrippedError();
+        }
+      }
+      throw err;
+    }
     failedFetchesByUrl?.set(canonicalUrl, err);
     throw err;
   }
@@ -310,6 +421,9 @@ async function fetchTargetWithEventsTabFallback({ url, ...transport }) {
       }
       transport.logger?.warn?.(`[Facebook Sync] Events tab returned Comet error/home route for ${eventsTabUrl}; falling back to ${baseUrl}`);
     } catch (err) {
+      if (err instanceof RateLimitedError || err instanceof FetchBudgetExhaustedError || err instanceof CircuitBreakerTrippedError) {
+        throw err;
+      }
       transport.logger?.warn?.(`[Facebook Sync] Events tab fetch failed for ${eventsTabUrl} (${err.message}); falling back to ${baseUrl}`);
     }
   }
@@ -338,7 +452,7 @@ function classifyPreHydrationEvent(summaryEvents, now) {
   return hasOnline ? 'filtered_online' : 'filtered_expired';
 }
 
-async function hydrateDiscoveredEventLinks(target, rawEvents, { fetchFn, cacheStore, refresh, facebookCookie, remainingLimit, now, logger, failedFetchesByUrl }) {
+async function hydrateDiscoveredEventLinks(target, rawEvents, { fetchFn, cacheStore, refresh, facebookCookie, remainingLimit, now, logger, failedFetchesByUrl, runState }) {
   const relatedLinksByEventId = new Map();
   if (target.format === 'ics' || typeof target.body !== 'string') {
     return { events: rawEvents, relatedLinksByEventId, failedFetches: 0, preFilteredOnline: 0, preFilteredExpired: 0, skippedPreFilteredIds: new Set() };
@@ -399,7 +513,8 @@ async function hydrateDiscoveredEventLinks(target, rawEvents, { fetchFn, cacheSt
         facebookCookie,
         logger,
         now,
-        failedFetchesByUrl
+        failedFetchesByUrl,
+        runState
       });
       hydratedEvents.push(...extractFacebookEvents(detail.body, {
         sourceUrl: detail.sourceUrl,
@@ -411,6 +526,9 @@ async function hydrateDiscoveredEventLinks(target, rawEvents, { fetchFn, cacheSt
         extractRelatedFacebookEventLinks(detail.body, { excludeEventId: link.eventId })
       );
     } catch (err) {
+      if (err instanceof FetchBudgetExhaustedError || err instanceof CircuitBreakerTrippedError) {
+        throw err;
+      }
       failedFetches += 1;
       logger?.warn?.(`[Facebook Sync] Skipping discovered event ${link.url}: ${err.message}`);
     }
@@ -571,6 +689,24 @@ export async function runFacebookSync({
       seenSeededUrls.add(resolvedFb);
       seededOrgs.push({ org, resolvedFb });
     }
+    if (cacheStore && !refresh) {
+      const readMetaFn = typeof cacheStore.readMeta === 'function'
+        ? (key) => cacheStore.readMeta(key)
+        : (key) => cacheStore.read(key);
+      for (const item of seededOrgs) {
+        const eventsTabUrl = deriveFacebookEventsTabUrl(item.resolvedFb) || item.resolvedFb;
+        const [tabMeta, baseMeta] = await Promise.all([
+          eventsTabUrl !== item.resolvedFb ? readMetaFn(eventsTabUrl) : null,
+          readMetaFn(item.resolvedFb)
+        ]);
+        const isRateLimitedMeta = (meta) => Boolean(meta && typeof meta.body === 'string' && isFacebookRateLimited(meta.body));
+        const tabMs = tabMeta?.fetchedAt && !isRateLimitedMeta(tabMeta) ? Date.parse(tabMeta.fetchedAt) : NaN;
+        const baseMs = baseMeta?.fetchedAt && !isRateLimitedMeta(baseMeta) ? Date.parse(baseMeta.fetchedAt) : NaN;
+        const candidates = [tabMs, baseMs].filter(Number.isFinite);
+        item.fetchedAtMs = candidates.length > 0 ? Math.max(...candidates) : -Infinity;
+      }
+      seededOrgs.sort((a, b) => a.fetchedAtMs - b.fetchedAtMs);
+    }
     if (limit !== undefined) {
       seededOrgs = seededOrgs.slice(0, limit);
     }
@@ -591,10 +727,39 @@ export async function runFacebookSync({
   let filteredNonSport = 0;
   const activities = [];
   const seenIds = new Set();
+  const maxFetches = typeof options.maxFetches === 'number' && options.maxFetches > 0 ? options.maxFetches : undefined;
+  const delayMs = typeof options.delayMs === 'number' && options.delayMs >= 0 ? options.delayMs : 0;
+  const upsertBatchSize = typeof options.upsertBatchSize === 'number' && options.upsertBatchSize > 0 ? Math.floor(options.upsertBatchSize) : 50;
+  const sleepFn = typeof options.sleepFn === 'function' ? options.sleepFn : defaultSleep;
+  const randomFn = typeof options.randomFn === 'function' ? options.randomFn : Math.random;
+
   const seenEventIds = new Set();
   const failedFetchesByUrl = new Map();
+  const runState = {
+    liveFetches: 0,
+    cacheHits: 0,
+    rateLimitedResponses: 0,
+    consecutiveRateLimits: 0,
+    circuitBreakerTripped: false,
+    maxFetches,
+    delayMs,
+    sleepFn,
+    randomFn,
+    stoppedReason: null
+  };
 
-  const recordOutcome = (outcome) => {
+  let upserted = 0;
+  const pendingUpsertBatch = [];
+  const flushUpsertBatch = async () => {
+    if (dryRun || pendingUpsertBatch.length === 0 || !adapter?.batchUpsertActivities) {
+      return;
+    }
+    const batch = pendingUpsertBatch.splice(0, pendingUpsertBatch.length);
+    const res = await adapter.batchUpsertActivities(batch);
+    upserted += res?.upserted ?? batch.length;
+  };
+
+  const recordOutcome = async (outcome) => {
     if (outcome.status === 'filtered_online') filteredOnline += 1;
     else if (outcome.status === 'filtered_out_of_area') filteredOutOfArea += 1;
     else if (outcome.status === 'filtered_expired') filteredExpired += 1;
@@ -602,6 +767,10 @@ export async function runFacebookSync({
     else if (outcome.status === 'valid' && !seenIds.has(outcome.activity.id)) {
       seenIds.add(outcome.activity.id);
       activities.push(outcome.activity);
+      pendingUpsertBatch.push(outcome.activity);
+      if (pendingUpsertBatch.length >= upsertBatchSize) {
+        await flushUpsertBatch();
+      }
     }
   };
 
@@ -626,10 +795,14 @@ export async function runFacebookSync({
             facebookCookie,
             logger,
             now,
-            failedFetchesByUrl
+            failedFetchesByUrl,
+            runState
           });
           target = { body: fetched.body, sourceUrl: fetched.sourceUrl, organizer: spec.organizer };
         } catch (err) {
+          if (err instanceof FetchBudgetExhaustedError || err instanceof CircuitBreakerTrippedError) {
+            break;
+          }
           failedTargets += 1;
           logger.warn?.(`[Facebook Sync] Skipping ${spec.label}: ${err.message}`);
           continue;
@@ -637,6 +810,9 @@ export async function runFacebookSync({
       }
 
       targetsCount += 1;
+      if (targetsCount % 50 === 0) {
+        logger.log?.(`[Facebook Sync] Progress: ${targetsCount}/${targetSpecs.length} targets, liveFetches=${runState.liveFetches}, cacheHits=${runState.cacheHits}, valid=${activities.length}, upserted=${upserted}, rateLimited=${runState.rateLimitedResponses}`);
+      }
 
       let rawEvents = extractFacebookEvents(target.body, {
         sourceUrl: target.sourceUrl,
@@ -644,16 +820,25 @@ export async function runFacebookSync({
         now
       });
 
-      const hydrated = await hydrateDiscoveredEventLinks(target, rawEvents, {
-        fetchFn,
-        cacheStore,
-        refresh,
-        facebookCookie,
-        remainingLimit: limit !== undefined ? Math.max(0, limit - activities.length) : undefined,
-        now,
-        logger,
-        failedFetchesByUrl
-      });
+      let hydrated;
+      try {
+        hydrated = await hydrateDiscoveredEventLinks(target, rawEvents, {
+          fetchFn,
+          cacheStore,
+          refresh,
+          facebookCookie,
+          remainingLimit: limit !== undefined ? Math.max(0, limit - activities.length) : undefined,
+          now,
+          logger,
+          failedFetchesByUrl,
+          runState
+        });
+      } catch (err) {
+        if (err instanceof FetchBudgetExhaustedError || err instanceof CircuitBreakerTrippedError) {
+          break;
+        }
+        throw err;
+      }
       rawEvents = hydrated.events;
       failedTargets += hydrated.failedFetches;
       filteredOnline += hydrated.preFilteredOnline || 0;
@@ -677,7 +862,7 @@ export async function runFacebookSync({
           isOneHop: false,
           now
         });
-        recordOutcome(outcome);
+        await recordOutcome(outcome);
         if (outcome.status === 'valid' && ev.eventId && hydrated.relatedLinksByEventId.has(String(ev.eventId))) {
           oneHopCandidates.push(...hydrated.relatedLinksByEventId.get(String(ev.eventId)));
         }
@@ -701,7 +886,8 @@ export async function runFacebookSync({
             facebookCookie,
             logger,
             now,
-            failedFetchesByUrl
+            failedFetchesByUrl,
+            runState
           });
           const candidateEvents = extractFacebookEvents(detail.body, {
             sourceUrl: detail.sourceUrl,
@@ -713,7 +899,7 @@ export async function runFacebookSync({
             if (limit !== undefined && activities.length >= limit) {
               break;
             }
-            recordOutcome(ingestExtractedEvent(ev, {
+            await recordOutcome(ingestExtractedEvent(ev, {
               venuesCatalog,
               organizersCatalog,
               parentOrganizer: null,
@@ -722,22 +908,23 @@ export async function runFacebookSync({
             }));
           }
         } catch (err) {
+          if (err instanceof FetchBudgetExhaustedError || err instanceof CircuitBreakerTrippedError) {
+            break;
+          }
           failedTargets += 1;
           logger?.warn?.(`[Facebook Sync] Skipping 1-hop related listing ${related.url}: ${err.message}`);
         }
       }
+      if (runState.stoppedReason) {
+        break;
+      }
     }
   } finally {
     await cacheStore?.flush?.();
+    await flushUpsertBatch();
   }
 
-  let upserted = 0;
-  if (!dryRun && activities.length > 0 && adapter?.batchUpsertActivities) {
-    const res = await adapter.batchUpsertActivities(activities);
-    upserted = res?.upserted ?? activities.length;
-  }
-
-  logger.log?.(`[Facebook Sync] Targets: ${targetsCount}, Failed: ${failedTargets}, Extracted: ${extractedCount}, Valid: ${activities.length}, Upserted: ${upserted} (dryRun=${dryRun})`);
+  logger.log?.(`[Facebook Sync] Targets: ${targetsCount}, Failed: ${failedTargets}, Extracted: ${extractedCount}, Valid: ${activities.length}, Upserted: ${upserted}, liveFetches=${runState.liveFetches}, cacheHits=${runState.cacheHits}, rateLimited=${runState.rateLimitedResponses}, online=${filteredOnline}, outOfArea=${filteredOutOfArea}, expired=${filteredExpired}, nonSport=${filteredNonSport}, circuitBreaker=${runState.circuitBreakerTripped} (dryRun=${dryRun}${runState.stoppedReason ? `, stoppedReason=${runState.stoppedReason}` : ''})`);
 
   return {
     targets: targetsCount,
@@ -749,6 +936,11 @@ export async function runFacebookSync({
     filteredNonSport,
     valid: activities.length,
     upserted,
+    liveFetches: runState.liveFetches,
+    cacheHits: runState.cacheHits,
+    rateLimitedResponses: runState.rateLimitedResponses,
+    circuitBreakerTripped: runState.circuitBreakerTripped,
+    stoppedReason: runState.stoppedReason,
     dryRun,
     activities
   };
@@ -786,22 +978,28 @@ export async function main(argv = process.argv.slice(2), env = process.env, opti
 
   const cacheStore = options.cacheStore || createFileCacheStore(DEFAULT_FACEBOOK_CACHE_PATH, { flushEvery: 25 });
 
-  return runFacebookSync({
-    adapter,
-    fetchFn: options.fetchFn,
-    cacheStore,
-    env,
-    options: {
-      url: parsedArgs.url,
-      input: parsedArgs.input,
-      organizer: parsedArgs.organizer,
-      dryRun: effectiveDryRun,
-      refresh: parsedArgs.refresh,
-      limit: parsedArgs.limit,
-      now: options.now
-    },
-    logger
-  });
+  try {
+    return await runFacebookSync({
+      adapter,
+      fetchFn: options.fetchFn,
+      cacheStore,
+      env,
+      options: {
+        url: parsedArgs.url,
+        input: parsedArgs.input,
+        organizer: parsedArgs.organizer,
+        dryRun: effectiveDryRun,
+        refresh: parsedArgs.refresh,
+        limit: parsedArgs.limit,
+        maxFetches: parsedArgs.maxFetches,
+        delayMs: parsedArgs.delayMs,
+        now: options.now
+      },
+      logger
+    });
+  } finally {
+    await firestoreEnv?.db?.terminate?.();
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -6,10 +6,14 @@ import path from 'node:path';
 
 import {
   extractFacebookEventLinks,
-  extractRelatedFacebookEventLinks
+  extractRelatedFacebookEventLinks,
+  isCometNonEntityRoute,
+  isFacebookRateLimited
 } from '../src/facebook-parser.js';
 import {
+  cleanFacebookCache,
   extractFacebookEvents,
+  isCachedFacebookNonEntity,
   main,
   parseCliArgs,
   runFacebookSync
@@ -2310,5 +2314,324 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
     assert.equal(res.filteredOnline, 1);
     assert.equal(res.valid, 2);
     assert.deepEqual(res.activities.map(a => a.id).sort(), ['facebook_333000333', 'facebook_444000444']);
+  });
+
+  it('Seam 2 (Issue #30): isFacebookRateLimited detects rate-limit blocks distinctly from permanent Comet non-entity routes', () => {
+    const escapedBlock = '{"canonicalRouteName":"comet.fbweb.CometErrorRoute","props":{"title":"You\\u2019re Temporarily Blocked","body":"It looks like you were misusing this feature by going too fast."}}';
+    const utf8Block = '<html><title>You’re Temporarily Blocked</title><body>It looks like you were misusing this feature by going too fast.</body></html>';
+    const permanentError = '{"canonicalRouteName":"comet.fbweb.CometErrorRoute","props":{"title":"This content isn\'t available right now"}}';
+    const permanentEventsHome = '{"canonicalRouteName":"comet.fbweb.CometEventsHomeRoute"}';
+
+    assert.equal(isFacebookRateLimited(escapedBlock), true);
+    assert.equal(isFacebookRateLimited(utf8Block), true);
+    assert.equal(isFacebookRateLimited(permanentError), false);
+    assert.equal(isFacebookRateLimited(permanentEventsHome), false);
+
+    assert.equal(isCometNonEntityRoute(escapedBlock), false);
+    assert.equal(isCometNonEntityRoute(permanentError), true);
+    assert.equal(isCometNonEntityRoute(permanentEventsHome), true);
+  });
+
+  it('Seam 1 (Issue #30): parseCliArgs parses --max-fetches and --delay-ms with 3500ms default', () => {
+    const defaults = parseCliArgs([], {});
+    assert.equal(defaults.maxFetches, undefined);
+    assert.equal(defaults.delayMs, 3500);
+
+    const custom = parseCliArgs(['--max-fetches=25', '--delay-ms=5000'], {});
+    assert.equal(custom.maxFetches, 25);
+    assert.equal(custom.delayMs, 5000);
+
+    const zeroDelay = parseCliArgs(['--delay-ms=0', '--max-fetches=0'], {});
+    assert.equal(zeroDelay.delayMs, 0);
+    assert.equal(zeroDelay.maxFetches, undefined);
+  });
+
+  it('Seam 3 & 4 (Issue #30): rate-limited responses are never cached, treated as cache misses, and not treated as broken Organizer handles', async () => {
+    const now = new Date('2026-11-20T09:00:00+08:00');
+    const rateLimitBody = '{"canonicalRouteName":"comet.fbweb.CometErrorRoute","props":{"title":"You\\u2019re Temporarily Blocked","body":"It looks like you were misusing this feature by going too fast."}}';
+    const validEventHtml = `
+      <script type="application/ld+json">${JSON.stringify({
+        '@context': 'https://schema.org',
+        '@type': 'SportsEvent',
+        name: 'Perth Social Run',
+        url: 'https://www.facebook.com/events/999000111/',
+        startDate: '2026-12-01T08:00:00+08:00',
+        location: { '@type': 'Place', name: 'Langley Park', geo: { '@type': 'GeoCoordinates', latitude: -31.961, longitude: 115.869 } }
+      })}</script>
+    `;
+
+    const cacheMap = new Map([
+      ['https://www.facebook.com/cachedblocked/events', {
+        url: 'https://www.facebook.com/cachedblocked/events',
+        fetchedAt: now.toISOString(),
+        body: rateLimitBody
+      }]
+    ]);
+    const cacheWrites = [];
+    const cacheStore = {
+      async read(key) { return cacheMap.get(key) || null; },
+      async write(key, val) {
+        cacheWrites.push(key);
+        cacheMap.set(key, val);
+      },
+      async flush() {}
+    };
+
+    assert.equal(await isCachedFacebookNonEntity('https://www.facebook.com/cachedblocked/events', cacheStore), false);
+
+    const fetchCalls = [];
+    const res = await runFacebookSync({
+      adapter: {
+        async scanVenues() { return []; },
+        async scanOrganizers() {
+          return [
+            { id: 'org_1', name: 'Org 1', subcategory: 'running', contact: { facebook: 'https://www.facebook.com/cachedblocked' } },
+            { id: 'org_2', name: 'Org 2', subcategory: 'running', contact: { facebook: 'https://www.facebook.com/liveblocked' } }
+          ];
+        }
+      },
+      cacheStore,
+      fetchFn: async (url) => {
+        fetchCalls.push(url);
+        if (url === 'https://www.facebook.com/cachedblocked/events' || url === 'https://www.facebook.com/events/999000111/') {
+          return { ok: true, status: 200, text: async () => validEventHtml };
+        }
+        return { ok: true, status: 200, text: async () => rateLimitBody };
+      },
+      options: { dryRun: true, now },
+      logger: { log: () => {}, warn: () => {} }
+    });
+
+    // Cached rate-limit was treated as a miss and refetched; live rate-limit did NOT fall back to baseUrl and was NOT cached
+    assert.deepEqual(fetchCalls, [
+      'https://www.facebook.com/cachedblocked/events',
+      'https://www.facebook.com/events/999000111/',
+      'https://www.facebook.com/liveblocked/events'
+    ]);
+    assert.deepEqual(cacheWrites, [
+      'https://www.facebook.com/cachedblocked/events',
+      'https://www.facebook.com/events/999000111/'
+    ]);
+    assert.equal(res.valid, 1);
+    assert.equal(res.rateLimitedResponses, 1);
+  });
+
+  it('Seam 4 (Issue #30): orders seeded Organizers oldest-first, enforces --max-fetches budget, and paces live requests with ±30% jitter', async () => {
+    const now = new Date('2026-11-20T12:00:00+08:00');
+    const makePage = (title, id) => `
+      <script type="application/ld+json">${JSON.stringify({
+        '@context': 'https://schema.org',
+        '@type': 'SportsEvent',
+        name: title,
+        url: `https://www.facebook.com/events/${id}/`,
+        startDate: '2026-12-05T08:00:00+08:00',
+        location: { '@type': 'Place', name: 'Langley Park', geo: { '@type': 'GeoCoordinates', latitude: -31.961, longitude: 115.869 } }
+      })}</script>
+    `;
+
+    const cacheMap = new Map([
+      ['https://www.facebook.com/fresh/events', { fetchedAt: new Date(now.getTime() - 1 * 3600_000).toISOString(), body: makePage('Fresh Event', '100001') }],
+      ['https://www.facebook.com/events/100001/', { fetchedAt: now.toISOString(), body: makePage('Fresh Event', '100001') }],
+      ['https://www.facebook.com/stalenewer/events', { fetchedAt: new Date(now.getTime() - 50 * 3600_000).toISOString(), body: makePage('Stale Newer', '100002') }],
+      ['https://www.facebook.com/events/100002/', { fetchedAt: now.toISOString(), body: makePage('Stale Newer', '100002') }],
+      ['https://www.facebook.com/staleoldest/events', { fetchedAt: new Date(now.getTime() - 100 * 3600_000).toISOString(), body: makePage('Stale Oldest', '100003') }],
+      ['https://www.facebook.com/events/100003/', { fetchedAt: now.toISOString(), body: makePage('Stale Oldest', '100003') }],
+      ['https://www.facebook.com/events/100004/', { fetchedAt: now.toISOString(), body: makePage('Uncached Org Event', '100004') }]
+    ]);
+    let flushed = false;
+    const cacheStore = {
+      async read(key) { return cacheMap.get(key) || null; },
+      async write(key, val) { cacheMap.set(key, val); },
+      async flush() { flushed = true; }
+    };
+
+    const fetchCalls = [];
+    const sleepCalls = [];
+    const res = await runFacebookSync({
+      adapter: {
+        async scanVenues() { return []; },
+        async scanOrganizers() {
+          return [
+            { id: 'org_fresh', name: 'Fresh Org', subcategory: 'running', contact: { facebook: 'https://www.facebook.com/fresh' } },
+            { id: 'org_stale_newer', name: 'Stale Newer Org', subcategory: 'running', contact: { facebook: 'https://www.facebook.com/stalenewer' } },
+            { id: 'org_uncached', name: 'Uncached Org', subcategory: 'running', contact: { facebook: 'https://www.facebook.com/uncached' } },
+            { id: 'org_stale_oldest', name: 'Stale Oldest Org', subcategory: 'running', contact: { facebook: 'https://www.facebook.com/staleoldest' } }
+          ];
+        }
+      },
+      cacheStore,
+      fetchFn: async (url) => {
+        fetchCalls.push(url);
+        const id = url.includes('uncached') ? '100004' : '100003';
+        return { ok: true, status: 200, text: async () => makePage(`Live ${url}`, id) };
+      },
+      options: {
+        dryRun: true,
+        now,
+        maxFetches: 2,
+        delayMs: 3500,
+        sleepFn: async (ms) => { sleepCalls.push(ms); },
+        randomFn: () => 0.5 // 0.7 + 0.5 * 0.6 = 1.0 -> 3500ms; test bounds too
+      },
+      logger: { log: () => {}, warn: () => {} }
+    });
+
+    assert.deepEqual(fetchCalls, [
+      'https://www.facebook.com/uncached/events',
+      'https://www.facebook.com/staleoldest/events'
+    ]);
+    assert.deepEqual(sleepCalls, [3500]);
+    assert.equal(res.liveFetches, 2);
+    assert.equal(res.failedTargets, 0);
+    assert.equal(res.valid, 2);
+    assert.equal(res.stoppedReason, 'max_fetches');
+    assert.equal(flushed, true);
+  });
+
+  it('Seam 4 (Issue #30): trips circuit breaker after 3 consecutive rate limits, upserts incrementally, logs progress every 50 targets, and terminates Firestore in main', async () => {
+    const now = new Date('2026-11-20T12:00:00+08:00');
+    const rateLimitBody = '{"canonicalRouteName":"comet.fbweb.CometErrorRoute","props":{"title":"You\\u2019re Temporarily Blocked","body":"It looks like you were misusing this feature by going too fast."}}';
+    const makePage = (title, id) => `
+      <script type="application/ld+json">${JSON.stringify({
+        '@context': 'https://schema.org',
+        '@type': 'SportsEvent',
+        name: title,
+        url: `https://www.facebook.com/events/${id}/`,
+        startDate: '2026-12-05T08:00:00+08:00',
+        location: { '@type': 'Place', name: 'Langley Park', geo: { '@type': 'GeoCoordinates', latitude: -31.961, longitude: 115.869 } }
+      })}</script>
+    `;
+
+    const cacheMap = new Map([
+      ['https://www.facebook.com/events/200001/', { fetchedAt: now.toISOString(), body: makePage('Org 1 Event', '200001') }],
+      ['https://www.facebook.com/events/200002/', { fetchedAt: now.toISOString(), body: makePage('Org 2 Event', '200002') }],
+      ['https://www.facebook.com/events/200003/', { fetchedAt: now.toISOString(), body: makePage('Org 3 Event', '200003') }]
+    ]);
+    let flushed = false;
+    const cacheStore = {
+      async read(key) { return cacheMap.get(key) || null; },
+      async write(key, val) { cacheMap.set(key, val); },
+      async flush() { flushed = true; }
+    };
+
+    const upsertBatches = [];
+    const logs = [];
+    const fetchCalls = [];
+
+    // 3 valid orgs (triggering incremental upsert with batchSize=2, then 1 remaining buffered),
+    // then 3 consecutive rate limits (tripping circuit breaker), then 1 org that must NOT be fetched.
+    const organizers = [
+      { id: 'org_1', name: 'Org 1', subcategory: 'running', contact: { facebook: 'https://www.facebook.com/org1' } },
+      { id: 'org_2', name: 'Org 2', subcategory: 'running', contact: { facebook: 'https://www.facebook.com/org2' } },
+      { id: 'org_3', name: 'Org 3', subcategory: 'running', contact: { facebook: 'https://www.facebook.com/org3' } },
+      { id: 'org_4', name: 'Org 4', subcategory: 'running', contact: { facebook: 'https://www.facebook.com/org4' } },
+      { id: 'org_5', name: 'Org 5', subcategory: 'running', contact: { facebook: 'https://www.facebook.com/org5' } },
+      { id: 'org_6', name: 'Org 6', subcategory: 'running', contact: { facebook: 'https://www.facebook.com/org6' } },
+      { id: 'org_7', name: 'Org 7', subcategory: 'running', contact: { facebook: 'https://www.facebook.com/org7' } }
+    ];
+
+    const res = await runFacebookSync({
+      adapter: {
+        async scanVenues() { return []; },
+        async scanOrganizers() { return organizers; },
+        async batchUpsertActivities(batch) {
+          upsertBatches.push(batch.map(a => a.id));
+          return { upserted: batch.length };
+        }
+      },
+      cacheStore,
+      fetchFn: async (url) => {
+        fetchCalls.push(url);
+        if (url.includes('/org1/')) return { ok: true, status: 200, text: async () => makePage('Org 1 Event', '200001') };
+        if (url.includes('/org2/')) return { ok: true, status: 200, text: async () => makePage('Org 2 Event', '200002') };
+        if (url.includes('/org3/')) return { ok: true, status: 200, text: async () => makePage('Org 3 Event', '200003') };
+        return { ok: true, status: 200, text: async () => rateLimitBody };
+      },
+      options: { dryRun: false, now, upsertBatchSize: 2 },
+      logger: { log: (msg) => logs.push(msg), warn: () => {} }
+    });
+
+    assert.equal(fetchCalls.length, 6);
+    assert.equal(res.circuitBreakerTripped, true);
+    assert.equal(res.stoppedReason, 'circuit_breaker');
+    assert.equal(res.rateLimitedResponses, 3);
+    assert.equal(res.valid, 3);
+    assert.equal(res.upserted, 3);
+    assert.deepEqual(upsertBatches, [
+      ['facebook_200001', 'facebook_200002'],
+      ['facebook_200003']
+    ]);
+    assert.equal(flushed, true);
+    const summaryLog = logs[logs.length - 1];
+    assert.match(summaryLog, /rateLimited=3/);
+    assert.match(summaryLog, /online=0/);
+    assert.match(summaryLog, /expired=0/);
+
+    // Verify 50-target progress logging + main() db.terminate()
+    const fiftyFiveOrgs = Array.from({ length: 55 }, (_, i) => ({
+      id: `org_p_${i}`,
+      name: `Org P ${i}`,
+      subcategory: 'running',
+      contact: { facebook: `https://www.facebook.com/orgp${i}` }
+    }));
+    const progressLogs = [];
+    let terminated = false;
+    await main(['--delay-ms=0'], {}, {
+      firestoreEnv: {
+        dryRun: false,
+        db: { async terminate() { terminated = true; } }
+      },
+      adapter: {
+        async scanVenues() { return []; },
+        async scanOrganizers() { return fiftyFiveOrgs; },
+        async batchUpsertActivities() { return { upserted: 0 }; }
+      },
+      cacheStore: {
+        async read() { return { fetchedAt: now.toISOString(), body: '<html></html>' }; },
+        async write() {},
+        async flush() {}
+      },
+      now,
+      logger: { log: (msg) => progressLogs.push(msg), warn: () => {}, error: () => {} }
+    });
+
+    assert.equal(terminated, true);
+    assert.ok(progressLogs.some(m => m.includes('Progress: 50/55')));
+  });
+
+  it('Seam 5 (Issue #30): cleanFacebookCache removes Temporarily Blocked and CometEventsHomeRoute entries and compresses .body sidecars to .body.gz', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fb-cache-clean-'));
+    const cachePath = path.join(tmpDir, 'facebook-sync-cache.json');
+    const sidecarDir = `${cachePath}.d`;
+    await fs.mkdir(sidecarDir, { recursive: true });
+
+    await fs.writeFile(path.join(sidecarDir, 'blocked.body'), '{"canonicalRouteName":"comet.fbweb.CometErrorRoute","props":{"title":"You\\u2019re Temporarily Blocked"}}', 'utf8');
+    await fs.writeFile(path.join(sidecarDir, 'eventshome.body'), '{"canonicalRouteName":"comet.fbweb.CometEventsHomeRoute"}', 'utf8');
+    await fs.writeFile(path.join(sidecarDir, 'valid.body'), '<html><body>Valid Organizer Page</body></html>', 'utf8');
+    await fs.writeFile(path.join(sidecarDir, 'orphan.body'), 'orphan', 'utf8');
+
+    await fs.writeFile(cachePath, JSON.stringify({
+      'https://www.facebook.com/blocked/events': { fetchedAt: '2026-11-20T00:00:00Z', bodyFile: 'blocked.body' },
+      'https://www.facebook.com/ehome/events': { fetchedAt: '2026-11-20T00:00:00Z', bodyFile: 'eventshome.body' },
+      'https://www.facebook.com/valid/events': { fetchedAt: '2026-11-20T00:00:00Z', bodyFile: 'valid.body' }
+    }, null, 2), 'utf8');
+
+    try {
+      const stats = await cleanFacebookCache(cachePath);
+      assert.equal(stats.removedRateLimited, 1);
+      assert.equal(stats.removedEventsHome, 1);
+      assert.equal(stats.compressedSidecars, 1);
+      assert.equal(stats.removedOrphanedSidecars, 1);
+      assert.equal(stats.remaining, 1);
+
+      const updatedIndex = JSON.parse(await fs.readFile(cachePath, 'utf8'));
+      assert.deepEqual(Object.keys(updatedIndex), ['https://www.facebook.com/valid/events']);
+      assert.equal(updatedIndex['https://www.facebook.com/valid/events'].bodyFile, 'valid.body.gz');
+
+      const files = await fs.readdir(sidecarDir);
+      assert.deepEqual(files, ['valid.body.gz']);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
   });
 });
