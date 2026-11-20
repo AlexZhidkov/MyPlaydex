@@ -6,7 +6,7 @@
  */
 
 import { encodeGeohash } from './geohash.js';
-import { normalizeFacebookUrl } from './url-utils.js';
+import { isGenericDirectoryFallbackUrl, normalizeFacebookUrl } from './url-utils.js';
 
 function buildOrganizerContact(contactInput = {}, raw = {}, website = null) {
   const rawFacebook = contactInput?.facebook || raw.facebook || raw.organizer?.facebook || null;
@@ -747,7 +747,10 @@ export function extractCanonicalEntities(activity, raw = {}) {
   const rawReferralUrl = activity.raw_source_url ?? raw.raw_source_url ?? activity.source_url ?? raw.source_url ?? raw.external_url ?? null;
 
   const explicitWebsite = raw.website || raw.organizer?.website || raw.club_website || null;
-  const organizerWebsite = explicitWebsite || verifiedReferralUrl || null;
+  const fallbackWebsite = verifiedReferralUrl && !isGenericDirectoryFallbackUrl(verifiedReferralUrl)
+    ? verifiedReferralUrl
+    : null;
+  const organizerWebsite = explicitWebsite || fallbackWebsite || null;
   const organizerVerification = resolveExtractedEntityVerification(
     raw.organizer,
     verifiedReferralUrl,
@@ -906,7 +909,11 @@ export function sanitizeOrganizer(raw = {}, options = {}) {
   const base = sanitizeEntityListingBase(raw, options, 'organizer');
   const website = typeof raw.website === 'string' && raw.website.trim() ? raw.website.trim() : null;
   const verification = resolveVerificationFields(raw, website || '');
-  const resolvedWebsite = verification.verified ? (website || verification.source_url) : website;
+  const fallbackWebsite =
+    verification.verified && verification.source_url && !isGenericDirectoryFallbackUrl(verification.source_url)
+      ? verification.source_url
+      : null;
+  const resolvedWebsite = website || fallbackWebsite;
 
   const contact = buildOrganizerContact(raw.contact || {}, raw, resolvedWebsite);
 

@@ -76,12 +76,18 @@ test('Seam 1: resolveOrganizerFacebookUrl normalizes Page and Group URLs, resolv
   assert.equal(resolveOrganizerFacebookUrl('https://www.facebook.com/group.php?gid=123456789'), null);
   assert.equal(resolveOrganizerFacebookUrl('https://www.facebook.com/'), null);
 
-  // Generic CMS / platform social handles ignored (case-insensitive)
+  // Generic CMS / platform / government social handles ignored (case-insensitive)
   assert.equal(resolveOrganizerFacebookUrl('https://www.facebook.com/wix'), null);
   assert.equal(resolveOrganizerFacebookUrl('https://www.facebook.com/Squarespace/'), null);
   assert.equal(resolveOrganizerFacebookUrl('https://www.facebook.com/WordPress'), null);
   assert.equal(resolveOrganizerFacebookUrl('https://www.facebook.com/TidyHQ'), null);
   assert.equal(resolveOrganizerFacebookUrl('https://www.facebook.com/RevolutioniseSPORT'), null);
+  assert.equal(resolveOrganizerFacebookUrl('https://www.facebook.com/deptlgsc'), null);
+  assert.equal(resolveOrganizerFacebookUrl('https://www.facebook.com/PlayCricketAU'), null);
+  assert.equal(resolveOrganizerFacebookUrl('https://www.facebook.com/GameDayStack'), null);
+  assert.equal(resolveOrganizerFacebookUrl('https://www.facebook.com/meetup'), null);
+  assert.equal(resolveOrganizerFacebookUrl('https://www.facebook.com/org'), null);
+  assert.equal(resolveOrganizerFacebookUrl('https://www.facebook.com/figtree'), null);
 });
 
 test('Seam 2: extractFacebookUrlFromHtml extracts from anchors and Schema.org sameAs JSON-LD while ignoring noise', () => {
@@ -160,6 +166,12 @@ test('Seam 3: runOrganizerEnricher filters eligible Organizers, isolates HTTP er
       id: 'org_fb_website',
       name: 'FB Website Club',
       website: 'https://www.facebook.com/FBWebsiteClub',
+      contact: { email: null, phone: null, facebook: null }
+    },
+    {
+      id: 'org_directory_fallback',
+      name: 'KidSport Directory Club',
+      website: 'https://kidsport.dlgsc.wa.gov.au/find-a-club/?club=123',
       contact: { email: null, phone: null, facebook: null }
     },
     {

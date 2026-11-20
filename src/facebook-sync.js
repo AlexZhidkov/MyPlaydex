@@ -32,7 +32,11 @@ import {
   sanitizeActivity,
   slugify
 } from './sanitizer.js';
-import { deriveFacebookEventsTabUrl, normalizeFacebookUrl } from './url-utils.js';
+import {
+  deriveFacebookEventsTabUrl,
+  normalizeFacebookUrl,
+  resolveOrganizerFacebookUrl
+} from './url-utils.js';
 
 export { extractFacebookEvents };
 
@@ -471,18 +475,25 @@ export async function runFacebookSync({
       label: `target ${options.url}`
     }];
   } else {
-    let seededOrgs = organizersCatalog.filter(o => Boolean(normalizeFacebookUrl(o?.contact?.facebook)));
-    if (options.organizer) {
-      seededOrgs = seededOrgs.filter(o => o.id === options.organizer);
+    let seededOrgs = [];
+    for (const org of organizersCatalog) {
+      const resolvedFb = resolveOrganizerFacebookUrl(org?.contact?.facebook);
+      if (!resolvedFb) {
+        continue;
+      }
+      if (options.organizer && org.id !== options.organizer) {
+        continue;
+      }
+      seededOrgs.push({ org, resolvedFb });
     }
     if (limit !== undefined) {
       seededOrgs = seededOrgs.slice(0, limit);
     }
-    targetSpecs = seededOrgs.map(org => ({
+    targetSpecs = seededOrgs.map(({ org, resolvedFb }) => ({
       kind: 'url',
-      url: org.contact.facebook,
+      url: resolvedFb,
       organizer: org,
-      label: `organizer ${org.id} (${org.contact.facebook})`
+      label: `organizer ${org.id} (${resolvedFb})`
     }));
   }
 
@@ -661,13 +672,11 @@ export async function main(argv = process.argv.slice(2), env = process.env, opti
 
   logger.log?.(`[Facebook Sync] Initializing run (project: ${parsedArgs.project}, dry-run: ${parsedArgs.dryRun}, refresh: ${parsedArgs.refresh})`);
 
-  const firestoreEnv = options.firestoreEnv || (parsedArgs.dryRun
-    ? { db: null, dryRun: true, projectId: parsedArgs.project }
-    : await initFirestoreFromEnv(env, {
-        requireCredentials: !parsedArgs.dryRun && !parsedArgs.useAdc,
-        useAdc: parsedArgs.useAdc,
-        projectId: parsedArgs.project
-      }));
+  const firestoreEnv = options.firestoreEnv || await initFirestoreFromEnv(env, {
+    requireCredentials: !parsedArgs.dryRun && !parsedArgs.useAdc,
+    useAdc: parsedArgs.useAdc,
+    projectId: parsedArgs.project
+  });
 
   const effectiveDryRun = parsedArgs.dryRun || firestoreEnv.dryRun;
   const adapter = options.adapter || createFirestoreAdapter({

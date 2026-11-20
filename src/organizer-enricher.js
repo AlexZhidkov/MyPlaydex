@@ -130,7 +130,7 @@ function normalizeEligibleWebsiteUrl(rawWebsite) {
   }
 
   const normalizedCheck = parseNormalizedUrl(trimmed);
-  if (!normalizedCheck || isFacebookUrl(normalizedCheck)) {
+  if (!normalizedCheck || isFacebookUrl(normalizedCheck) || isGenericDirectoryFallbackUrl(normalizedCheck)) {
     return null;
   }
 

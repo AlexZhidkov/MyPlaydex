@@ -435,6 +435,17 @@ test('Seam 1 (Issue #19): normalizeFacebookUrl and recoverUrl canonicalize Faceb
     'https://www.facebook.com/profile.php?id=100064512345678'
   );
 
+  // Rewrites legacy /#!/ hashbang Facebook URLs and rejects /#!/login interstitials
+  assert.equal(
+    normalizeFacebookUrl('https://www.facebook.com/#!/BalcattaSC?sk=wall'),
+    'https://www.facebook.com/BalcattaSC?sk=wall'
+  );
+  assert.equal(
+    normalizeFacebookUrl('https://www.facebook.com/#!/pages/Allen-Park-Tennis-Club/149044861790239?sk=wall&fbclid=drop'),
+    'https://www.facebook.com/pages/Allen-Park-Tennis-Club/149044861790239?sk=wall'
+  );
+  assert.equal(normalizeFacebookUrl('https://www.facebook.com/#!/login'), null);
+
   // Rejects interstitial paths (/login, /checkpoint, /sharer) and non-Facebook URLs
   assert.equal(normalizeFacebookUrl('https://www.facebook.com/login'), null);
   assert.equal(normalizeFacebookUrl('https://m.facebook.com/login.php?next=https%3A%2F%2Fwww.facebook.com%2Fclub'), null);

@@ -611,3 +611,35 @@ test('Seam 1 (Issue #19): sanitizeOrganizer, extractCanonicalEntities, and merge
     facebook: 'https://www.facebook.com/SubiacoHoops'
   });
 });
+
+test('Seam 1: sanitizeOrganizer and extractCanonicalEntities do not copy generic directory fallback source_url into website', () => {
+  const fallbackUrl = 'https://kidsport.dlgsc.wa.gov.au/find-a-club/?club=123';
+
+  const sanitizedOrg = sanitizeOrganizer({
+    source: 'dlgsc',
+    source_id: 'org-fallback-1',
+    name: 'Fallback Directory Club',
+    subcategory: 'soccer',
+    coordinates: { lat: -31.9505, lng: 115.8605 },
+    source_url: fallbackUrl
+  });
+  assert.equal(sanitizedOrg.website, null);
+  assert.equal(sanitizedOrg.source_url, fallbackUrl);
+  assert.equal(sanitizedOrg.verified, true);
+
+  const activity = sanitizeActivity({
+    source: 'dlgsc',
+    source_id: 'act-fallback-1',
+    title: 'Fallback Club Training',
+    sport: 'soccer',
+    organizer_name: 'Fallback Directory Club',
+    venue_name: 'Perth Oval',
+    coordinates: { lat: -31.9505, lng: 115.8605 },
+    start_time: '2026-11-25T18:00:00+08:00',
+    source_url: fallbackUrl
+  });
+  const entities = extractCanonicalEntities(activity);
+  assert.equal(entities.organizer.website, null);
+  assert.equal(entities.organizer.source_url, fallbackUrl);
+  assert.equal(entities.organizer.verified, true);
+});

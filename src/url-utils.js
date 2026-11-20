@@ -265,7 +265,13 @@ const IGNORED_PLATFORM_FACEBOOK_HANDLES = new Set([
   'weebly',
   'webflow',
   'godaddy',
-  'shopify'
+  'shopify',
+  'deptlgsc',
+  'playcricketau',
+  'gamedaystack',
+  'meetup',
+  'org',
+  'figtree'
 ]);
 
 /**

@@ -536,6 +536,12 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
             contact: { facebook: 'https://www.facebook.com/login' }
           },
           {
+            id: 'org_ignored_deptlgsc',
+            name: 'KidSport Polluted Club',
+            coordinates: { lat: -31.9505, lng: 115.8605 },
+            contact: { facebook: 'https://www.facebook.com/deptlgsc' }
+          },
+          {
             id: 'org_alpha',
             name: 'Alpha Club',
             coordinates: { lat: -31.9505, lng: 115.8605 },

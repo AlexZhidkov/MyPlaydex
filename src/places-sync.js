@@ -4,6 +4,7 @@
  * using cost-controlled Pro-tier fields, spatial de-overlapping, and local caching.
  */
 
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -348,14 +349,23 @@ export async function runPlacesSync({
   };
 }
 
+const LARGE_CACHE_BODY_THRESHOLD = 65536;
+
+function hashCacheKey(key) {
+  return `${createHash('sha256').update(String(key)).digest('hex')}.body`;
+}
+
 /**
- * Creates a JSON file-backed checkpoint cache store keyed by suburb name.
+ * Creates a JSON file-backed checkpoint cache store keyed by suburb name or URL.
+ * Large string `body` payloads (> 64 KB) are stored in sidecar files under
+ * `${cachePath}.d/` so the main JSON index never approaches V8 string limits.
  *
  * @param {string} [cachePath='.scratch/places-sync-cache.json']
  * @returns {{ read: (key: string) => Promise<object|null>, write: (key: string, val: object) => Promise<void> }}
  */
 export function createFileCacheStore(cachePath = path.resolve(process.cwd(), '.scratch/places-sync-cache.json')) {
   let memoryCache = null;
+  const sidecarDir = `${cachePath}.d`;
 
   async function loadAll() {
     if (memoryCache) return memoryCache;
@@ -365,17 +375,55 @@ export function createFileCacheStore(cachePath = path.resolve(process.cwd(), '.s
     } catch {
       memoryCache = {};
     }
+
+    let migrated = false;
+    for (const [key, entry] of Object.entries(memoryCache)) {
+      if (entry && typeof entry === 'object' && typeof entry.body === 'string' && entry.body.length > LARGE_CACHE_BODY_THRESHOLD) {
+        if (!migrated) {
+          await fs.mkdir(sidecarDir, { recursive: true });
+          migrated = true;
+        }
+        const bodyFile = hashCacheKey(key);
+        await fs.writeFile(path.join(sidecarDir, bodyFile), entry.body, 'utf8');
+        const { body: _omitted, ...rest } = entry;
+        memoryCache[key] = { ...rest, bodyFile };
+      }
+    }
+
+    if (migrated) {
+      await fs.mkdir(path.dirname(cachePath), { recursive: true });
+      await fs.writeFile(cachePath, JSON.stringify(memoryCache, null, 2), 'utf8');
+    }
+
     return memoryCache;
   }
 
   return {
     async read(key) {
       const data = await loadAll();
-      return data[key] || null;
+      const entry = data[key];
+      if (!entry) return null;
+      if (entry && typeof entry === 'object' && entry.bodyFile && entry.body === undefined) {
+        try {
+          const body = await fs.readFile(path.join(sidecarDir, entry.bodyFile), 'utf8');
+          return { ...entry, body };
+        } catch {
+          return null;
+        }
+      }
+      return entry;
     },
     async write(key, val) {
       const data = await loadAll();
-      data[key] = val;
+      if (val && typeof val === 'object' && typeof val.body === 'string' && val.body.length > LARGE_CACHE_BODY_THRESHOLD) {
+        const bodyFile = hashCacheKey(key);
+        await fs.mkdir(sidecarDir, { recursive: true });
+        await fs.writeFile(path.join(sidecarDir, bodyFile), val.body, 'utf8');
+        const { body: _omitted, ...rest } = val;
+        data[key] = { ...rest, bodyFile };
+      } else {
+        data[key] = val;
+      }
       await fs.mkdir(path.dirname(cachePath), { recursive: true });
       await fs.writeFile(cachePath, JSON.stringify(data, null, 2), 'utf8');
     }
