@@ -1076,8 +1076,10 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
 
     const errorHtml = `<html><script>{"canonicalRouteName":"comet.fbweb.CometErrorRoute","url":"https:\\/\\/www.facebook.com\\/events\\/999111222\\/"}</script></html>`;
     const homeHtml = `<html><script>{"canonicalRouteName":"comet.fbweb.CometHomeRoute","__typename":"Event","id":"999111222"}</script></html>`;
+    const eventsHomeHtml = `<html><script>{"canonicalRouteName":"comet.fbweb.CometEventsHomeRoute","__typename":"Event","id":"999111222"}</script></html>`;
     assert.deepEqual(extractFacebookEventLinks(errorHtml), []);
     assert.deepEqual(extractFacebookEventLinks(homeHtml), []);
+    assert.deepEqual(extractFacebookEventLinks(eventsHomeHtml), []);
   });
 
   it('extractFacebookEvents parses Comet Relay day_time_sentence variants, merges split fragments, and extracts event_place.contextual_name', () => {
@@ -1210,6 +1212,16 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
       'https://www.facebook.com/profile.php?id=100064123456&sk=events'
     );
 
+    // Legacy /pages/<Name>/<ID> and /people/<Name>/<ID> remain unchanged
+    assert.equal(
+      deriveFacebookEventsTabUrl('https://www.facebook.com/pages/Perth-Hockey-Club/123456789012345'),
+      'https://www.facebook.com/pages/Perth-Hockey-Club/123456789012345'
+    );
+    assert.equal(
+      deriveFacebookEventsTabUrl('https://m.facebook.com/people/Perth-Club/987654321098765/?fbclid=123'),
+      'https://www.facebook.com/people/Perth-Club/987654321098765/'
+    );
+
     // Root and invalid URLs
     assert.equal(
       deriveFacebookEventsTabUrl('https://www.facebook.com/'),
@@ -1268,6 +1280,16 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
       if (url === 'https://www.facebook.com/broken') {
         return { ok: false, status: 500, text: async () => 'Server Error' };
       }
+      if (url === 'https://www.facebook.com/eventshomeorg/events') {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => `<html><script>{"canonicalRouteName":"comet.fbweb.CometEventsHomeRoute","__typename":"Event","id":"888999000","name":"Generic Feed Event"}</script></html>`
+        };
+      }
+      if (url === 'https://www.facebook.com/eventshomeorg') {
+        return { ok: true, status: 200, text: async () => makeEventHtml('104', 'Events Home Fallback Event') };
+      }
       throw new Error(`Unexpected URL: ${url}`);
     };
 
@@ -1298,6 +1320,12 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
             name: 'Broken Org',
             coordinates: { lat: -31.9505, lng: 115.8605 },
             contact: { facebook: 'https://www.facebook.com/broken' }
+          },
+          {
+            id: 'org_events_home',
+            name: 'Events Home Org',
+            coordinates: { lat: -31.9505, lng: 115.8605 },
+            contact: { facebook: 'https://www.facebook.com/eventshomeorg' }
           }
         ];
       },
@@ -1321,12 +1349,14 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
       'https://www.facebook.com/profile.php?id=998877&sk=events',
       'https://www.facebook.com/profile.php?id=998877',
       'https://www.facebook.com/broken/events',
-      'https://www.facebook.com/broken'
+      'https://www.facebook.com/broken',
+      'https://www.facebook.com/eventshomeorg/events',
+      'https://www.facebook.com/eventshomeorg'
     ]);
-    assert.equal(res.targets, 3);
+    assert.equal(res.targets, 4);
     assert.equal(res.failedTargets, 1);
-    assert.equal(res.valid, 3);
-    assert.deepEqual(res.activities.map(a => a.id), ['facebook_101', 'facebook_102', 'facebook_103']);
+    assert.equal(res.valid, 4);
+    assert.deepEqual(res.activities.map(a => a.id), ['facebook_101', 'facebook_102', 'facebook_103', 'facebook_104']);
 
     // Verify cache keys under normalized fetched URLs
     assert.ok(cacheMap.has('https://www.facebook.com/pageok/events'));
@@ -1351,7 +1381,7 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
     assert.deepEqual(fetchCalls, [
       'https://www.facebook.com/groups/hoops/events'
     ]);
-    assert.equal(cachedRes.valid, 3);
+    assert.equal(cachedRes.valid, 4);
 
     // Explicit --url with --refresh bypasses cache
     fetchCalls.length = 0;
@@ -1522,12 +1552,17 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
       'https://www.facebook.com/events/999888777/'
     ]);
     assert.ok(cacheMap.has('https://www.facebook.com/events/555666777/'));
-    assert.equal(res.valid, 1);
-    assert.equal(res.activities.length, 1);
-    assert.equal(res.activities[0].id, 'facebook_555666777');
-    assert.equal(res.activities[0].description, 'Full hydrated description from detail page.');
-    assert.equal(res.activities[0].source_url, 'https://www.facebook.com/events/555666777/');
-    assert.deepEqual(res.activities[0].venue.coordinates, { lat: -31.9812, lng: 115.8194 });
+    assert.equal(res.valid, 2);
+    assert.equal(res.activities.length, 2);
+    const seedActivity = res.activities.find(a => a.id === 'facebook_555666777');
+    const sidebarActivity = res.activities.find(a => a.id === 'facebook_999888777');
+    assert.ok(seedActivity);
+    assert.equal(seedActivity.description, 'Full hydrated description from detail page.');
+    assert.equal(seedActivity.source_url, 'https://www.facebook.com/events/555666777/');
+    assert.deepEqual(seedActivity.venue.coordinates, { lat: -31.9812, lng: 115.8194 });
+    assert.ok(sidebarActivity);
+    assert.equal(sidebarActivity.subcategory, 'other');
+    assert.notEqual(sidebarActivity.organizer?.id, 'org_uwa_tennis');
   });
 
   it('Seam 2 (Issue #24): extractRelatedFacebookEventLinks extracts deduplicated 1-hop event IDs from event_suggested_events and friends_cut', () => {
@@ -1628,6 +1663,8 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
         nodes: [
           { __typename: 'Event', id: '222333444', name: 'Social Volleyball Night' },
           { __typename: 'Event', id: '333444555', name: 'Sydney Harbour Volleyball' },
+          { __typename: 'Event', id: '666777888', name: 'Online Fitness Webinar' },
+          { __typename: 'Event', id: '777888999', name: 'Past Perth Market' },
           { __typename: 'Event', id: '111222333', name: 'Duplicate Suggested Pickleball' }
         ]
       }
@@ -1678,6 +1715,27 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
         event_description: { text: 'Beach volleyball in Sydney.' },
         event_place: { name: 'Bondi Beach', location: { latitude: -33.8915, longitude: 151.2767 } },
         event_hosts_meet_your_host: [{ name: 'Sydney Beach Club' }]
+      }),
+      'https://www.facebook.com/events/666777888/': makeDetailHtml({
+        id: '666777888',
+        name: 'Online Fitness Webinar',
+        day_time_sentence: 'Sat, Jun 26, 2027 at 11\u202fAM',
+        is_canceled: false,
+        is_online: true,
+        url: 'https://www.facebook.com/events/666777888/',
+        event_description: { text: 'Live Zoom workout from Perth.' },
+        event_place: { name: 'Online', location: { latitude: -31.9505, longitude: 115.8605 } },
+        event_hosts_meet_your_host: [{ name: 'Perth Fitness Online' }]
+      }),
+      'https://www.facebook.com/events/777888999/': makeDetailHtml({
+        id: '777888999',
+        name: 'Past Perth Market',
+        day_time_sentence: 'Sun, Jun 20, 2025 at 10\u202fAM',
+        is_canceled: false,
+        url: 'https://www.facebook.com/events/777888999/',
+        event_description: { text: 'Expired local gathering in Perth.' },
+        event_place: { name: 'Forrest Place', location: { latitude: -31.9522, longitude: 115.8589 } },
+        event_hosts_meet_your_host: [{ name: 'Perth Night Markets' }]
       })
     };
 
@@ -1745,14 +1803,17 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
     assert.equal(fetchCalls.filter(u => u === 'https://www.facebook.com/events/555666777/').length, 1);
     assert.ok(cacheMap.has('https://www.facebook.com/events/111222333/'));
 
-    // Seed tennis + 1-hop pickleball + 1-hop volleyball (food festival & Sydney excluded)
-    assert.equal(res.valid, 3);
+    // Seed tennis + 1-hop pickleball + 1-hop volleyball + 1-hop 'other' (online, expired, & Sydney excluded)
+    assert.equal(res.valid, 4);
     const byId = new Map(res.activities.map(a => [a.id, a]));
     assert.ok(byId.has('facebook_555666777'));
     assert.ok(byId.has('facebook_111222333'));
     assert.ok(byId.has('facebook_222333444'));
-    assert.ok(!byId.has('facebook_999888777'));
+    assert.ok(byId.has('facebook_999888777'));
+    assert.equal(byId.get('facebook_999888777').subcategory, 'other');
     assert.ok(!byId.has('facebook_333444555'));
+    assert.ok(!byId.has('facebook_666777888'));
+    assert.ok(!byId.has('facebook_777888999'));
 
     // 111222333 reconciled to canonical Perth Pickleball Club, not UWA Tennis Club
     const pickleball = byId.get('facebook_111222333');

@@ -359,9 +359,6 @@ function ingestExtractedEvent(ev, { venuesCatalog, organizersCatalog, parentOrga
   }
 
   const eventSubcategory = ev.subcategory || ev.sport || normalizeSport(`${ev.title || ''} ${ev.description || ''}`);
-  if (isOneHop && eventSubcategory === 'other') {
-    return { status: 'filtered_non_sport' };
-  }
 
   const effectiveParentOrganizer = isOneHop ? null : parentOrganizer;
   const resolved = resolveActivityVenueAndCoordinates(ev, {

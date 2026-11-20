@@ -1,17 +1,27 @@
 # Facebook Public Events Local Sync and URL Probe Bypass
 
-To ingest community sports activities hosted as Facebook Public Events without hitting Meta Graph API permissions (`Page Public Content Access`), datacenter IP login walls in GitHub Actions, or false-positive `Unverified Listing` degradation in `src/url-verifier.js`, MyPlaydex ingests Facebook Public Events via an on-demand local CLI sync (`src/facebook-sync.js`), seeds discovery from `contact.facebook` links on `/organizers`, resolves missing event coordinates through a 4-step Venue fallback chain, and bypasses HTTP verification probing for Facebook domains while preserving clickable referral links (`verified: true`).
+To ingest live, in-person community Activities hosted as Facebook Public Events without hitting Meta Graph API permissions (`Page Public Content Access`), datacenter IP login walls in GitHub Actions, or false-positive `Unverified Listing` degradation in `src/url-verifier.js`, MyPlaydex ingests Facebook Public Events via an on-demand or scheduled local CLI sync (`src/facebook-sync.js`), seeds discovery from `contact.facebook` links on `/organizers`, resolves missing event coordinates through a 4-step Venue fallback chain, protects against Facebook IP rate limits with tiered caching and rolling drip pacing, and bypasses HTTP verification probing for Facebook domains while preserving clickable referral links (`verified: true`).
 
 ## Considered Options
 
 1. **Unattended GitHub Actions Crawler (`src/crawlers/`) or Official Meta Graph API**: Rejected because Meta deprecated public event search in Graph API v3.3+, gates Page event feeds behind Meta App Review (`Page Public Content Access`), and blocks unauthenticated datacenter HTTP requests with login interstitials and anti-bot challenges.
 2. **Headless Browser Automation (Playwright / Puppeteer)**: Rejected to keep the repository lightweight and zero-dependency (`firebase-admin` only) without requiring multi-hundred-MB browser binaries.
-3. **Organizer-Seeded Local On-Demand CLI Sync (`src/facebook-sync.js`) with Facebook URL Probe Bypass**: Selected. Harvests Facebook Page URLs from `/organizers` (`contact.facebook`, seeded via WA DLGSC) alongside explicit event/page URLs and `.ics` calendar exports, executes locally on-demand via injectable `fetchFn` with local checkpoint caching, resolves missing coordinates against canonical `/venues` and Perth suburb centroids, and exempts Facebook domains from HTTP probing in `src/url-verifier.js`.
+3. **Organizer-Seeded Local On-Demand CLI Sync (`src/facebook-sync.js`) with Facebook URL Probe Bypass**: Selected. Harvests Facebook Page URLs from `/organizers` (`contact.facebook`, seeded via WA DLGSC) alongside explicit event/page URLs and `.ics` calendar exports, executes locally via injectable `fetchFn` with local checkpoint caching, resolves missing coordinates against canonical `/venues` and Perth suburb centroids, and exempts Facebook domains from HTTP probing in `src/url-verifier.js`.
 
 ## Consequences
 
 - **Supersedes Facebook Exclusion in MVP Docs**:
-  - Reverses the blanket exclusion of Facebook Public Events in `docs/spec.md` and `docs/research/01-perth-sports-data-sources.md` for local on-demand ingestion, keeping scope strictly within `category: 'sports'` and the 11 canonical sport subcategories.
+  - Reverses the blanket exclusion of Facebook Public Events in `docs/spec.md` and `docs/research/01-perth-sports-data-sources.md` for local ingestion.
+- **In-Person Multi-Vertical Scope**:
+  - Ingests all live (`is_online: false`), non-expired, in-person Greater Perth (`<= 85 km`) Activities across both 0-hop (Organizer pages) and 1-hop (`event_suggested_events` / `friends_cut` on hydrated detail pages), without dropping `subcategory: 'other'` on 1-hop.
+- **Non-Entity Route Filtering & URL Canonicalization**:
+  - Treats `comet.fbweb.CometEventsHomeRoute` alongside `CometErrorRoute` and `CometHomeRoute` as a non-entity route (falling back from `/events` tabs to the Organizer's base page), skips appending `/events` to legacy `/pages/<Name>/<ID>` and `/people/<Name>/<ID>` routes, rejects generic non-Organizer Facebook paths (`search`, `media`, `/pages/category/...`), and deduplicates target fetches by canonical Facebook URL per run.
+- **Pre-Hydration Expired/Online Filtering**:
+  - Filters discovered `/events/<id>` links against summary records already parsed from the parent page, skipping detail-page network hydration when all summary records for an `eventId` are already Expired Activities or online.
+- **Rate-Limit Resilience & Rolling Drip Mode**:
+  - Separates transient `"Temporarily Blocked"` rate-limit responses from permanent non-entity routes (never caching rate-limited payloads or flagging them as broken Organizer handles), supports oldest-first target ordering with `--max-fetches=<N>`, jittered live-request pacing (`--delay-ms=3500` default with $\pm 30\%$ jitter), a 3-consecutive-hit circuit breaker, incremental Firestore batch upserts, and clean Firestore client termination on CLI exit.
+- **Compressed Sidecar Cache & Tiered TTLs**:
+  - Stores large cached bodies (>64 KB) as `.body.gz` sidecar files in `.scratch/facebook-sync-cache.json.d/` with batched index flushes and tiered TTLs (48h for Organizer pages, 14d for upcoming `/events/<id>` detail pages, 7d for non-entity routes).
 - **Organizer Facebook Seeding (`contact.facebook`)**:
   - Canonical `/organizers` documents (`src/sanitizer.js`: `sanitizeOrganizer`, `extractCanonicalEntities`, `mergeEntityDocuments`) store a normalized `contact.facebook: string | null` URL (also populated when an Organizer's `website` is a `facebook.com` link).
   - `src/crawlers/dlgsc-crawler.js` extracts `item.Facebook` into `contact.facebook` and uses it as the Organizer's referral `source_url` ahead of the generic KidSport fallback when `item.Website` is absent.

@@ -18,7 +18,8 @@ const EVENT_SCHEMA_TYPES = new Set([
 export function isCometNonEntityRoute(text = '') {
   return (
     text.includes('"canonicalRouteName":"comet.fbweb.CometErrorRoute"') ||
-    text.includes('"canonicalRouteName":"comet.fbweb.CometHomeRoute"')
+    text.includes('"canonicalRouteName":"comet.fbweb.CometHomeRoute"') ||
+    text.includes('"canonicalRouteName":"comet.fbweb.CometEventsHomeRoute"')
   );
 }
 

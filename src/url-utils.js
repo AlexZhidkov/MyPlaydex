@@ -201,6 +201,10 @@ export function deriveFacebookEventsTabUrl(rawUrlOrParsed) {
     return parsed.href;
   }
 
+  if (lowerSegments[0] === 'pages' || lowerSegments[0] === 'people') {
+    return normalized;
+  }
+
   if (segments.length === 2 && FACEBOOK_PAGE_TABS.has(lowerSegments[1])) {
     parsed.pathname = `/${segments[0]}/events`;
     return parsed.href;
@@ -248,7 +252,9 @@ const NON_ORGANIZER_FACEBOOK_PREFIXES = new Set([
   'reel',
   'reels',
   'permalink',
-  'story'
+  'story',
+  'search',
+  'media'
 ]);
 
 const IGNORED_PLATFORM_FACEBOOK_HANDLES = new Set([
@@ -321,6 +327,9 @@ export function resolveOrganizerFacebookUrl(rawUrlOrParsed) {
 
   if (firstLower === 'pages' || firstLower === 'people') {
     if (segments.length < 3) {
+      return null;
+    }
+    if (firstLower === 'pages' && segments[1].toLowerCase() === 'category') {
       return null;
     }
     return `https://www.facebook.com/${firstLower}/${segments[1]}/${segments[2]}`;

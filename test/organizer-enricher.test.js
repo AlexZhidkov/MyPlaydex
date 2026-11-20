@@ -88,6 +88,9 @@ test('Seam 1: resolveOrganizerFacebookUrl normalizes Page and Group URLs, resolv
   assert.equal(resolveOrganizerFacebookUrl('https://www.facebook.com/meetup'), null);
   assert.equal(resolveOrganizerFacebookUrl('https://www.facebook.com/org'), null);
   assert.equal(resolveOrganizerFacebookUrl('https://www.facebook.com/figtree'), null);
+  assert.equal(resolveOrganizerFacebookUrl('https://www.facebook.com/search/top?q=perth'), null);
+  assert.equal(resolveOrganizerFacebookUrl('https://www.facebook.com/media/set/?set=a.123'), null);
+  assert.equal(resolveOrganizerFacebookUrl('https://www.facebook.com/pages/category/Sports-Club/123456789012345/'), null);
 });
 
 test('Seam 2: extractFacebookUrlFromHtml extracts from anchors and Schema.org sameAs JSON-LD while ignoring noise', () => {
@@ -386,7 +389,7 @@ test('Seam 5: runOrganizerEnricher repairs legacy group.php and CometErrorRoute 
     await fbCacheStore.write('https://www.facebook.com/SameStaleClub', {
       url: 'https://www.facebook.com/SameStaleClub',
       fetchedAt: '2026-11-20T00:00:00.000Z',
-      body: '<html><script>{"canonicalRouteName":"comet.fbweb.CometErrorRoute"}</script></html>'
+      body: '<html><script>{"canonicalRouteName":"comet.fbweb.CometEventsHomeRoute"}</script></html>'
     });
     await fbCacheStore.write('https://www.facebook.com/DeadTargetClub', {
       url: 'https://www.facebook.com/DeadTargetClub',

@@ -5,7 +5,7 @@ A global discovery platform for social sports, cultural performances, family act
 ## Language
 
 **Activity**:
-Any scheduled social, recreational, cultural, or sporting gathering that people can attend.
+Any scheduled, in-person social, recreational, cultural, or sporting gathering that people can attend.
 _Avoid_: Event, Gig, Happening
 
 **Organizer**:
