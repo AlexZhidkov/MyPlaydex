@@ -243,10 +243,13 @@ function isFacebookCacheExpired(cached, canonicalUrl, now) {
   return (nowMs - fetchedAtMs) > ttlMs;
 }
 
-async function fetchTargetPayload({ url, fetchFn, cacheStore, refresh, facebookCookie, logger, now }) {
+async function fetchTargetPayload({ url, fetchFn, cacheStore, refresh, facebookCookie, logger, now, failedFetchesByUrl }) {
   const parsedNow = now instanceof Date ? now : (now ? new Date(now) : new Date());
   const runNow = Number.isFinite(parsedNow.getTime()) ? parsedNow : new Date();
   const canonicalUrl = normalizeFacebookUrl(url) || url;
+  if (failedFetchesByUrl?.has(canonicalUrl)) {
+    throw failedFetchesByUrl.get(canonicalUrl);
+  }
   if (!refresh && cacheStore) {
     const cached = await cacheStore.read(canonicalUrl);
     if (cached && cached.body && !isFacebookCacheExpired(cached, canonicalUrl, runNow)) {
@@ -268,11 +271,17 @@ async function fetchTargetPayload({ url, fetchFn, cacheStore, refresh, facebookC
     headers.Cookie = facebookCookie;
   }
 
-  const response = await fetchFn(canonicalUrl, { headers });
-  if (!response.ok) {
-    throw new Error(`Failed to fetch Facebook URL ${canonicalUrl}: HTTP ${response.status}`);
+  let body;
+  try {
+    const response = await fetchFn(canonicalUrl, { headers });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch Facebook URL ${canonicalUrl}: HTTP ${response.status}`);
+    }
+    body = await response.text();
+  } catch (err) {
+    failedFetchesByUrl?.set(canonicalUrl, err);
+    throw err;
   }
-  const body = await response.text();
 
   if (cacheStore) {
     try {
@@ -308,10 +317,31 @@ async function fetchTargetWithEventsTabFallback({ url, ...transport }) {
   return fetchTargetPayload({ url: baseUrl, ...transport });
 }
 
-async function hydrateDiscoveredEventLinks(target, rawEvents, { fetchFn, cacheStore, refresh, facebookCookie, remainingLimit, now, logger }) {
+function classifyPreHydrationEvent(summaryEvents, now) {
+  if (!Array.isArray(summaryEvents) || summaryEvents.length === 0) {
+    return null;
+  }
+  const nowIso = now.toISOString();
+  const nowMs = now.getTime();
+  let hasOnline = false;
+  for (const ev of summaryEvents) {
+    if (ev.is_online) {
+      hasOnline = true;
+      continue;
+    }
+    const schedule = parseSchedule(ev, nowIso);
+    const expireAt = computeActivityExpireAt(schedule);
+    if (!expireAt || expireAt.getTime() > nowMs) {
+      return null;
+    }
+  }
+  return hasOnline ? 'filtered_online' : 'filtered_expired';
+}
+
+async function hydrateDiscoveredEventLinks(target, rawEvents, { fetchFn, cacheStore, refresh, facebookCookie, remainingLimit, now, logger, failedFetchesByUrl }) {
   const relatedLinksByEventId = new Map();
   if (target.format === 'ics' || typeof target.body !== 'string') {
-    return { events: rawEvents, relatedLinksByEventId, failedFetches: 0 };
+    return { events: rawEvents, relatedLinksByEventId, failedFetches: 0, preFilteredOnline: 0, preFilteredExpired: 0, skippedPreFilteredIds: new Set() };
   }
   const targetEventId = extractFacebookEventIdFromUrl(target.sourceUrl);
   if (targetEventId) {
@@ -322,22 +352,43 @@ async function hydrateDiscoveredEventLinks(target, rawEvents, { fetchFn, cacheSt
     return {
       events: rawEvents,
       relatedLinksByEventId,
-      failedFetches: 0
+      failedFetches: 0,
+      preFilteredOnline: 0,
+      preFilteredExpired: 0,
+      skippedPreFilteredIds: new Set()
     };
   }
 
   const discoveredLinks = extractFacebookEventLinks(target.body);
   if (discoveredLinks.length === 0) {
-    return { events: rawEvents, relatedLinksByEventId, failedFetches: 0 };
+    return { events: rawEvents, relatedLinksByEventId, failedFetches: 0, preFilteredOnline: 0, preFilteredExpired: 0, skippedPreFilteredIds: new Set() };
+  }
+
+  const summaryByEventId = new Map();
+  for (const ev of rawEvents) {
+    if (!ev.eventId) continue;
+    const key = String(ev.eventId);
+    if (!summaryByEventId.has(key)) summaryByEventId.set(key, []);
+    summaryByEventId.get(key).push(ev);
   }
 
   const discoveredIdSet = new Set(discoveredLinks.map(l => l.eventId));
   const nonHydratableRawCount = rawEvents.filter(ev => !discoveredIdSet.has(ev.eventId)).length;
   const hydratedEvents = [];
+  const skippedPreFilteredIds = new Set();
   let failedFetches = 0;
+  let preFilteredOnline = 0;
+  let preFilteredExpired = 0;
   for (const link of discoveredLinks) {
     if (remainingLimit !== undefined && (nonHydratableRawCount + hydratedEvents.length) >= remainingLimit) {
       break;
+    }
+    const preFilterStatus = classifyPreHydrationEvent(summaryByEventId.get(String(link.eventId)), now);
+    if (preFilterStatus) {
+      if (preFilterStatus === 'filtered_online') preFilteredOnline += 1;
+      else preFilteredExpired += 1;
+      skippedPreFilteredIds.add(String(link.eventId));
+      continue;
     }
     try {
       const detail = await fetchTargetPayload({
@@ -347,7 +398,8 @@ async function hydrateDiscoveredEventLinks(target, rawEvents, { fetchFn, cacheSt
         refresh,
         facebookCookie,
         logger,
-        now
+        now,
+        failedFetchesByUrl
       });
       hydratedEvents.push(...extractFacebookEvents(detail.body, {
         sourceUrl: detail.sourceUrl,
@@ -367,11 +419,14 @@ async function hydrateDiscoveredEventLinks(target, rawEvents, { fetchFn, cacheSt
   const hydratedIds = new Set(hydratedEvents.map(ev => ev.eventId));
   return {
     events: [
-      ...rawEvents.filter(ev => !hydratedIds.has(ev.eventId)),
+      ...rawEvents.filter(ev => !hydratedIds.has(ev.eventId) && !skippedPreFilteredIds.has(String(ev.eventId))),
       ...hydratedEvents
     ],
     relatedLinksByEventId,
-    failedFetches
+    failedFetches,
+    preFilteredOnline,
+    preFilteredExpired,
+    skippedPreFilteredIds
   };
 }
 
@@ -501,6 +556,7 @@ export async function runFacebookSync({
     }];
   } else {
     let seededOrgs = [];
+    const seenSeededUrls = new Set();
     for (const org of organizersCatalog) {
       const resolvedFb = resolveOrganizerFacebookUrl(org?.contact?.facebook);
       if (!resolvedFb) {
@@ -509,6 +565,10 @@ export async function runFacebookSync({
       if (options.organizer && org.id !== options.organizer) {
         continue;
       }
+      if (seenSeededUrls.has(resolvedFb)) {
+        continue;
+      }
+      seenSeededUrls.add(resolvedFb);
       seededOrgs.push({ org, resolvedFb });
     }
     if (limit !== undefined) {
@@ -532,6 +592,7 @@ export async function runFacebookSync({
   const activities = [];
   const seenIds = new Set();
   const seenEventIds = new Set();
+  const failedFetchesByUrl = new Map();
 
   const recordOutcome = (outcome) => {
     if (outcome.status === 'filtered_online') filteredOnline += 1;
@@ -564,7 +625,8 @@ export async function runFacebookSync({
             refresh,
             facebookCookie,
             logger,
-            now
+            now,
+            failedFetchesByUrl
           });
           target = { body: fetched.body, sourceUrl: fetched.sourceUrl, organizer: spec.organizer };
         } catch (err) {
@@ -589,12 +651,18 @@ export async function runFacebookSync({
         facebookCookie,
         remainingLimit: limit !== undefined ? Math.max(0, limit - activities.length) : undefined,
         now,
-        logger
+        logger,
+        failedFetchesByUrl
       });
       rawEvents = hydrated.events;
       failedTargets += hydrated.failedFetches;
+      filteredOnline += hydrated.preFilteredOnline || 0;
+      filteredExpired += hydrated.preFilteredExpired || 0;
+      for (const skippedId of hydrated.skippedPreFilteredIds || []) {
+        seenEventIds.add(skippedId);
+      }
 
-      extractedCount += rawEvents.length;
+      extractedCount += rawEvents.length + (hydrated.preFilteredOnline || 0) + (hydrated.preFilteredExpired || 0);
 
       const oneHopCandidates = [];
       for (const ev of rawEvents) {
@@ -632,7 +700,8 @@ export async function runFacebookSync({
             refresh,
             facebookCookie,
             logger,
-            now
+            now,
+            failedFetchesByUrl
           });
           const candidateEvents = extractFacebookEvents(detail.body, {
             sourceUrl: detail.sourceUrl,

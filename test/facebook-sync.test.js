@@ -2087,4 +2087,228 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
     await runAt(14 * DAY + 120_000);
     assert.ok(fetchCalls.includes('https://www.facebook.com/events/123456789/'));
   });
+
+  it('Seam 4 (Issue #29): deduplicates Organizers sharing a canonical Facebook URL and memoizes in-run HTTP failures', async () => {
+    const now = new Date('2026-11-20T09:00:00Z');
+    const sharedOrgHtml = `
+      <html><body>
+        <a href="/events/101010101/">Upcoming Tennis</a>
+        <a href="/events/404404404/">Broken Event</a>
+        <script type="application/ld+json">${JSON.stringify({
+          '@type': 'Event',
+          name: 'Shared Club Tennis',
+          startDate: '2027-06-20T18:00:00+08:00',
+          url: 'https://www.facebook.com/events/101010101/',
+          location: { '@type': 'Place', name: 'Perth Courts', geo: { latitude: -31.9505, longitude: 115.8605 } }
+        })}</script>
+      </body></html>
+    `;
+    const otherOrgHtml = `
+      <html><body>
+        <a href="/events/404404404/">Same Broken Event</a>
+      </body></html>
+    `;
+    const detailHtml = `
+      <html><body>
+        <script type="application/ld+json">${JSON.stringify({
+          '@type': 'Event',
+          name: 'Shared Club Tennis',
+          description: 'Social tennis session.',
+          startDate: '2027-06-20T18:00:00+08:00',
+          url: 'https://www.facebook.com/events/101010101/',
+          location: { '@type': 'Place', name: 'Perth Courts', geo: { latitude: -31.9505, longitude: 115.8605 } }
+        })}</script>
+      </body></html>
+    `;
+
+    const fetchCalls = [];
+    const mockFetch = async (url) => {
+      fetchCalls.push(url);
+      if (url === 'https://www.facebook.com/sharedclub/events') {
+        return { ok: true, status: 200, text: async () => sharedOrgHtml };
+      }
+      if (url === 'https://www.facebook.com/otherclub/events') {
+        return { ok: true, status: 200, text: async () => otherOrgHtml };
+      }
+      if (url === 'https://www.facebook.com/events/101010101/') {
+        return { ok: true, status: 200, text: async () => detailHtml };
+      }
+      if (url === 'https://www.facebook.com/events/404404404/') {
+        return { ok: false, status: 404, text: async () => 'Not Found' };
+      }
+      if (url === 'https://www.facebook.com/deadclub/events' || url === 'https://www.facebook.com/deadclub') {
+        return { ok: false, status: 404, text: async () => 'Not Found' };
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    };
+
+    const res = await runFacebookSync({
+      adapter: {
+        async scanVenues() { return []; },
+        async scanOrganizers() {
+          return [
+            {
+              id: 'org_shared_1',
+              name: 'Shared Club 1',
+              subcategory: 'tennis',
+              coordinates: { lat: -31.9505, lng: 115.8605 },
+              contact: { facebook: 'https://www.facebook.com/sharedclub/' }
+            },
+            {
+              id: 'org_shared_2',
+              name: 'Shared Club 2',
+              subcategory: 'tennis',
+              coordinates: { lat: -31.9505, lng: 115.8605 },
+              contact: { facebook: 'https://m.facebook.com/sharedclub/?ref=bookmarks' }
+            },
+            {
+              id: 'org_dead_1',
+              name: 'Dead Club 1',
+              subcategory: 'tennis',
+              coordinates: { lat: -31.9505, lng: 115.8605 },
+              contact: { facebook: 'https://www.facebook.com/deadclub' }
+            },
+            {
+              id: 'org_dead_2',
+              name: 'Dead Club 2',
+              subcategory: 'tennis',
+              coordinates: { lat: -31.9505, lng: 115.8605 },
+              contact: { facebook: 'https://www.facebook.com/deadclub/' }
+            },
+            {
+              id: 'org_other',
+              name: 'Other Club',
+              subcategory: 'tennis',
+              coordinates: { lat: -31.9505, lng: 115.8605 },
+              contact: { facebook: 'https://www.facebook.com/otherclub' }
+            }
+          ];
+        }
+      },
+      fetchFn: mockFetch,
+      options: { dryRun: true, now },
+      logger: { log: () => {}, warn: () => {} }
+    });
+
+    assert.equal(fetchCalls.filter(u => u === 'https://www.facebook.com/sharedclub/events').length, 1);
+    assert.equal(fetchCalls.filter(u => u === 'https://www.facebook.com/deadclub/events').length, 1);
+    assert.equal(fetchCalls.filter(u => u === 'https://www.facebook.com/deadclub').length, 1);
+    assert.equal(fetchCalls.filter(u => u === 'https://www.facebook.com/events/404404404/').length, 1);
+    assert.equal(res.targets, 2);
+    assert.equal(res.valid, 1);
+  });
+
+  it('Seam 4 (Issue #29): pre-filters Expired Activities and online gatherings before detail hydration while hydrating upcoming and undated links', async () => {
+    const now = new Date('2026-11-20T09:00:00Z');
+    const orgEventsTabHtml = `
+      <html><body>
+        <a href="/events/111000111/">Expired Event</a>
+        <a href="/events/222000222/">Online Event</a>
+        <a href="/events/333000333/">Upcoming Event</a>
+        <a href="/events/444000444/">Undated Link Event</a>
+        <script type="application/json">${JSON.stringify({
+          require: [['ScheduledServerJS', 'handle', null, [{
+            __bbox: {
+              result: {
+                data: {
+                  page: {
+                    upcoming_events: {
+                      edges: [
+                        {
+                          node: {
+                            __typename: 'Event',
+                            id: '111000111',
+                            name: 'Past Tennis Open',
+                            day_time_sentence: 'Sun, Jun 20, 2025 at 10\u202fAM',
+                            is_online: false,
+                            url: 'https://www.facebook.com/events/111000111/'
+                          }
+                        },
+                        {
+                          node: {
+                            __typename: 'Event',
+                            id: '222000222',
+                            name: 'Online Coaching Webinar',
+                            day_time_sentence: 'Sat, Jun 26, 2027 at 10\u202fAM',
+                            is_online: true,
+                            url: 'https://www.facebook.com/events/222000222/'
+                          }
+                        },
+                        {
+                          node: {
+                            __typename: 'Event',
+                            id: '333000333',
+                            name: 'Upcoming Tennis Social',
+                            day_time_sentence: 'Sat, Jun 26, 2027 at 10\u202fAM',
+                            is_online: false,
+                            url: 'https://www.facebook.com/events/333000333/'
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }]]]
+        })}</script>
+      </body></html>
+    `;
+
+    const makeDetail = (id, name) => `
+      <html><body>
+        <script type="application/ld+json">${JSON.stringify({
+          '@type': 'Event',
+          name,
+          description: 'In-person tennis session in Perth.',
+          startDate: '2027-06-26T10:00:00+08:00',
+          url: `https://www.facebook.com/events/${id}/`,
+          location: { '@type': 'Place', name: 'Perth Courts', geo: { latitude: -31.9505, longitude: 115.8605 } }
+        })}</script>
+      </body></html>
+    `;
+
+    const fetchCalls = [];
+    const mockFetch = async (url) => {
+      fetchCalls.push(url);
+      if (url === 'https://www.facebook.com/perthclub/events') {
+        return { ok: true, status: 200, text: async () => orgEventsTabHtml };
+      }
+      if (url === 'https://www.facebook.com/events/333000333/') {
+        return { ok: true, status: 200, text: async () => makeDetail('333000333', 'Upcoming Tennis Social') };
+      }
+      if (url === 'https://www.facebook.com/events/444000444/') {
+        return { ok: true, status: 200, text: async () => makeDetail('444000444', 'Undated Link Event') };
+      }
+      throw new Error(`Unexpected detail fetch for pre-filtered URL: ${url}`);
+    };
+
+    const res = await runFacebookSync({
+      adapter: {
+        async scanVenues() { return []; },
+        async scanOrganizers() {
+          return [{
+            id: 'org_perth_club',
+            name: 'Perth Tennis Club',
+            subcategory: 'tennis',
+            coordinates: { lat: -31.9505, lng: 115.8605 },
+            contact: { facebook: 'https://www.facebook.com/perthclub' }
+          }];
+        }
+      },
+      fetchFn: mockFetch,
+      options: { dryRun: true, now },
+      logger: { log: () => {}, warn: () => {} }
+    });
+
+    assert.deepEqual(fetchCalls, [
+      'https://www.facebook.com/perthclub/events',
+      'https://www.facebook.com/events/333000333/',
+      'https://www.facebook.com/events/444000444/'
+    ]);
+    assert.equal(res.filteredExpired, 1);
+    assert.equal(res.filteredOnline, 1);
+    assert.equal(res.valid, 2);
+    assert.deepEqual(res.activities.map(a => a.id).sort(), ['facebook_333000333', 'facebook_444000444']);
+  });
 });
