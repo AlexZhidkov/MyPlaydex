@@ -21,10 +21,11 @@ import {
   extractRelatedFacebookEventLinks,
   isCometNonEntityRoute
 } from './facebook-parser.js';
+import { createFileCacheStore } from './file-cache.js';
 import { createFirestoreAdapter, initFirestoreFromEnv } from './firestore-adapter.js';
 import { encodeGeohash } from './geohash.js';
 import { PERTH_SUBURB_CENTROIDS } from './perth-centroids.js';
-import { createFileCacheStore, loadDotEnv } from './places-sync.js';
+import { loadDotEnv } from './places-sync.js';
 import {
   computeActivityExpireAt,
   normalizeSport,
@@ -218,11 +219,37 @@ function resolveActivityVenueAndCoordinates(ev, { venuesCatalog = [], organizers
   return { outOfArea: true };
 }
 
-async function fetchTargetPayload({ url, fetchFn, cacheStore, refresh, facebookCookie, logger }) {
+const ORGANIZER_CACHE_TTL_MS = 48 * 60 * 60 * 1000;
+const EVENT_DETAIL_CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+const NON_ENTITY_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function resolveFacebookCacheTtlMs(canonicalUrl, body) {
+  if (typeof body === 'string' && isCometNonEntityRoute(body)) {
+    return NON_ENTITY_CACHE_TTL_MS;
+  }
+  if (extractFacebookEventIdFromUrl(canonicalUrl)) {
+    return EVENT_DETAIL_CACHE_TTL_MS;
+  }
+  return ORGANIZER_CACHE_TTL_MS;
+}
+
+function isFacebookCacheExpired(cached, canonicalUrl, now) {
+  const fetchedAtMs = cached?.fetchedAt ? Date.parse(cached.fetchedAt) : NaN;
+  const nowMs = now instanceof Date ? now.getTime() : NaN;
+  if (!Number.isFinite(fetchedAtMs) || !Number.isFinite(nowMs)) {
+    return true;
+  }
+  const ttlMs = resolveFacebookCacheTtlMs(canonicalUrl, cached.body);
+  return (nowMs - fetchedAtMs) > ttlMs;
+}
+
+async function fetchTargetPayload({ url, fetchFn, cacheStore, refresh, facebookCookie, logger, now }) {
+  const parsedNow = now instanceof Date ? now : (now ? new Date(now) : new Date());
+  const runNow = Number.isFinite(parsedNow.getTime()) ? parsedNow : new Date();
   const canonicalUrl = normalizeFacebookUrl(url) || url;
   if (!refresh && cacheStore) {
     const cached = await cacheStore.read(canonicalUrl);
-    if (cached && cached.body) {
+    if (cached && cached.body && !isFacebookCacheExpired(cached, canonicalUrl, runNow)) {
       return { body: cached.body, fromCache: true, sourceUrl: canonicalUrl };
     }
   }
@@ -251,7 +278,7 @@ async function fetchTargetPayload({ url, fetchFn, cacheStore, refresh, facebookC
     try {
       await cacheStore.write(canonicalUrl, {
         url: canonicalUrl,
-        fetchedAt: new Date().toISOString(),
+        fetchedAt: runNow.toISOString(),
         body
       });
     } catch (err) {
@@ -319,7 +346,8 @@ async function hydrateDiscoveredEventLinks(target, rawEvents, { fetchFn, cacheSt
         cacheStore,
         refresh,
         facebookCookie,
-        logger
+        logger,
+        now
       });
       hydratedEvents.push(...extractFacebookEvents(detail.body, {
         sourceUrl: detail.sourceUrl,
@@ -516,116 +544,122 @@ export async function runFacebookSync({
     }
   };
 
-  for (const spec of targetSpecs) {
-    if (limit !== undefined && activities.length >= limit) {
-      break;
-    }
-
-    let target;
-    if (spec.kind === 'file') {
-      const ext = path.extname(spec.filePath).toLowerCase().replace(/^\./, '');
-      const body = await fs.readFile(spec.filePath, 'utf8');
-      target = { body, format: ext, sourceUrl: spec.sourceUrl, organizer: spec.organizer };
-    } else {
-      try {
-        const fetched = await fetchTargetWithEventsTabFallback({
-          url: spec.url,
-          fetchFn,
-          cacheStore,
-          refresh,
-          facebookCookie,
-          logger
-        });
-        target = { body: fetched.body, sourceUrl: fetched.sourceUrl, organizer: spec.organizer };
-      } catch (err) {
-        failedTargets += 1;
-        logger.warn?.(`[Facebook Sync] Skipping ${spec.label}: ${err.message}`);
-        continue;
-      }
-    }
-
-    targetsCount += 1;
-
-    let rawEvents = extractFacebookEvents(target.body, {
-      sourceUrl: target.sourceUrl,
-      format: target.format,
-      now
-    });
-
-    const hydrated = await hydrateDiscoveredEventLinks(target, rawEvents, {
-      fetchFn,
-      cacheStore,
-      refresh,
-      facebookCookie,
-      remainingLimit: limit !== undefined ? Math.max(0, limit - activities.length) : undefined,
-      now,
-      logger
-    });
-    rawEvents = hydrated.events;
-    failedTargets += hydrated.failedFetches;
-
-    extractedCount += rawEvents.length;
-
-    const oneHopCandidates = [];
-    for (const ev of rawEvents) {
-      if (ev.eventId) seenEventIds.add(String(ev.eventId));
+  try {
+    for (const spec of targetSpecs) {
       if (limit !== undefined && activities.length >= limit) {
         break;
       }
-      const outcome = ingestExtractedEvent(ev, {
-        venuesCatalog,
-        organizersCatalog,
-        parentOrganizer: target.organizer,
-        isOneHop: false,
+
+      let target;
+      if (spec.kind === 'file') {
+        const ext = path.extname(spec.filePath).toLowerCase().replace(/^\./, '');
+        const body = await fs.readFile(spec.filePath, 'utf8');
+        target = { body, format: ext, sourceUrl: spec.sourceUrl, organizer: spec.organizer };
+      } else {
+        try {
+          const fetched = await fetchTargetWithEventsTabFallback({
+            url: spec.url,
+            fetchFn,
+            cacheStore,
+            refresh,
+            facebookCookie,
+            logger,
+            now
+          });
+          target = { body: fetched.body, sourceUrl: fetched.sourceUrl, organizer: spec.organizer };
+        } catch (err) {
+          failedTargets += 1;
+          logger.warn?.(`[Facebook Sync] Skipping ${spec.label}: ${err.message}`);
+          continue;
+        }
+      }
+
+      targetsCount += 1;
+
+      let rawEvents = extractFacebookEvents(target.body, {
+        sourceUrl: target.sourceUrl,
+        format: target.format,
         now
       });
-      recordOutcome(outcome);
-      if (outcome.status === 'valid' && ev.eventId && hydrated.relatedLinksByEventId.has(String(ev.eventId))) {
-        oneHopCandidates.push(...hydrated.relatedLinksByEventId.get(String(ev.eventId)));
-      }
-    }
 
-    for (const related of oneHopCandidates) {
-      if (limit !== undefined && activities.length >= limit) {
-        break;
-      }
-      if (seenEventIds.has(related.eventId)) {
-        continue;
-      }
-      seenEventIds.add(related.eventId);
+      const hydrated = await hydrateDiscoveredEventLinks(target, rawEvents, {
+        fetchFn,
+        cacheStore,
+        refresh,
+        facebookCookie,
+        remainingLimit: limit !== undefined ? Math.max(0, limit - activities.length) : undefined,
+        now,
+        logger
+      });
+      rawEvents = hydrated.events;
+      failedTargets += hydrated.failedFetches;
 
-      try {
-        const detail = await fetchTargetPayload({
-          url: related.url,
-          fetchFn,
-          cacheStore,
-          refresh,
-          facebookCookie,
-          logger
-        });
-        const candidateEvents = extractFacebookEvents(detail.body, {
-          sourceUrl: detail.sourceUrl,
-          targetEventId: related.eventId,
+      extractedCount += rawEvents.length;
+
+      const oneHopCandidates = [];
+      for (const ev of rawEvents) {
+        if (ev.eventId) seenEventIds.add(String(ev.eventId));
+        if (limit !== undefined && activities.length >= limit) {
+          break;
+        }
+        const outcome = ingestExtractedEvent(ev, {
+          venuesCatalog,
+          organizersCatalog,
+          parentOrganizer: target.organizer,
+          isOneHop: false,
           now
         });
-        extractedCount += candidateEvents.length;
-        for (const ev of candidateEvents) {
-          if (limit !== undefined && activities.length >= limit) {
-            break;
-          }
-          recordOutcome(ingestExtractedEvent(ev, {
-            venuesCatalog,
-            organizersCatalog,
-            parentOrganizer: null,
-            isOneHop: true,
-            now
-          }));
+        recordOutcome(outcome);
+        if (outcome.status === 'valid' && ev.eventId && hydrated.relatedLinksByEventId.has(String(ev.eventId))) {
+          oneHopCandidates.push(...hydrated.relatedLinksByEventId.get(String(ev.eventId)));
         }
-      } catch (err) {
-        failedTargets += 1;
-        logger?.warn?.(`[Facebook Sync] Skipping 1-hop related listing ${related.url}: ${err.message}`);
+      }
+
+      for (const related of oneHopCandidates) {
+        if (limit !== undefined && activities.length >= limit) {
+          break;
+        }
+        if (seenEventIds.has(related.eventId)) {
+          continue;
+        }
+        seenEventIds.add(related.eventId);
+
+        try {
+          const detail = await fetchTargetPayload({
+            url: related.url,
+            fetchFn,
+            cacheStore,
+            refresh,
+            facebookCookie,
+            logger,
+            now
+          });
+          const candidateEvents = extractFacebookEvents(detail.body, {
+            sourceUrl: detail.sourceUrl,
+            targetEventId: related.eventId,
+            now
+          });
+          extractedCount += candidateEvents.length;
+          for (const ev of candidateEvents) {
+            if (limit !== undefined && activities.length >= limit) {
+              break;
+            }
+            recordOutcome(ingestExtractedEvent(ev, {
+              venuesCatalog,
+              organizersCatalog,
+              parentOrganizer: null,
+              isOneHop: true,
+              now
+            }));
+          }
+        } catch (err) {
+          failedTargets += 1;
+          logger?.warn?.(`[Facebook Sync] Skipping 1-hop related listing ${related.url}: ${err.message}`);
+        }
       }
     }
+  } finally {
+    await cacheStore?.flush?.();
   }
 
   let upserted = 0;
@@ -681,7 +715,7 @@ export async function main(argv = process.argv.slice(2), env = process.env, opti
     dryRun: effectiveDryRun
   });
 
-  const cacheStore = options.cacheStore || createFileCacheStore(DEFAULT_FACEBOOK_CACHE_PATH);
+  const cacheStore = options.cacheStore || createFileCacheStore(DEFAULT_FACEBOOK_CACHE_PATH, { flushEvery: 25 });
 
   return runFacebookSync({
     adapter,

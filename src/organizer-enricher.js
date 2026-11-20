@@ -9,8 +9,9 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { resolveCliLogger } from './crawler-reporter.js';
 import { DEFAULT_FACEBOOK_CACHE_PATH, isCachedFacebookNonEntity } from './facebook-sync.js';
+import { createFileCacheStore } from './file-cache.js';
 import { createFirestoreAdapter, initFirestoreFromEnv } from './firestore-adapter.js';
-import { createFileCacheStore, loadDotEnv } from './places-sync.js';
+import { loadDotEnv } from './places-sync.js';
 import {
   isFacebookUrl,
   isGenericDirectoryFallbackUrl,
@@ -261,59 +262,63 @@ export async function runOrganizerEnricher({
   let cacheHits = 0;
   const updates = [];
 
-  for (const { org, websiteUrl, existingFacebook } of targets) {
-    scanned += 1;
-    let fetched;
-    try {
-      fetched = await fetchWebsiteHtml({
-        url: websiteUrl,
-        fetchFn,
-        cacheStore,
-        refresh,
-        timeoutMs,
-        logger
-      });
-      if (fetched.fromCache) {
-        cacheHits += 1;
+  try {
+    for (const { org, websiteUrl, existingFacebook } of targets) {
+      scanned += 1;
+      let fetched;
+      try {
+        fetched = await fetchWebsiteHtml({
+          url: websiteUrl,
+          fetchFn,
+          cacheStore,
+          refresh,
+          timeoutMs,
+          logger
+        });
+        if (fetched.fromCache) {
+          cacheHits += 1;
+        }
+      } catch (err) {
+        failedTargets += 1;
+        logger?.warn?.(`[Organizer Enricher] Failed to fetch ${websiteUrl} for organizer ${org.id}: ${err.message}`);
+        continue;
       }
-    } catch (err) {
-      failedTargets += 1;
-      logger?.warn?.(`[Organizer Enricher] Failed to fetch ${websiteUrl} for organizer ${org.id}: ${err.message}`);
-      continue;
-    }
 
-    const discoveredFacebook = extractFacebookUrlFromHtml(fetched.body);
-    if (!discoveredFacebook) {
-      continue;
-    }
-
-    const normalizedExisting = existingFacebook
-      ? (resolveOrganizerFacebookUrl(existingFacebook) || existingFacebook)
-      : '';
-    const facebookChanged =
-      !existingFacebook ||
-      (discoveredFacebook !== existingFacebook && discoveredFacebook !== normalizedExisting);
-
-    if (!facebookChanged || await isCachedFacebookNonEntity(discoveredFacebook, facebookCacheStore)) {
-      continue;
-    }
-
-    const promoteSource = shouldPromoteSourceUrl(org);
-    const { updated_at: _staleUpdatedAt, ...orgWithoutUpdatedAt } = org;
-    const nextOrg = {
-      ...orgWithoutUpdatedAt,
-      contact: {
-        ...(org.contact && typeof org.contact === 'object' ? org.contact : {}),
-        email: org.contact?.email ?? null,
-        phone: org.contact?.phone ?? null,
-        facebook: discoveredFacebook
+      const discoveredFacebook = extractFacebookUrlFromHtml(fetched.body);
+      if (!discoveredFacebook) {
+        continue;
       }
-    };
-    if (promoteSource) {
-      nextOrg.source_url = discoveredFacebook;
-      nextOrg.verified = true;
+
+      const normalizedExisting = existingFacebook
+        ? (resolveOrganizerFacebookUrl(existingFacebook) || existingFacebook)
+        : '';
+      const facebookChanged =
+        !existingFacebook ||
+        (discoveredFacebook !== existingFacebook && discoveredFacebook !== normalizedExisting);
+
+      if (!facebookChanged || await isCachedFacebookNonEntity(discoveredFacebook, facebookCacheStore)) {
+        continue;
+      }
+
+      const promoteSource = shouldPromoteSourceUrl(org);
+      const { updated_at: _staleUpdatedAt, ...orgWithoutUpdatedAt } = org;
+      const nextOrg = {
+        ...orgWithoutUpdatedAt,
+        contact: {
+          ...(org.contact && typeof org.contact === 'object' ? org.contact : {}),
+          email: org.contact?.email ?? null,
+          phone: org.contact?.phone ?? null,
+          facebook: discoveredFacebook
+        }
+      };
+      if (promoteSource) {
+        nextOrg.source_url = discoveredFacebook;
+        nextOrg.verified = true;
+      }
+      updates.push(nextOrg);
     }
-    updates.push(nextOrg);
+  } finally {
+    await cacheStore?.flush?.();
   }
 
   let updated = 0;
@@ -410,7 +415,7 @@ export async function main(argv = process.argv.slice(2), env = process.env, opti
     });
   }
 
-  const cacheStore = options.cacheStore || createFileCacheStore(DEFAULT_ORGANIZER_ENRICH_CACHE_PATH);
+  const cacheStore = options.cacheStore || createFileCacheStore(DEFAULT_ORGANIZER_ENRICH_CACHE_PATH, { flushEvery: 25 });
   const facebookCacheStore = options.facebookCacheStore || createFileCacheStore(DEFAULT_FACEBOOK_CACHE_PATH);
 
   return runOrganizerEnricher({

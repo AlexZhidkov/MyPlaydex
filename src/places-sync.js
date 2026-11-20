@@ -4,15 +4,17 @@
  * using cost-controlled Pro-tier fields, spatial de-overlapping, and local caching.
  */
 
-import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DEFAULT_LOG_DIR, resolveCliLogger } from './crawler-reporter.js';
 import { calculateDistanceKm } from './discovery-engine.js';
+import { createFileCacheStore } from './file-cache.js';
 import { createFirestoreAdapter, initFirestoreFromEnv } from './firestore-adapter.js';
 import { PERTH_SUBURB_CENTROIDS } from './perth-centroids.js';
 import { normalizeSubcategories, sanitizeOrganizer, sanitizeVenue } from './sanitizer.js';
+
+export { createFileCacheStore };
 
 export const DEFAULT_PLACES_LOG_PATH = path.resolve(DEFAULT_LOG_DIR, 'places-sync.log');
 export const PLACES_NEARBY_SEARCH_URL = 'https://places.googleapis.com/v1/places:searchNearby';
@@ -282,42 +284,46 @@ export async function runPlacesSync({
   const rawPlacesById = new Map();
   let cacheHits = 0;
 
-  for (const centroid of targetCentroids) {
-    const cacheKey = centroid.name;
-    const cached = (await cacheStore.read(cacheKey)) || {};
-    const missingGroups = refresh
-      ? queryGroups
-      : queryGroups.filter(g => !Array.isArray(cached[g.name]));
+  try {
+    for (const centroid of targetCentroids) {
+      const cacheKey = centroid.name;
+      const cached = (await cacheStore.read(cacheKey)) || {};
+      const missingGroups = refresh
+        ? queryGroups
+        : queryGroups.filter(g => !Array.isArray(cached[g.name]));
 
-    let suburbData = cached;
-    if (missingGroups.length === 0) {
-      cacheHits++;
-    } else {
-      const updatedData = { ...cached };
-      for (const group of missingGroups) {
-        const places = await fetchNearbyPlaces({
-          fetchFn,
-          apiKey,
-          centroid,
-          includedTypes: group.includedTypes
-        });
-        updatedData[group.name] = places;
+      let suburbData = cached;
+      if (missingGroups.length === 0) {
+        cacheHits++;
+      } else {
+        const updatedData = { ...cached };
+        for (const group of missingGroups) {
+          const places = await fetchNearbyPlaces({
+            fetchFn,
+            apiKey,
+            centroid,
+            includedTypes: group.includedTypes
+          });
+          updatedData[group.name] = places;
+        }
+        suburbData = updatedData;
+        await cacheStore.write(cacheKey, suburbData);
       }
-      suburbData = updatedData;
-      await cacheStore.write(cacheKey, suburbData);
-    }
 
-    for (const group of queryGroups) {
-      const places = Array.isArray(suburbData[group.name]) ? suburbData[group.name] : [];
-      for (const place of places) {
-        if (!place?.id || place.businessStatus === 'CLOSED_PERMANENTLY') {
-          continue;
-        }
-        if (!rawPlacesById.has(place.id)) {
-          rawPlacesById.set(place.id, { place, group });
+      for (const group of queryGroups) {
+        const places = Array.isArray(suburbData[group.name]) ? suburbData[group.name] : [];
+        for (const place of places) {
+          if (!place?.id || place.businessStatus === 'CLOSED_PERMANENTLY') {
+            continue;
+          }
+          if (!rawPlacesById.has(place.id)) {
+            rawPlacesById.set(place.id, { place, group });
+          }
         }
       }
     }
+  } finally {
+    await cacheStore?.flush?.();
   }
 
   const { venues, organizers } = classifyAndSanitizePlaces(rawPlacesById, entityFilter);
@@ -346,87 +352,6 @@ export async function runPlacesSync({
     venuesUpserted,
     organizersUpserted,
     dryRun: isDryRun
-  };
-}
-
-const LARGE_CACHE_BODY_THRESHOLD = 65536;
-
-function hashCacheKey(key) {
-  return `${createHash('sha256').update(String(key)).digest('hex')}.body`;
-}
-
-/**
- * Creates a JSON file-backed checkpoint cache store keyed by suburb name or URL.
- * Large string `body` payloads (> 64 KB) are stored in sidecar files under
- * `${cachePath}.d/` so the main JSON index never approaches V8 string limits.
- *
- * @param {string} [cachePath='.scratch/places-sync-cache.json']
- * @returns {{ read: (key: string) => Promise<object|null>, write: (key: string, val: object) => Promise<void> }}
- */
-export function createFileCacheStore(cachePath = path.resolve(process.cwd(), '.scratch/places-sync-cache.json')) {
-  let memoryCache = null;
-  const sidecarDir = `${cachePath}.d`;
-
-  async function loadAll() {
-    if (memoryCache) return memoryCache;
-    try {
-      const raw = await fs.readFile(cachePath, 'utf8');
-      memoryCache = JSON.parse(raw);
-    } catch {
-      memoryCache = {};
-    }
-
-    let migrated = false;
-    for (const [key, entry] of Object.entries(memoryCache)) {
-      if (entry && typeof entry === 'object' && typeof entry.body === 'string' && entry.body.length > LARGE_CACHE_BODY_THRESHOLD) {
-        if (!migrated) {
-          await fs.mkdir(sidecarDir, { recursive: true });
-          migrated = true;
-        }
-        const bodyFile = hashCacheKey(key);
-        await fs.writeFile(path.join(sidecarDir, bodyFile), entry.body, 'utf8');
-        const { body: _omitted, ...rest } = entry;
-        memoryCache[key] = { ...rest, bodyFile };
-      }
-    }
-
-    if (migrated) {
-      await fs.mkdir(path.dirname(cachePath), { recursive: true });
-      await fs.writeFile(cachePath, JSON.stringify(memoryCache, null, 2), 'utf8');
-    }
-
-    return memoryCache;
-  }
-
-  return {
-    async read(key) {
-      const data = await loadAll();
-      const entry = data[key];
-      if (!entry) return null;
-      if (entry && typeof entry === 'object' && entry.bodyFile && entry.body === undefined) {
-        try {
-          const body = await fs.readFile(path.join(sidecarDir, entry.bodyFile), 'utf8');
-          return { ...entry, body };
-        } catch {
-          return null;
-        }
-      }
-      return entry;
-    },
-    async write(key, val) {
-      const data = await loadAll();
-      if (val && typeof val === 'object' && typeof val.body === 'string' && val.body.length > LARGE_CACHE_BODY_THRESHOLD) {
-        const bodyFile = hashCacheKey(key);
-        await fs.mkdir(sidecarDir, { recursive: true });
-        await fs.writeFile(path.join(sidecarDir, bodyFile), val.body, 'utf8');
-        const { body: _omitted, ...rest } = val;
-        data[key] = { ...rest, bodyFile };
-      } else {
-        data[key] = val;
-      }
-      await fs.mkdir(path.dirname(cachePath), { recursive: true });
-      await fs.writeFile(cachePath, JSON.stringify(data, null, 2), 'utf8');
-    }
   };
 }
 
@@ -559,7 +484,7 @@ export async function main(argv = process.argv.slice(2), env = process.env, opti
     dryRun: effectiveDryRun
   });
 
-  const cacheStore = options.cacheStore || createFileCacheStore();
+  const cacheStore = options.cacheStore || createFileCacheStore(undefined, { flushEvery: 25 });
 
   return runPlacesSync({
     adapter,

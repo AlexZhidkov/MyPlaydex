@@ -1059,6 +1059,130 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
     }
   });
 
+  it('createFileCacheStore writes .body.gz sidecars, reads legacy .body sidecars, and cleans up previous sidecars on overwrite or delete', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'myplaydex-gz-cache-'));
+    const cachePath = path.join(tmpDir, 'cache.json');
+    const sidecarDir = `${cachePath}.d`;
+    const largeBody = '<html>' + 'z'.repeat(70000) + '</html>';
+    const legacyUncompressedBody = '<html>' + 'u'.repeat(70000) + '</html>';
+
+    try {
+      await fs.mkdir(sidecarDir, { recursive: true });
+      await fs.writeFile(path.join(sidecarDir, 'legacy.body'), legacyUncompressedBody, 'utf8');
+      await fs.writeFile(cachePath, JSON.stringify({
+        'https://www.facebook.com/legacy-sidecar': {
+          url: 'https://www.facebook.com/legacy-sidecar',
+          fetchedAt: '2026-11-19T00:00:00.000Z',
+          bodyFile: 'legacy.body'
+        }
+      }, null, 2), 'utf8');
+
+      const store = createFileCacheStore(cachePath);
+
+      // 1. Existing uncompressed .body sidecar remains readable
+      const legacyRead = await store.read('https://www.facebook.com/legacy-sidecar');
+      assert.equal(legacyRead.body, legacyUncompressedBody);
+
+      // 2. Overwriting legacy .body key with a new large body writes .body.gz and removes legacy.body
+      await store.write('https://www.facebook.com/legacy-sidecar', {
+        url: 'https://www.facebook.com/legacy-sidecar',
+        fetchedAt: '2026-11-19T01:00:00.000Z',
+        body: largeBody
+      });
+
+      const indexAfterOverwrite = JSON.parse(await fs.readFile(cachePath, 'utf8'));
+      const gzFile = indexAfterOverwrite['https://www.facebook.com/legacy-sidecar'].bodyFile;
+      assert.match(gzFile, /\.body\.gz$/);
+      const sidecarsAfterOverwrite = await fs.readdir(sidecarDir);
+      assert.deepEqual(sidecarsAfterOverwrite, [gzFile]);
+      const gzStat = await fs.stat(path.join(sidecarDir, gzFile));
+      assert.ok(gzStat.size < largeBody.length);
+
+      // Transparently decompressed on read from fresh store
+      const freshStore = createFileCacheStore(cachePath);
+      const decompressedRead = await freshStore.read('https://www.facebook.com/legacy-sidecar');
+      assert.equal(decompressedRead.body, largeBody);
+
+      // 3. Overwriting with a small inline body cleans up the .body.gz sidecar
+      await freshStore.write('https://www.facebook.com/legacy-sidecar', {
+        url: 'https://www.facebook.com/legacy-sidecar',
+        fetchedAt: '2026-11-19T02:00:00.000Z',
+        body: '<html>small</html>'
+      });
+      assert.deepEqual(await fs.readdir(sidecarDir), []);
+
+      // 4. Deleting a cached key with a sidecar cleans up the sidecar and removes it from index
+      await freshStore.write('https://www.facebook.com/to-delete', {
+        url: 'https://www.facebook.com/to-delete',
+        fetchedAt: '2026-11-19T03:00:00.000Z',
+        body: largeBody
+      });
+      assert.equal((await fs.readdir(sidecarDir)).length, 1);
+      await freshStore.delete('https://www.facebook.com/to-delete');
+      assert.equal(await freshStore.read('https://www.facebook.com/to-delete'), null);
+      assert.deepEqual(await fs.readdir(sidecarDir), []);
+      const indexAfterDelete = JSON.parse(await fs.readFile(cachePath, 'utf8'));
+      assert.equal(indexAfterDelete['https://www.facebook.com/to-delete'], undefined);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('createFileCacheStore supports batched and explicit index JSON flushing and runFacebookSync flushes on completion', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'myplaydex-batch-cache-'));
+    const explicitPath = path.join(tmpDir, 'explicit.json');
+    const batchedPath = path.join(tmpDir, 'batched.json');
+
+    try {
+      // 1. Explicit flush mode (autoFlush: false)
+      const explicitStore = createFileCacheStore(explicitPath, { autoFlush: false });
+      await explicitStore.write('k1', { body: 'v1' });
+      await explicitStore.write('k2', { body: 'v2' });
+      assert.equal((await explicitStore.read('k1')).body, 'v1');
+      await assert.rejects(() => fs.stat(explicitPath), { code: 'ENOENT' });
+
+      await explicitStore.flush();
+      const explicitJson = JSON.parse(await fs.readFile(explicitPath, 'utf8'));
+      assert.deepEqual(Object.keys(explicitJson), ['k1', 'k2']);
+
+      // 2. Batched flush mode (flushEvery: 3)
+      const batchedStore = createFileCacheStore(batchedPath, { flushEvery: 3 });
+      await batchedStore.write('b1', { body: '1' });
+      await batchedStore.write('b2', { body: '2' });
+      await assert.rejects(() => fs.stat(batchedPath), { code: 'ENOENT' });
+
+      await batchedStore.write('b3', { body: '3' });
+      const afterThree = JSON.parse(await fs.readFile(batchedPath, 'utf8'));
+      assert.deepEqual(Object.keys(afterThree), ['b1', 'b2', 'b3']);
+
+      await batchedStore.write('b4', { body: '4' });
+      const stillThree = JSON.parse(await fs.readFile(batchedPath, 'utf8'));
+      assert.deepEqual(Object.keys(stillThree), ['b1', 'b2', 'b3']);
+
+      await batchedStore.flush();
+      const afterFinalFlush = JSON.parse(await fs.readFile(batchedPath, 'utf8'));
+      assert.deepEqual(Object.keys(afterFinalFlush), ['b1', 'b2', 'b3', 'b4']);
+
+      // 3. runFacebookSync calls cacheStore.flush() at end of run
+      let flushedCount = 0;
+      const spyCacheStore = {
+        read: async () => null,
+        write: async () => {},
+        flush: async () => { flushedCount += 1; }
+      };
+      await runFacebookSync({
+        adapter: { scanVenues: async () => [], scanOrganizers: async () => [] },
+        fetchFn: async () => ({ ok: false, status: 500 }),
+        cacheStore: spyCacheStore,
+        options: { url: 'https://www.facebook.com/nonexistent', dryRun: true },
+        logger: { log: () => {}, warn: () => {} }
+      });
+      assert.equal(flushedCount, 1);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it('extractFacebookEventLinks ignores external /events/<id> URLs, discovers Relay Event IDs, and skips CometErrorRoute/CometHomeRoute', () => {
     const timelineHtml = `
       <html><body>
@@ -1844,5 +1968,123 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
     });
     assert.equal(limitedRes.valid, 2);
     assert.ok(!limitedFetchCalls.includes('https://www.facebook.com/events/222333444/'));
+  });
+
+  it('Seam 4 (Issue #28): runFacebookSync enforces tiered cache TTLs (48h organizer, 14d detail, 7d non-entity) relative to options.now', async () => {
+    const t0 = new Date('2026-11-01T00:00:00.000Z');
+    const orgTabHtml = `
+      <html><body>
+        <script type="application/json">{"__typename":"Event","id":"123456789","name":"Sunday Tennis"}</script>
+      </body></html>
+    `;
+    const eventDetailHtml = `
+      <html><head>
+        <meta property="og:title" content="Sunday Tennis Social" />
+        <meta property="event:start_time" content="2026-12-01T09:00:00+08:00" />
+        <meta property="place:location:latitude" content="-31.9505" />
+        <meta property="place:location:longitude" content="115.8605" />
+      </head></html>
+    `;
+    const nonEntityHtml = `<html><script>{"canonicalRouteName":"comet.fbweb.CometErrorRoute"}</script></html>`;
+    const basePageHtml = `<html><body><p>No upcoming events</p></body></html>`;
+
+    const cacheMap = new Map([
+      ['https://www.facebook.com/clubalpha/events', {
+        url: 'https://www.facebook.com/clubalpha/events',
+        fetchedAt: t0.toISOString(),
+        body: orgTabHtml
+      }],
+      ['https://www.facebook.com/events/123456789/', {
+        url: 'https://www.facebook.com/events/123456789/',
+        fetchedAt: t0.toISOString(),
+        body: eventDetailHtml
+      }],
+      ['https://www.facebook.com/clubbeta/events', {
+        url: 'https://www.facebook.com/clubbeta/events',
+        fetchedAt: t0.toISOString(),
+        body: nonEntityHtml
+      }],
+      ['https://www.facebook.com/clubbeta', {
+        url: 'https://www.facebook.com/clubbeta',
+        fetchedAt: t0.toISOString(),
+        body: basePageHtml
+      }]
+    ]);
+
+    const cacheStore = {
+      read: async (k) => cacheMap.get(k) || null,
+      write: async (k, v) => { cacheMap.set(k, v); }
+    };
+
+    const mockAdapter = {
+      async scanVenues() { return []; },
+      async scanOrganizers() {
+        return [
+          { id: 'org_alpha', name: 'Club Alpha', contact: { facebook: 'https://www.facebook.com/clubalpha' } },
+          { id: 'org_beta', name: 'Club Beta', contact: { facebook: 'https://www.facebook.com/clubbeta' } }
+        ];
+      }
+    };
+
+    const fetchCalls = [];
+    const mockFetch = async (url) => {
+      fetchCalls.push(url);
+      if (url === 'https://www.facebook.com/clubalpha/events') return { ok: true, status: 200, text: async () => orgTabHtml };
+      if (url === 'https://www.facebook.com/events/123456789/') return { ok: true, status: 200, text: async () => eventDetailHtml };
+      if (url === 'https://www.facebook.com/clubbeta/events') return { ok: true, status: 200, text: async () => nonEntityHtml };
+      if (url === 'https://www.facebook.com/clubbeta') return { ok: true, status: 200, text: async () => basePageHtml };
+      return { ok: false, status: 404, text: async () => '' };
+    };
+
+    const runAt = (offsetMs) => {
+      fetchCalls.length = 0;
+      return runFacebookSync({
+        adapter: mockAdapter,
+        fetchFn: mockFetch,
+        cacheStore,
+        options: { dryRun: true, now: new Date(t0.getTime() + offsetMs) },
+        logger: { log: () => {}, warn: () => {} }
+      });
+    };
+
+    const HOUR = 60 * 60 * 1000;
+    const DAY = 24 * HOUR;
+
+    // 1. At 47h59m: all 4 cached entries are fresh -> 0 fetches
+    await runAt(48 * HOUR - 60_000);
+    assert.deepEqual(fetchCalls, []);
+
+    // 2. At 48h01m: organizer /events tab and base page expire (48h TTL), while non-entity (7d) and detail (14d) stay cached
+    await runAt(48 * HOUR + 60_000);
+    assert.deepEqual(fetchCalls, [
+      'https://www.facebook.com/clubalpha/events',
+      'https://www.facebook.com/clubbeta'
+    ]);
+
+    // 3. At 6d23h (from t0): non-entity route is still cached (7d TTL)
+    await runAt(7 * DAY - 60_000);
+    assert.ok(!fetchCalls.includes('https://www.facebook.com/clubbeta/events'));
+    assert.ok(!fetchCalls.includes('https://www.facebook.com/events/123456789/'));
+
+    // 4. At 7d01m (from t0): non-entity route expires (7d TTL), detail page still cached (14d TTL)
+    await runAt(7 * DAY + 60_000);
+    assert.ok(fetchCalls.includes('https://www.facebook.com/clubbeta/events'));
+    assert.ok(!fetchCalls.includes('https://www.facebook.com/events/123456789/'));
+
+    // 5. At 13d23h (from t0): detail page is still cached (14d TTL)
+    await runAt(14 * DAY - 60_000);
+    assert.ok(!fetchCalls.includes('https://www.facebook.com/events/123456789/'));
+
+    // 6. At 14d01m (from t0): detail page expires (14d TTL) and is re-fetched
+    await runAt(14 * DAY + 60_000);
+    assert.ok(fetchCalls.includes('https://www.facebook.com/events/123456789/'));
+
+    // 7. Entry missing fetchedAt is treated as expired and re-fetched
+    cacheMap.set('https://www.facebook.com/events/123456789/', {
+      url: 'https://www.facebook.com/events/123456789/',
+      body: eventDetailHtml
+    });
+    await runAt(14 * DAY + 120_000);
+    assert.ok(fetchCalls.includes('https://www.facebook.com/events/123456789/'));
   });
 });
