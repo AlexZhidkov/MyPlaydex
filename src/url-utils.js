@@ -209,3 +209,133 @@ export function deriveFacebookEventsTabUrl(rawUrlOrParsed) {
   parsed.pathname = `/${segments.join('/')}/events`;
   return parsed.href;
 }
+
+const NON_ORGANIZER_FACEBOOK_PREFIXES = new Set([
+  'login',
+  'checkpoint',
+  'sharer',
+  'sharer.php',
+  'share',
+  'share.php',
+  'dialog',
+  'plugins',
+  'tr',
+  'l.php',
+  'ajax',
+  'rsrc.php',
+  'policies',
+  'privacy',
+  'legal',
+  'help',
+  'settings',
+  'recover',
+  'reg',
+  'r.php',
+  'home.php',
+  'events',
+  'watch',
+  'marketplace',
+  'gaming',
+  'bookmarks',
+  'notifications',
+  'messages',
+  'stories',
+  'photo.php',
+  'video.php',
+  'photo',
+  'video',
+  'reel',
+  'reels',
+  'permalink',
+  'story'
+]);
+
+const IGNORED_PLATFORM_FACEBOOK_HANDLES = new Set([
+  'wix',
+  'wixstudio',
+  'squarespace',
+  'wordpress',
+  'wordpresscom',
+  'wordpressorg',
+  'tidyhq',
+  'tidyclub',
+  'revolutionisesport',
+  'revolutionise',
+  'weebly',
+  'webflow',
+  'godaddy',
+  'shopify'
+]);
+
+/**
+ * Resolves a Facebook URL into a canonical Organizer Page or Public Group URL
+ * (`https://www.facebook.com/...`), stripping tracking/extra query params,
+ * resolving post/photo/video/event permalinks back to the parent Page/Group,
+ * and ignoring share/intent/pixel paths and generic CMS/platform handles.
+ *
+ * @param {string | URL} rawUrlOrParsed
+ * @returns {string | null}
+ */
+export function resolveOrganizerFacebookUrl(rawUrlOrParsed) {
+  const normalized = normalizeFacebookUrl(rawUrlOrParsed);
+  if (!normalized) {
+    return null;
+  }
+
+  const parsed = new URL(normalized);
+  const segments = parsed.pathname.split('/').filter(Boolean);
+  if (segments.length === 0) {
+    return null;
+  }
+
+  const firstLower = segments[0].toLowerCase();
+  if (NON_ORGANIZER_FACEBOOK_PREFIXES.has(firstLower)) {
+    return null;
+  }
+
+  if (firstLower === 'profile.php' || firstLower === 'permalink.php' || firstLower === 'story.php') {
+    const id = parsed.searchParams.get('id');
+    if (!id || !/^\d+$/.test(id)) {
+      return null;
+    }
+    return `https://www.facebook.com/profile.php?id=${id}`;
+  }
+
+  if (firstLower === 'groups') {
+    if (segments.length < 2) {
+      return null;
+    }
+    const groupSlug = segments[1];
+    if (IGNORED_PLATFORM_FACEBOOK_HANDLES.has(groupSlug.toLowerCase())) {
+      return null;
+    }
+    return `https://www.facebook.com/groups/${groupSlug}`;
+  }
+
+  if (firstLower === 'pages' || firstLower === 'people') {
+    if (segments.length < 3) {
+      return null;
+    }
+    return `https://www.facebook.com/${firstLower}/${segments[1]}/${segments[2]}`;
+  }
+
+  if (firstLower === 'p') {
+    if (segments.length < 2) {
+      return null;
+    }
+    return `https://www.facebook.com/p/${segments[1]}`;
+  }
+
+  if (firstLower === 'pg') {
+    if (segments.length < 2 || IGNORED_PLATFORM_FACEBOOK_HANDLES.has(segments[1].toLowerCase())) {
+      return null;
+    }
+    return `https://www.facebook.com/${segments[1]}`;
+  }
+
+  if (IGNORED_PLATFORM_FACEBOOK_HANDLES.has(firstLower)) {
+    return null;
+  }
+
+  return `https://www.facebook.com/${segments[0]}`;
+}
