@@ -243,6 +243,26 @@ export function extractServerData(html = '') {
 }
 
 /**
+ * Extracts `page_count` pagination metadata from parsed `window.__SERVER_DATA__`.
+ *
+ * @param {object|null} serverData
+ * @returns {number|null}
+ */
+export function extractEventbritePageCount(serverData) {
+  if (!serverData || typeof serverData !== 'object') return null;
+
+  const raw =
+    serverData.search_data?.events?.pagination?.page_count ??
+    serverData.events?.pagination?.page_count ??
+    serverData.pagination?.page_count ??
+    null;
+
+  if (raw === null || raw === undefined || raw === '') return null;
+  const parsed = typeof raw === 'number' ? raw : parseInt(String(raw), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : null;
+}
+
+/**
  * Extracts raw Activity entries from parsed `window.__SERVER_DATA__`.
  *
  * @param {object|null} serverData
@@ -800,20 +820,23 @@ export function mapEventbriteActivityToListing(merged, coords, options = {}) {
 }
 
 /**
- * Parses an Eventbrite search page HTML string into filtered, normalized canonical Activity Listings.
+ * Parses an Eventbrite search page HTML string into filtered, normalized canonical Activity Listings
+ * along with pagination metadata and raw extracted source IDs.
  *
  * @param {string} [html='']
  * @param {object} [options={}]
  * @param {string} [options.defaultCategory]
  * @param {Date|string} [options.now]
- * @returns {Array<object>}
+ * @returns {{ listings: Array<object>, pageCount: number|null, rawIds: Array<string> }}
  */
-export function parseEventbriteHtml(html = '', options = {}) {
+export function parseEventbritePage(html = '', options = {}) {
   const serverData = extractServerData(html);
+  const pageCount = extractEventbritePageCount(serverData);
   const serverActivities = extractServerDataActivities(serverData);
   const jsonLdActivities = extractJsonLdActivities(html);
 
   const mergedActivities = mergeEventbriteActivities(serverActivities, jsonLdActivities);
+  const rawIds = mergedActivities.map(item => item.sourceId).filter(Boolean);
   const now = options.now instanceof Date ? options.now : (options.now ? new Date(options.now) : new Date());
 
   const listings = [];
@@ -832,5 +855,18 @@ export function parseEventbriteHtml(html = '', options = {}) {
     }
   }
 
-  return listings;
+  return { listings, pageCount, rawIds };
+}
+
+/**
+ * Parses an Eventbrite search page HTML string into filtered, normalized canonical Activity Listings.
+ *
+ * @param {string} [html='']
+ * @param {object} [options={}]
+ * @param {string} [options.defaultCategory]
+ * @param {Date|string} [options.now]
+ * @returns {Array<object>}
+ */
+export function parseEventbriteHtml(html = '', options = {}) {
+  return parseEventbritePage(html, options).listings;
 }

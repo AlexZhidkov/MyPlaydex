@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   createEventbriteCrawler,
+  EVENTBRITE_PERTH_FEEDS,
   EVENTBRITE_PERTH_SPORTS_URL,
+  extractEventbritePageCount,
   extractJsonLdEvents
 } from '../src/crawlers/eventbrite-crawler.js';
 import { sanitizeActivity } from '../src/sanitizer.js';
@@ -745,4 +747,190 @@ test('Seam 8 (Issue #32): Removes synthetic placeholders so missing URLs degrade
   const sanitized = sanitizeActivity(cleanup);
   assert.equal(sanitized.verified, false, 'Missing referral URL degrades to Unverified Listing');
   assert.equal(sanitized.source_url, null);
+});
+
+test('Seam 8 (Issue #34): extractEventbritePageCount extracts positive page_count from __SERVER_DATA__', () => {
+  assert.equal(
+    extractEventbritePageCount({ search_data: { events: { pagination: { page_count: 4 } } } }),
+    4
+  );
+  assert.equal(
+    extractEventbritePageCount({ pagination: { page_count: '3' } }),
+    3
+  );
+  assert.equal(extractEventbritePageCount({ search_data: { events: {} } }), null);
+  assert.equal(extractEventbritePageCount(null), null);
+});
+
+function buildEventbriteSearchHtml(events, pageCount = 1) {
+  return `
+    <html>
+      <body>
+        <script>
+          window.__SERVER_DATA__ = ${JSON.stringify({
+            search_data: {
+              events: {
+                pagination: { page_count: pageCount },
+                results: events
+              }
+            }
+          })};
+        </script>
+      </body>
+    </html>
+  `;
+}
+
+test('Seam 8 (Issue #34): Multi-feed crawler polls all 10 Greater Perth feeds and lets specific category feeds override /all-events/ on deduplication', async () => {
+  assert.equal(EVENTBRITE_PERTH_FEEDS.length, 10);
+  const slugs = EVENTBRITE_PERTH_FEEDS.map(f => f.slug);
+  assert.deepEqual(slugs, [
+    'all-events',
+    'sports',
+    'health',
+    'arts',
+    'music',
+    'community',
+    'family-and-education',
+    'food-and-drink',
+    'hobbies',
+    'travel-and-outdoor'
+  ]);
+
+  const requestedUrls = [];
+  const mockFetch = async (url) => {
+    requestedUrls.push(url);
+    if (url.includes('/all-events/')) {
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          return buildEventbriteSearchHtml([
+            {
+              id: '9001',
+              name: 'Kings Park Sunset Run (Generic)',
+              url: 'https://www.eventbrite.com.au/e/kings-park-run-9001',
+              start_date: '2026-12-01',
+              start_time: '18:00',
+              primary_venue: { name: 'Kings Park', address: { latitude: -31.9608, longitude: 115.8447 } }
+            },
+            {
+              id: '9002',
+              name: 'Perth General Community Market',
+              url: 'https://www.eventbrite.com.au/e/perth-market-9002',
+              start_date: '2026-12-02',
+              start_time: '09:00',
+              primary_venue: { name: 'Forrest Place', address: { latitude: -31.9522, longitude: 115.8602 } }
+            }
+          ], 1);
+        }
+      };
+    }
+    if (url.includes('/music--events/')) {
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          return buildEventbriteSearchHtml([
+            {
+              id: '9001',
+              name: 'Kings Park Sunset Music & Run Festival',
+              url: 'https://www.eventbrite.com.au/e/kings-park-run-9001',
+              start_date: '2026-12-01',
+              start_time: '18:00',
+              primary_venue: { name: 'Kings Park', address: { latitude: -31.9608, longitude: 115.8447 } }
+            }
+          ], 1);
+        }
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      async text() {
+        return buildEventbriteSearchHtml([], 1);
+      }
+    };
+  };
+
+  const crawler = createEventbriteCrawler({
+    multiFeed: true,
+    fetchFn: mockFetch,
+    now: new Date('2026-11-21T00:00:00+08:00')
+  });
+  const listings = await crawler.fetchListings();
+
+  assert.equal(requestedUrls.length, 10, 'Each single-page feed should stop after page 1 when page_count === 1');
+  const byId = new Map(listings.map(item => [item.source_id, item]));
+  assert.equal(byId.size, 2);
+  assert.equal(byId.get('9001').category, 'music', 'Specific category feed must override /all-events/');
+  assert.equal(byId.get('9001').title, 'Kings Park Sunset Music & Run Festival');
+  assert.equal(byId.get('9002').category, 'sports', 'Unclassified /all-events/ listing defaults to sports');
+});
+
+test('Seam 8 (Issue #34): Multi-feed crawler paginates ?page=1..maxPages and stops early on page >= page_count or 0 new IDs', async () => {
+  const requestedUrls = [];
+  const feeds = [
+    { slug: 'sports', url: 'https://www.eventbrite.com.au/d/australia--perth/sports--events/', category: 'sports', priority: 1 },
+    { slug: 'arts', url: 'https://www.eventbrite.com.au/d/australia--perth/arts--events/', category: 'arts', priority: 1 }
+  ];
+
+  const mockFetch = async (url) => {
+    requestedUrls.push(url);
+    // sports: page_count is 2, so page 3..5 must not be requested
+    if (url.includes('/sports--events/')) {
+      const pageMatch = url.match(/[?&]page=(\d+)/);
+      const page = pageMatch ? Number(pageMatch[1]) : 1;
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          return buildEventbriteSearchHtml([
+            {
+              id: `sport-${page}`,
+              name: `Perth Sport Page ${page}`,
+              url: `https://www.eventbrite.com.au/e/sport-${page}`,
+              start_date: '2026-12-01',
+              primary_venue: { name: 'Perth Oval', address: { latitude: -31.946, longitude: 115.87 } }
+            }
+          ], 2);
+        }
+      };
+    }
+    // arts: page_count is 5, but page 2 yields only duplicate ID from page 1 (0 new IDs) -> stop after page 2
+    if (url.includes('/arts--events/')) {
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          return buildEventbriteSearchHtml([
+            {
+              id: 'art-1',
+              name: 'Perth Art Exhibition',
+              url: 'https://www.eventbrite.com.au/e/art-1',
+              start_date: '2026-12-01',
+              primary_venue: { name: 'AGWA', address: { latitude: -31.951, longitude: 115.861 } }
+            }
+          ], 5);
+        }
+      };
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  const crawler = createEventbriteCrawler({
+    feeds,
+    maxPages: 5,
+    fetchFn: mockFetch,
+    now: new Date('2026-11-21T00:00:00+08:00')
+  });
+  const listings = await crawler.fetchListings();
+
+  assert.deepEqual(requestedUrls, [
+    'https://www.eventbrite.com.au/d/australia--perth/sports--events/?page=1',
+    'https://www.eventbrite.com.au/d/australia--perth/sports--events/?page=2',
+    'https://www.eventbrite.com.au/d/australia--perth/arts--events/?page=1',
+    'https://www.eventbrite.com.au/d/australia--perth/arts--events/?page=2'
+  ]);
+  assert.equal(listings.length, 3);
 });

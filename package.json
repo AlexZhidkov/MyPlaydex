@@ -10,6 +10,7 @@
     "verify-urls": "node src/verifier-cli.js",
     "sync:places": "node src/places-sync.js",
     "sync:facebook": "node src/facebook-sync.js",
+    "sync:eventbrite": "node src/eventbrite-sync.js",
     "enrich:organizers": "node src/organizer-enricher.js",
     "deploy:hosting": "npx -y firebase-tools@latest deploy --only hosting",
     "deploy:rules": "npx -y firebase-tools@latest deploy --only firestore:rules",

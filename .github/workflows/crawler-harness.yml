@@ -16,7 +16,6 @@ on:
           - stirling
           - dlgsc
           - volleyball_wa
-          - eventbrite
           - meetup
           - mock
       dry_run:
