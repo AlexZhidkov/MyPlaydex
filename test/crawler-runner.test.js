@@ -413,12 +413,43 @@ test('Seam 4B: runCrawlerHarness writes step summary to file when GITHUB_STEP_SU
 test('Seam 4C: CLI exits with status 1 on anomaly and writes GITHUB_STEP_SUMMARY', async () => {
   const tmpDir = mkdtempSync(join(tmpdir(), 'harness-cli-summary-'));
   const summaryFile = join(tmpDir, 'step_summary.md');
+  const cliEntrypoint = join(tmpDir, 'cli-stub.mjs');
+  const runnerUrl = new URL('../src/crawler-runner.js', import.meta.url).href;
+  writeFileSync(
+    cliEntrypoint,
+    `
+      import { main } from ${JSON.stringify(runnerUrl)};
+      const stubCrawler = {
+        name: 'stub',
+        async fetchListings() {
+          return Array.from({ length: 10 }, (_, i) => ({
+            id: \`stub_\${i}\`,
+            region_id: 'perth',
+            source: 'stub',
+            source_id: \`s_\${i}\`,
+            source_url: 'https://example.org/activity',
+            title: \`Stub Activity \${i}\`,
+            category: 'sports',
+            subcategory: 'soccer',
+            coordinates: { lat: -31.95, lng: 115.86 },
+            venue: { name: 'Test Park', lat: -31.95, lng: 115.86 },
+            organizer: { name: 'Test Org' },
+            schedule: { start_date: '2026-12-01', recurrence: 'weekly' },
+            cost: { is_free: true, display_price: 'Free' },
+            demographics: { gender: 'all', age: 'all' }
+          }));
+        }
+      };
+      await main(process.argv.slice(2), process.env, { crawlers: [stubCrawler] });
+    `,
+    'utf8'
+  );
 
   try {
-    // 1. Successful CLI run with mock crawler exits 0
+    // 1. Successful CLI run with stub crawler exits 0
     const successResult = await execFileAsync(
       process.execPath,
-      ['src/crawler-runner.js', '--dry-run', '--crawler=mock', '--include-mock'],
+      [cliEntrypoint, '--dry-run', '--crawler=stub'],
       {
         cwd: process.cwd(),
         env: { ...process.env, GITHUB_STEP_SUMMARY: summaryFile, CRAWLER_LOG_DIR: tmpDir }
@@ -426,12 +457,12 @@ test('Seam 4C: CLI exits with status 1 on anomaly and writes GITHUB_STEP_SUMMARY
     );
     assert.equal(successResult.stderr, '');
 
-    // 2. Anomaly run with mock crawler (returns 10 items) and min-expected=100 fails with code 1
+    // 2. Anomaly run with stub crawler (returns 10 items) and min-expected=100 fails with code 1
     let failedErr = null;
     try {
       await execFileAsync(
         process.execPath,
-        ['src/crawler-runner.js', '--dry-run', '--crawler=mock', '--include-mock', '--min-expected=100'],
+        [cliEntrypoint, '--dry-run', '--crawler=stub', '--min-expected=100'],
         {
           cwd: process.cwd(),
           env: { ...process.env, GITHUB_STEP_SUMMARY: summaryFile, CRAWLER_LOG_DIR: tmpDir }
@@ -451,7 +482,7 @@ test('Seam 4C: CLI exits with status 1 on anomaly and writes GITHUB_STEP_SUMMARY
 
     const logContent = readFileSync(join(tmpDir, 'crawler-runner.log'), 'utf8');
     assert.match(logContent, /\[INFO\] \[Crawler Harness\] Initializing run/);
-    assert.match(logContent, /\[INFO\] \[Harness\] Finished mock:/);
+    assert.match(logContent, /\[INFO\] \[Harness\] Finished stub:/);
     assert.match(logContent, /\[ERROR\] \[Crawler Harness\] Encountered 1 crawler failure/);
   } finally {
     rmSync(tmpDir, { recursive: true, force: true });
@@ -1282,11 +1313,33 @@ test('main loads FIREBASE_SERVICE_ACCOUNT_KEY and project config from .env when 
 
     const env = {};
     const logs = [];
+    const stubCrawler = {
+      name: 'stub',
+      async fetchListings() {
+        return [{
+          id: 'stub_1',
+          region_id: 'perth',
+          source: 'stub',
+          source_id: 's_1',
+          source_url: 'https://example.org/activity',
+          title: 'Stub Activity',
+          category: 'sports',
+          subcategory: 'soccer',
+          coordinates: { lat: -31.95, lng: 115.86 },
+          venue: { name: 'Test Park', lat: -31.95, lng: 115.86 },
+          organizer: { name: 'Test Org' },
+          schedule: { start_date: '2026-12-01', recurrence: 'weekly' },
+          cost: { is_free: true, display_price: 'Free' },
+          demographics: { gender: 'all', age: 'all' }
+        }];
+      }
+    };
     const summary = await main(
-      ['--dry-run', '--crawler=mock', '--include-mock'],
+      ['--dry-run', '--crawler=stub'],
       env,
       {
         envFilePath,
+        crawlers: [stubCrawler],
         firestoreEnv: { db: null, dryRun: true, projectId: null },
         logger: {
           log: (...args) => logs.push(args.join(' ')),
@@ -1311,7 +1364,7 @@ test('main loads FIREBASE_SERVICE_ACCOUNT_KEY and project config from .env when 
     try {
       await execFileAsync(
         process.execPath,
-        [scriptPath, '--crawler=mock', '--include-mock'],
+        [scriptPath, '--crawler=stirling'],
         { cwd: tmpDir, env: childEnv }
       );
     } catch (err) {
@@ -1346,10 +1399,24 @@ test('createFileLogger and crawler-runner main write timestamped INFO, WARN, and
     fileLogger.warn('Warn check', 'be careful');
     fileLogger.error('Error check', new Error('boom').message);
 
+    const stubCrawler = {
+      name: 'stub',
+      async fetchListings() {
+        return [{
+          source: 'stub',
+          source_id: 's_1',
+          source_url: 'https://example.org/activity',
+          title: 'Stub Activity',
+          coordinates: { lat: -31.95, lng: 115.86 }
+        }];
+      }
+    };
     await main(
-      ['--dry-run', '--crawler=mock', '--include-mock', `--log-file=${logFilePath}`],
+      ['--dry-run', '--crawler=stub', `--log-file=${logFilePath}`],
       {},
       {
+        crawlers: [stubCrawler],
+        exitOnFailure: false,
         firestoreEnv: { db: null, dryRun: true, projectId: null },
         logger: { log: () => {}, warn: () => {}, error: () => {} }
       }

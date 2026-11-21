@@ -15,7 +15,6 @@ import { createDlgscCrawler } from './crawlers/dlgsc-crawler.js';
 import { createVolleyballWaCrawler } from './crawlers/volleyball-wa-crawler.js';
 import { createEventbriteCrawler } from './crawlers/eventbrite-crawler.js';
 import { createMeetupCrawler } from './crawlers/meetup-crawler.js';
-import { createMockCrawler } from './crawlers/mock-crawler.js';
 import {
   createFileLogger,
   DEFAULT_LOG_DIR,
@@ -282,7 +281,6 @@ export async function runCrawlerHarness({ crawlers = [], adapter, options = {} }
  *
  * @param {object} [options]
  * @param {boolean} [options.includeEventbrite=false]
- * @param {boolean} [options.includeMock=false]
  * @returns {Array<object>}
  */
 export function getDefaultCrawlers(options = {}) {
@@ -294,9 +292,6 @@ export function getDefaultCrawlers(options = {}) {
   ];
   if (options.includeEventbrite) {
     crawlers.push(createEventbriteCrawler());
-  }
-  if (options.includeMock) {
-    crawlers.push(createMockCrawler());
   }
   return crawlers;
 }
@@ -317,16 +312,15 @@ export async function main(argv = process.argv.slice(2), env = process.env, opti
   const args = argv;
   const logger = resolveCliLogger('crawler-runner.log', argv, options, env);
   const isDryRunArg = args.includes('--dry-run');
-  const isSeed = args.includes('--seed');
   const crawlerArgMatch = args.find(a => a.startsWith('--crawler='));
   const targetCrawler = crawlerArgMatch ? crawlerArgMatch.split('=')[1] : 'all';
   const projectArgMatch = args.find(a => a.startsWith('--project='));
   const targetProject = projectArgMatch ? projectArgMatch.split('=')[1] : (env.FIREBASE_PROJECT_ID || 'myplaydex');
   const minExpectedArgMatch = args.find(a => a.startsWith('--min-expected=') || a.startsWith('--min-expected-listings='));
   const minExpectedListings = minExpectedArgMatch ? parseInt(minExpectedArgMatch.split('=')[1], 10) : undefined;
-  const useAdc = args.includes('--use-adc') || isSeed || Boolean(env.FIREBASE_USE_ADC);
+  const useAdc = args.includes('--use-adc') || Boolean(env.FIREBASE_USE_ADC);
 
-  logger.log?.(`[Crawler Harness] Initializing run (crawler: ${targetCrawler}, dry-run: ${isDryRunArg}, seed: ${isSeed}, project: ${targetProject})`);
+  logger.log?.(`[Crawler Harness] Initializing run (crawler: ${targetCrawler}, dry-run: ${isDryRunArg}, project: ${targetProject})`);
 
   // Initialize Firestore from environment credentials (enforce key if live run and not using ADC)
   const firestoreEnv = options.firestoreEnv || (isDryRunArg
@@ -349,9 +343,8 @@ export async function main(argv = process.argv.slice(2), env = process.env, opti
     logger.log?.(`[Crawler Harness] Connected to Firestore project: ${firestoreEnv.projectId}`);
   }
 
-  const includeMock = targetCrawler === 'mock' || isSeed || args.includes('--include-mock');
   const includeEventbrite = targetCrawler.toLowerCase() === 'eventbrite' || args.includes('--include-eventbrite');
-  const crawlers = options.crawlers || getDefaultCrawlers({ includeMock, includeEventbrite });
+  const crawlers = options.crawlers || getDefaultCrawlers({ includeEventbrite });
 
   const summary = await runCrawlerHarness({
     crawlers,

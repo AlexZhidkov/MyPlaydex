@@ -288,7 +288,7 @@ The interface is driven by a lightweight, pure JavaScript pub-sub state store (`
 
 ```javascript
 const store = createDiscoveryStore({
-  activities: MOCK_PERTH_ACTIVITIES,
+  activities: [], // Loaded asynchronously from Firestore /activities
   location: null, // null until set via GPS or suburb/postcode input
   radiusKm: 15,   // 5, 10, 25, or 'all'
   filters: {
@@ -403,7 +403,6 @@ All components specified in this document are backed by verified research, test 
 | **Geohash & Firestore Schema**    | [`docs/research/02-firestore-geohash-schema.md`](research/02-firestore-geohash-schema.md)    | Architectural Analysis           | [Ticket 02](../.scratch/perth-sports/issues/02-research-firestore-geohash-schema.md)         |
 | **Sports Taxonomy & Facets**      | [`src/sanitizer.js`](../src/sanitizer.js#L14-L35)                                            | `test/sanitizer.test.js`         | [Ticket 03](../.scratch/perth-sports/issues/03-grill-activity-taxonomy-and-filters.md)       |
 | **Reactive Discovery Engine**     | [`src/discovery-engine.js`](../src/discovery-engine.js)                                      | `test/discovery-engine.test.js`  | [Ticket 04](../.scratch/perth-sports/issues/04-prototype-vanilla-js-leaflet-map.md)          |
-| **Leaflet Prototype UI (Deprecated)** | [`prototype/index.html`](../prototype/index.html)                                            | Browser validated                | [Ticket 04](../.scratch/perth-sports/issues/04-prototype-vanilla-js-leaflet-map.md)          |
 | **Outbound Maps Navigation ADR**  | [`docs/adr/0002-outbound-navigation-minimalist-feed.md`](adr/0002-outbound-navigation-minimalist-feed.md) | Architectural Decision           | [ADR 0002](adr/0002-outbound-navigation-minimalist-feed.md)                                  |
 | **Geohash Encoder**               | [`src/geohash.js`](../src/geohash.js)                                                        | `test/geohash.test.js`           | [Ticket 05](../.scratch/perth-sports/issues/05-task-setup-github-actions-crawler-harness.md) |
 | **Data Sanitizer**                | [`src/sanitizer.js`](../src/sanitizer.js)                                                    | `test/sanitizer.test.js`         | [Ticket 05](../.scratch/perth-sports/issues/05-task-setup-github-actions-crawler-harness.md) |

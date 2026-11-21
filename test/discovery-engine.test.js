@@ -192,8 +192,81 @@ test('Seam 4: reactive discovery store notifies listeners on state updates and t
   assert.equal(events.length, 4); // No new event recorded
 });
 
-test('Integration: MOCK_PERTH_ACTIVITIES conforms to canonical schema and integrates with discovery store', async () => {
-  const { MOCK_PERTH_ACTIVITIES, PERTH_SPORTS_CATEGORIES } = await import('../src/mock-perth-activities.js');
+test('Integration: Canonical activity fixtures conform to schema and integrate with discovery store', () => {
+  const sampleActivities = [
+    {
+      id: 'act_futsal_loftus',
+      region_id: 'perth',
+      source: 'test_fixture',
+      source_id: 'futsal_loftus',
+      source_url: 'https://example.org/futsal-loftus',
+      title: 'Social Futsal at Loftus Recreation Centre',
+      category: 'sports',
+      subcategory: 'soccer',
+      venue: {
+        id: 'venue_loftus_rec',
+        name: 'Loftus Recreation Centre',
+        lat: -31.9378,
+        lng: 115.8475,
+        geohash: 'qd66hqt8r'
+      },
+      organizer: {
+        id: 'org_loftus_sports',
+        name: 'Loftus Sports'
+      },
+      schedule: {
+        start_date: '2026-11-25',
+        recurrence: 'weekly'
+      },
+      cost: {
+        is_free: false,
+        display_price: '$12'
+      },
+      demographics: {
+        gender: 'all',
+        age: 'adults'
+      },
+      verified: true,
+      created_at: new Date('2026-11-01T00:00:00Z'),
+      updated_at: new Date('2026-11-01T00:00:00Z')
+    },
+    {
+      id: 'act_beach_volleyball_scarborough',
+      region_id: 'perth',
+      source: 'test_fixture',
+      source_id: 'beach_volleyball_scarborough',
+      source_url: 'https://example.org/scarborough-volleyball',
+      title: 'Scarborough Beach Social Volleyball',
+      category: 'sports',
+      subcategory: 'volleyball',
+      venue: {
+        id: 'venue_scarborough_beach',
+        name: 'Scarborough Beach',
+        lat: -31.8942,
+        lng: 115.7564,
+        geohash: 'qd66k682u'
+      },
+      organizer: {
+        id: 'org_wa_beach_vb',
+        name: 'WA Beach Volleyball'
+      },
+      schedule: {
+        start_date: '2026-11-26',
+        recurrence: 'weekly'
+      },
+      cost: {
+        is_free: true,
+        display_price: 'Free'
+      },
+      demographics: {
+        gender: 'all',
+        age: 'all'
+      },
+      verified: true,
+      created_at: new Date('2026-11-01T00:00:00Z'),
+      updated_at: new Date('2026-11-01T00:00:00Z')
+    }
+  ];
 
   const validSubcategories = new Set([
     'soccer', 'volleyball', 'basketball', 'afl', 'tennis',
@@ -201,10 +274,10 @@ test('Integration: MOCK_PERTH_ACTIVITIES conforms to canonical schema and integr
   ]);
 
   // Check each activity conforms to canonical schema
-  for (const item of MOCK_PERTH_ACTIVITIES) {
-    assert.ok(item.id.startsWith('mock_'), `Expected id to start with mock_, got: ${item.id}`);
+  for (const item of sampleActivities) {
+    assert.ok(item.id);
     assert.equal(item.region_id, 'perth');
-    assert.equal(item.source, 'mock');
+    assert.ok(item.source);
     assert.ok(item.source_id);
     assert.ok(item.source_url);
     assert.ok(item.title);
@@ -225,7 +298,7 @@ test('Integration: MOCK_PERTH_ACTIVITIES conforms to canonical schema and integr
     assert.ok(item.updated_at instanceof Date, `Expected updated_at to be Date for ${item.id}`);
   }
 
-  const store = createDiscoveryStore(MOCK_PERTH_ACTIVITIES, {
+  const store = createDiscoveryStore(sampleActivities, {
     center: { lat: -31.9505, lng: 115.8605 },
     radiusKm: 10
   });
