@@ -153,7 +153,10 @@ test('Seam 8: Eventbrite Crawler parses HTML, extracts Schema.org Event JSON-LD,
     };
   };
 
-  const crawler = createEventbriteCrawler({ fetchFn: mockFetch });
+  const crawler = createEventbriteCrawler({
+    fetchFn: mockFetch,
+    now: new Date('2026-11-10T00:00:00+08:00')
+  });
   assert.equal(crawler.name, 'eventbrite');
 
   const listings = await crawler.fetchListings();
@@ -257,7 +260,10 @@ test('Seam 8: Eventbrite Crawler handles object country in address and date-only
     }
   });
 
-  const crawler = createEventbriteCrawler({ fetchFn: mockFetch });
+  const crawler = createEventbriteCrawler({
+    fetchFn: mockFetch,
+    now: new Date('2026-11-10T00:00:00+08:00')
+  });
   const listings = await crawler.fetchListings();
 
   assert.equal(listings.length, 1);
@@ -304,7 +310,10 @@ test('Seam 8: Eventbrite Crawler handles malformed JSON-LD and missing scripts g
     }
   });
 
-  const crawler = createEventbriteCrawler({ fetchFn: mockFetch });
+  const crawler = createEventbriteCrawler({
+    fetchFn: mockFetch,
+    now: new Date('2026-11-10T00:00:00+08:00')
+  });
   const listings = await crawler.fetchListings();
 
   assert.equal(listings.length, 1);
@@ -319,9 +328,421 @@ test('Seam 8: Eventbrite Crawler throws descriptive error on HTTP failure', asyn
     statusText: 'Too Many Requests'
   });
 
-  const crawler = createEventbriteCrawler({ fetchFn: mockFailingFetch });
+  const crawler = createEventbriteCrawler({
+    fetchFn: mockFailingFetch,
+    now: new Date('2026-11-10T00:00:00+08:00')
+  });
   await assert.rejects(
     () => crawler.fetchListings(),
     /Eventbrite responded with HTTP 429: Too Many Requests/
   );
+});
+
+test('Seam 8 (Issue #32): Dual extraction merges window.__SERVER_DATA__ and *Event/@type array JSON-LD by source_id with zero detail-page requests', async () => {
+  const requestedUrls = [];
+  const html = `
+    <html>
+      <head>
+        <script type="application/ld+json">
+          {
+            "@context": "https://schema.org",
+            "@type": "ItemList",
+            "itemListElement": [
+              {
+                "@type": "ListItem",
+                "position": 1,
+                "item": {
+                  "@type": "SportsEvent",
+                  "name": "Fremantle Twilight Touch Rugby",
+                  "description": "Social mixed touch rugby by the river.",
+                  "url": "https://www.eventbrite.com.au/e/fremantle-touch-tickets-701701701",
+                  "startDate": "2026-12-01T18:00:00+08:00",
+                  "location": {
+                    "@type": "Place",
+                    "name": "Fremantle Oval",
+                    "address": {
+                      "@type": "PostalAddress",
+                      "streetAddress": "70 Parry St",
+                      "addressLocality": "Fremantle",
+                      "addressRegion": "WA",
+                      "postalCode": "6160",
+                      "addressCountry": "AU"
+                    },
+                    "geo": { "@type": "GeoCoordinates", "latitude": -32.0569, "longitude": 115.7479 }
+                  }
+                }
+              },
+              {
+                "@type": "ListItem",
+                "position": 2,
+                "item": {
+                  "@type": ["Event", "MusicEvent"],
+                  "name": "Northbridge Jazz & Wine Night",
+                  "url": "https://www.eventbrite.com.au/e/northbridge-jazz-tickets-702702702",
+                  "startDate": "2026-12-02T19:30:00+08:00",
+                  "location": {
+                    "@type": "Place",
+                    "name": "The Rechabite",
+                    "address": "224 William St, Northbridge WA 6003",
+                    "geo": { "@type": "GeoCoordinates", "latitude": -31.9472, "longitude": 115.8576 }
+                  }
+                }
+              }
+            ]
+          }
+        </script>
+      </head>
+      <body>
+        <script>
+          window.__SERVER_DATA__ = {
+            "search_data": {
+              "events": {
+                "results": [
+                  {
+                    "id": "701701701",
+                    "name": "Fremantle Twilight Touch Rugby",
+                    "url": "https://www.eventbrite.com.au/e/fremantle-touch-tickets-701701701",
+                    "start_date": "2026-12-01",
+                    "start_time": "18:00",
+                    "primary_organizer": {
+                      "id": "99001",
+                      "name": "Freo Touch Collective",
+                      "url": "https://www.eventbrite.com.au/o/freo-touch-99001"
+                    },
+                    "category": "Sports & Fitness"
+                  },
+                  {
+                    "id": "703703703",
+                    "name": "Subiaco Sunday Pottery Workshop",
+                    "summary": "Beginner wheel-throwing class for adults.",
+                    "url": "https://www.eventbrite.com.au/e/subiaco-pottery-tickets-703703703",
+                    "start_date": "2026-12-03",
+                    "start_time": "10:00",
+                    "category": "Hobbies & Special Interest",
+                    "primary_venue": {
+                      "name": "Subiaco Arts Centre",
+                      "address": {
+                        "localized_address_display": "180 Hamersley Rd, Subiaco WA 6008",
+                        "latitude": -31.9457,
+                        "longitude": 115.8266
+                      }
+                    },
+                    "primary_organizer": {
+                      "name": "Subiaco Clay Studio"
+                    },
+                    "ticket_availability": {
+                      "is_free": false,
+                      "minimum_ticket_price": { "major_value": "45.00", "currency": "AUD" }
+                    }
+                  }
+                ]
+              }
+            }
+          };
+        </script>
+      </body>
+    </html>
+  `;
+
+  const mockFetch = async (url) => {
+    requestedUrls.push(url);
+    return { ok: true, async text() { return html; } };
+  };
+
+  const crawler = createEventbriteCrawler({
+    fetchFn: mockFetch,
+    now: new Date('2026-11-21T00:00:00+08:00')
+  });
+  const listings = await crawler.fetchListings();
+
+  assert.equal(requestedUrls.length, 1, 'Must issue only the single search-page request (zero detail-page requests)');
+  assert.equal(listings.length, 3);
+
+  const touch = listings.find(l => l.source_id === '701701701');
+  assert.equal(touch.organizer.name, 'Freo Touch Collective');
+  assert.equal(touch.organizer.website, 'https://www.eventbrite.com.au/o/freo-touch-99001');
+  assert.equal(touch.category, 'sports');
+
+  const jazz = listings.find(l => l.source_id === '702702702');
+  assert.equal(jazz.title, 'Northbridge Jazz & Wine Night');
+  assert.equal(jazz.category, 'music');
+
+  const pottery = listings.find(l => l.source_id === '703703703');
+  assert.equal(pottery.title, 'Subiaco Sunday Pottery Workshop');
+  assert.equal(pottery.category, 'hobbies');
+  assert.equal(pottery.display_price, '$45.00 AUD');
+});
+
+test('Seam 8 (Issue #32): Pre-ingestion filtering drops online/virtual, cancelled/postponed, undated, expired, and >85 km records while keeping all in-person Perth categories', async () => {
+  const html = `
+    <html>
+      <head>
+        <script type="application/ld+json">
+          [
+            {
+              "@type": "Event",
+              "name": "Online Yoga Stream",
+              "url": "https://www.eventbrite.com.au/e/online-yoga-tickets-801",
+              "startDate": "2026-12-01T18:00:00+08:00",
+              "eventAttendanceMode": "https://schema.org/OnlineEventAttendanceMode",
+              "location": { "@type": "VirtualLocation", "url": "https://zoom.us/j/123" }
+            },
+            {
+              "@type": "Event",
+              "name": "Cancelled Run",
+              "url": "https://www.eventbrite.com.au/e/cancelled-run-tickets-802",
+              "startDate": "2026-12-01T08:00:00+08:00",
+              "eventStatus": "https://schema.org/EventCancelled",
+              "location": { "@type": "Place", "name": "Kings Park", "geo": { "latitude": -31.9608, "longitude": 115.8447 } }
+            },
+            {
+              "@type": "Event",
+              "name": "Postponed Market",
+              "url": "https://www.eventbrite.com.au/e/postponed-market-tickets-803",
+              "startDate": "2026-12-01T09:00:00+08:00",
+              "eventStatus": "https://schema.org/EventPostponed",
+              "location": { "@type": "Place", "name": "Perth Cultural Centre", "geo": { "latitude": -31.9495, "longitude": 115.8606 } }
+            },
+            {
+              "@type": "Event",
+              "name": "Undated Gathering",
+              "url": "https://www.eventbrite.com.au/e/undated-tickets-804",
+              "location": { "@type": "Place", "name": "Perth CBD", "geo": { "latitude": -31.9505, "longitude": 115.8605 } }
+            },
+            {
+              "@type": "Event",
+              "name": "Expired Past Picnic",
+              "url": "https://www.eventbrite.com.au/e/expired-picnic-tickets-805",
+              "startDate": "2026-11-18T12:00:00+08:00",
+              "location": { "@type": "Place", "name": "Hyde Park", "geo": { "latitude": -31.9381, "longitude": 115.8617 } }
+            },
+            {
+              "@type": "Event",
+              "name": "Bunbury Coastal Walk (>85km)",
+              "url": "https://www.eventbrite.com.au/e/bunbury-walk-tickets-806",
+              "startDate": "2026-12-05T08:00:00+08:00",
+              "location": { "@type": "Place", "name": "Bunbury Foreshore", "geo": { "latitude": -33.3271, "longitude": 115.6414 } }
+            },
+            {
+              "@type": "FoodEvent",
+              "name": "Fremantle Farmers Food Tasting",
+              "url": "https://www.eventbrite.com.au/e/freo-food-tickets-807",
+              "startDate": "2026-12-05T10:00:00+08:00",
+              "location": { "@type": "Place", "name": "Fremantle Markets", "geo": { "latitude": -32.0562, "longitude": 115.7489 } }
+            },
+            {
+              "@type": "Event",
+              "name": "UTC Early Morning Session (2026-11-20 AWST)",
+              "url": "https://www.eventbrite.com.au/e/utc-awst-tickets-810",
+              "startDate": "2026-11-19T20:00:00Z",
+              "location": { "@type": "Place", "name": "Perth CBD", "geo": { "latitude": -31.9505, "longitude": 115.8605 } }
+            }
+          ]
+        </script>
+      </head>
+      <body>
+        <script>
+          window.__SERVER_DATA__ = {
+            "search_data": {
+              "events": {
+                "results": [
+                  {
+                    "id": "808",
+                    "name": "Online Coding Bootcamp",
+                    "url": "https://www.eventbrite.com.au/e/online-coding-tickets-808",
+                    "start_date": "2026-12-06",
+                    "is_online_event": true,
+                    "primary_venue": { "address": { "latitude": -31.9505, "longitude": 115.8605 } }
+                  },
+                  {
+                    "id": "809",
+                    "name": "Mandurah Paddle (Within 85km)",
+                    "url": "https://www.eventbrite.com.au/e/mandurah-paddle-tickets-809",
+                    "start_date": "2026-12-06",
+                    "start_time": "09:00",
+                    "primary_venue": {
+                      "name": "Mandurah Foreshore",
+                      "address": { "latitude": -32.5269, "longitude": 115.7217 }
+                    }
+                  }
+                ]
+              }
+            }
+          };
+        </script>
+      </body>
+    </html>
+  `;
+
+  const crawler = createEventbriteCrawler({
+    fetchFn: async () => ({ ok: true, async text() { return html; } }),
+    now: new Date('2026-11-21T12:00:00+08:00')
+  });
+
+  const listings = await crawler.fetchListings();
+  const ids = listings.map(l => l.source_id);
+
+  assert.deepEqual(ids, ['809', '807', '810']);
+});
+
+test('Seam 8 (Issue #32): Normalization resolves missing geo via suburb/postcode centroids, anchors naive ISO to +08:00, parses AggregateOffer/null prices, and infers demographics', async () => {
+  const html = `
+    <html>
+      <head>
+        <script type="application/ld+json">
+          [
+            {
+              "@type": "SportsEvent",
+              "name": "Women's Social Netball (Adults 18+)",
+              "description": "Fun Wednesday night netball for ladies.",
+              "url": "https://www.eventbrite.com.au/e/womens-netball-tickets-901",
+              "startDate": "2026-12-09T18:30:00",
+              "endDate": "2026-12-09T20:00:00",
+              "location": {
+                "@type": "Place",
+                "name": "Joondalup Arena",
+                "address": {
+                  "@type": "PostalAddress",
+                  "addressLocality": "Joondalup",
+                  "addressRegion": "WA",
+                  "postalCode": "6027",
+                  "addressCountry": "AU"
+                }
+              },
+              "offers": {
+                "@type": "AggregateOffer",
+                "lowPrice": 15,
+                "highPrice": 25,
+                "priceCurrency": "AUD"
+              }
+            },
+            {
+              "@type": "Event",
+              "name": "Junior Kids Soccer Clinic",
+              "description": "School holidays soccer skills for boys and girls.",
+              "url": "https://www.eventbrite.com.au/e/junior-soccer-tickets-902",
+              "startDate": "2026-12-10T09:00:00",
+              "location": {
+                "@type": "Place",
+                "address": "123 High St, Fremantle WA 6160"
+              },
+              "offers": {
+                "@type": "Offer",
+                "price": null,
+                "priceCurrency": "AUD"
+              }
+            },
+            {
+              "@type": "Event",
+              "name": "Masters Men's Lawn Bowls",
+              "description": "Over 50s social bowls for blokes.",
+              "url": "https://www.eventbrite.com.au/e/masters-bowls-tickets-903",
+              "startDate": "2026-12-11T14:00:00+08:00",
+              "location": {
+                "@type": "Place",
+                "name": "Subiaco Bowls",
+                "geo": { "latitude": -31.9457, "longitude": 115.8266 }
+              },
+              "offers": {
+                "@type": "AggregateOffer",
+                "lowPrice": "0",
+                "highPrice": "0",
+                "priceCurrency": "AUD"
+              }
+            },
+            {
+              "@type": "Event",
+              "name": "Melbourne Tech Meetup",
+              "url": "https://www.eventbrite.com.au/e/melbourne-tech-tickets-904",
+              "startDate": "2026-12-12T18:00:00",
+              "location": {
+                "@type": "Place",
+                "address": {
+                  "addressLocality": "Melbourne",
+                  "addressRegion": "VIC",
+                  "postalCode": "3000"
+                }
+              }
+            }
+          ]
+        </script>
+      </head>
+    </html>
+  `;
+
+  const crawler = createEventbriteCrawler({
+    fetchFn: async () => ({ ok: true, async text() { return html; } }),
+    now: new Date('2026-11-21T12:00:00+08:00')
+  });
+
+  const listings = await crawler.fetchListings();
+  assert.equal(listings.length, 3, 'Melbourne listing without geo must be dropped');
+
+  const netball = listings.find(l => l.source_id === '901');
+  assert.ok(netball.coordinates.lat < -31.7 && netball.coordinates.lat > -31.8, 'Resolves Joondalup centroid');
+  assert.equal(netball.start_time, '2026-12-09T18:30:00+08:00');
+  assert.equal(netball.end_time, '2026-12-09T20:00:00+08:00');
+  assert.equal(netball.display_price, '$15 - $25 AUD');
+  assert.equal(netball.is_free, false);
+  assert.deepEqual(netball.demographics, { gender: 'women_only', age: 'adults' });
+
+  const soccer = listings.find(l => l.source_id === '902');
+  assert.ok(soccer.coordinates.lat < -32.0 && soccer.coordinates.lat > -32.1, 'Resolves Fremantle 6160 centroid');
+  assert.equal(soccer.display_price, 'See listing details');
+  assert.ok(!soccer.display_price.includes('null'));
+  assert.deepEqual(soccer.demographics, { gender: 'all', age: 'juniors' });
+
+  const bowls = listings.find(l => l.source_id === '903');
+  assert.equal(bowls.is_free, true);
+  assert.equal(bowls.display_price, 'Free');
+  assert.deepEqual(bowls.demographics, { gender: 'men_only', age: 'masters' });
+});
+
+test('Seam 8 (Issue #32): Removes synthetic placeholders so missing URLs degrade to Unverified Listings and missing Venue names fall back to formatted address', async () => {
+  const html = `
+    <html>
+      <head>
+        <script type="application/ld+json">
+          [
+            {
+              "@type": "Event",
+              "name": "",
+              "url": "https://www.eventbrite.com.au/e/nameless-tickets-950",
+              "startDate": "2026-12-10T10:00:00+08:00",
+              "location": { "@type": "Place", "geo": { "latitude": -31.9505, "longitude": 115.8605 } }
+            },
+            {
+              "@type": "Event",
+              "@id": "951",
+              "name": "Cottesloe Beach Cleanup",
+              "startDate": "2026-12-10T08:00:00+08:00",
+              "location": {
+                "@type": "Place",
+                "address": "Marine Parade, Cottesloe WA 6011",
+                "geo": { "latitude": -31.9958, "longitude": 115.7513 }
+              }
+            }
+          ]
+        </script>
+      </head>
+    </html>
+  `;
+
+  const crawler = createEventbriteCrawler({
+    fetchFn: async () => ({ ok: true, async text() { return html; } }),
+    now: new Date('2026-11-21T12:00:00+08:00')
+  });
+
+  const listings = await crawler.fetchListings();
+  assert.equal(listings.length, 1, 'Nameless Activity must be skipped rather than given a fake title');
+
+  const cleanup = listings[0];
+  assert.equal(cleanup.source_url, null, 'Must not fall back to directory URL');
+  assert.equal(cleanup.external_url, null);
+  assert.equal(cleanup.organizer, undefined, 'Must not fabricate Eventbrite Community Organizer');
+  assert.equal(cleanup.venue_name, 'Marine Parade, Cottesloe WA 6011', 'Missing Venue name must fall back to formatted address');
+
+  const sanitized = sanitizeActivity(cleanup);
+  assert.equal(sanitized.verified, false, 'Missing referral URL degrades to Unverified Listing');
+  assert.equal(sanitized.source_url, null);
 });
