@@ -18,6 +18,7 @@ import {
 
 const STORAGE_KEY_LOCATION = 'myplaydex_location';
 const STORAGE_KEY_SPORTS = 'myplaydex_sports_filters';
+const STORAGE_KEY_CATEGORIES = 'myplaydex_category_filters';
 
 export const DEFAULT_FIREBASE_PROJECT_ID = 'myplaydex';
 export const DEFAULT_FIRESTORE_COLLECTION = 'activities';
@@ -331,23 +332,46 @@ export function syncUrlState(newParams = {}) {
   window.history.replaceState(null, '', newUrl);
 }
 
-/**
- * Reads persisted sport filters from localStorage.
- *
- * @returns {string[]} Array of selected sport subcategory slugs
- */
-export function getSavedSportsFilters() {
+function readStringArrayFromStorage(storageKey, label) {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY_SPORTS);
+    const raw = localStorage.getItem(storageKey);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
       return parsed.filter((item) => typeof item === 'string' && item.length > 0);
     }
   } catch (err) {
-    console.warn('Failed to parse saved sports filters from localStorage:', err);
+    console.warn(`Failed to parse saved ${label} from localStorage:`, err);
   }
   return [];
+}
+
+function writeStringArrayToStorage(storageKey, values, label) {
+  try {
+    const sanitized = Array.isArray(values)
+      ? values.filter((item) => typeof item === 'string' && item.length > 0)
+      : [];
+    localStorage.setItem(storageKey, JSON.stringify(sanitized));
+  } catch (err) {
+    console.warn(`Failed to save ${label} to localStorage:`, err);
+  }
+}
+
+function removeFromStorage(storageKey, label) {
+  try {
+    localStorage.removeItem(storageKey);
+  } catch (err) {
+    console.warn(`Failed to clear ${label} from localStorage:`, err);
+  }
+}
+
+/**
+ * Reads persisted sport filters from localStorage.
+ *
+ * @returns {string[]} Array of selected sport subcategory slugs
+ */
+export function getSavedSportsFilters() {
+  return readStringArrayFromStorage(STORAGE_KEY_SPORTS, 'sports filters');
 }
 
 /**
@@ -356,25 +380,39 @@ export function getSavedSportsFilters() {
  * @param {string[]} sports Array of sport slugs
  */
 export function saveSportsFilters(sports) {
-  try {
-    const sanitized = Array.isArray(sports)
-      ? sports.filter((item) => typeof item === 'string' && item.length > 0)
-      : [];
-    localStorage.setItem(STORAGE_KEY_SPORTS, JSON.stringify(sanitized));
-  } catch (err) {
-    console.warn('Failed to save sports filters to localStorage:', err);
-  }
+  writeStringArrayToStorage(STORAGE_KEY_SPORTS, sports, 'sports filters');
 }
 
 /**
  * Clears saved sport filters from localStorage.
  */
 export function clearSavedSportsFilters() {
-  try {
-    localStorage.removeItem(STORAGE_KEY_SPORTS);
-  } catch (err) {
-    console.warn('Failed to clear sports filters from localStorage:', err);
-  }
+  removeFromStorage(STORAGE_KEY_SPORTS, 'sports filters');
+}
+
+/**
+ * Reads persisted category filters from localStorage.
+ *
+ * @returns {string[]} Array of selected canonical category slugs
+ */
+export function getSavedCategoryFilters() {
+  return readStringArrayFromStorage(STORAGE_KEY_CATEGORIES, 'category filters');
+}
+
+/**
+ * Persists selected category filters to localStorage.
+ *
+ * @param {string[]} categories Array of category slugs
+ */
+export function saveCategoryFilters(categories) {
+  writeStringArrayToStorage(STORAGE_KEY_CATEGORIES, categories, 'category filters');
+}
+
+/**
+ * Clears saved category filters from localStorage.
+ */
+export function clearSavedCategoryFilters() {
+  removeFromStorage(STORAGE_KEY_CATEGORIES, 'category filters');
 }
 
 /**
@@ -486,6 +524,7 @@ export function initApp(options = {}) {
     initialRadius = urlParams.radius;
   }
 
+  const savedCategories = options.categories !== undefined ? options.categories : getSavedCategoryFilters();
   const savedSports = options.sports !== undefined ? options.sports : getSavedSportsFilters();
 
   const store = createDiscoveryStore({
@@ -499,6 +538,7 @@ export function initApp(options = {}) {
     selectedOrganizerId: targetOrganizerId,
     selectedVenueId: targetVenueId,
     filters: {
+      categories: savedCategories,
       sports: savedSports
     },
     maxResults: 50
@@ -585,19 +625,21 @@ export function initApp(options = {}) {
     }
   };
 
-  let stagedSports = new Set(store.getState().filters.sports);
+  let stagedCategories = new Set(store.getState().filters.categories || []);
+  let stagedSports = new Set(store.getState().filters.sports || []);
   const handledDeepLinks = new Set();
 
   function updateFilterHeaderUI(filters) {
+    const categories = filters?.categories || [];
     const sports = filters?.sports || [];
-    const count = sports.length;
+    const hasActiveFilters = categories.length > 0 || sports.length > 0;
     if (filterHeaderBtn) {
-      filterHeaderBtn.classList.toggle('active', count > 0);
-      filterHeaderBtn.setAttribute('aria-pressed', count > 0 ? 'true' : 'false');
+      filterHeaderBtn.classList.toggle('active', hasActiveFilters);
+      filterHeaderBtn.setAttribute('aria-pressed', hasActiveFilters ? 'true' : 'false');
     }
     if (filterCountBadge) {
-      filterCountBadge.textContent = String(count);
-      filterCountBadge.classList.toggle('hidden', count === 0);
+      filterCountBadge.textContent = '';
+      filterCountBadge.classList.toggle('hidden', !hasActiveFilters);
     }
   }
 
@@ -614,10 +656,23 @@ export function initApp(options = {}) {
     }
   }
 
+  function renderStagedFilterView() {
+    if (!filterOverlay) return;
+    filterOverlay.innerHTML = renderFilterView({
+      categories: Array.from(stagedCategories),
+      sports: Array.from(stagedSports)
+    });
+  }
+
   function openFilterView() {
     if (!filterOverlay) return;
-    stagedSports = new Set(store.getState().filters.sports);
-    filterOverlay.innerHTML = renderFilterView(Array.from(stagedSports));
+    const currentFilters = store.getState().filters;
+    stagedCategories = new Set(currentFilters.categories || []);
+    stagedSports = new Set(currentFilters.sports || []);
+    if (stagedCategories.size === 0 && stagedSports.size > 0) {
+      stagedCategories.add('sports');
+    }
+    renderStagedFilterView();
     filterOverlay.classList.remove('hidden');
     updateBodyScrollLock();
     if (typeof window !== 'undefined' && window.location && window.location.hash !== '#filters') {
@@ -648,11 +703,32 @@ export function initApp(options = {}) {
     }
   }
 
+  function applyDiscoveryFilters({ categories, sports } = {}) {
+    const nextCategories = Array.isArray(categories) ? categories : Array.from(stagedCategories);
+    const nextSports = nextCategories.includes('sports')
+      ? (Array.isArray(sports) ? sports : Array.from(stagedSports))
+      : [];
+    saveCategoryFilters(nextCategories);
+    saveSportsFilters(nextSports);
+    store.setDiscoveryFilters({ categories: nextCategories, sports: nextSports });
+    returnToFeed();
+  }
+
   function applySportsFilters(sportsList) {
     const sports = Array.isArray(sportsList) ? sportsList : Array.from(stagedSports);
-    saveSportsFilters(sports);
-    store.setSportsFilter(sports);
-    returnToFeed();
+    const currentCategories = store.getState().filters.categories || [];
+    const categories = sports.length > 0 && !currentCategories.includes('sports')
+      ? [...currentCategories, 'sports']
+      : currentCategories;
+    applyDiscoveryFilters({ categories, sports });
+  }
+
+  function clearAllDiscoveryFilters() {
+    stagedCategories.clear();
+    stagedSports.clear();
+    clearSavedCategoryFilters();
+    clearSavedSportsFilters();
+    store.setDiscoveryFilters({ categories: [], sports: [] });
   }
 
   function openLocationGate(canClose = false) {
@@ -956,10 +1032,12 @@ export function initApp(options = {}) {
     const count = filteredList.length;
 
     if (count === 0) {
-      const hasSportFilters = Array.isArray(filters.sports) && filters.sports.length > 0;
+      const hasActiveFilters =
+        (Array.isArray(filters.categories) && filters.categories.length > 0) ||
+        (Array.isArray(filters.sports) && filters.sports.length > 0);
       feedContainer.innerHTML = renderEmptyState({
         radiusKm,
-        hasFilters: hasSportFilters,
+        hasFilters: hasActiveFilters,
         tab: activeTab
       });
       return;
@@ -995,42 +1073,51 @@ export function initApp(options = {}) {
   // Filter View Modal Interaction Delegation
   if (filterOverlay) {
     filterOverlay.addEventListener('click', (e) => {
-      // Sport chip toggle
+      // Category chip toggle
+      const categoryChip = e.target.closest('[data-category]');
+      if (categoryChip) {
+        const categorySlug = categoryChip.getAttribute('data-category');
+        if (stagedCategories.has(categorySlug)) {
+          stagedCategories.delete(categorySlug);
+          if (categorySlug === 'sports') {
+            stagedSports.clear();
+          }
+        } else {
+          stagedCategories.add(categorySlug);
+        }
+        renderStagedFilterView();
+        return;
+      }
+
+      // Sport chip toggle (auto-selects 'sports' category when toggled on)
       const chip = e.target.closest('[data-sport]');
       if (chip) {
         const sportSlug = chip.getAttribute('data-sport');
         if (stagedSports.has(sportSlug)) {
           stagedSports.delete(sportSlug);
-          chip.classList.remove('active');
-          chip.setAttribute('aria-checked', 'false');
         } else {
           stagedSports.add(sportSlug);
-          chip.classList.add('active');
-          chip.setAttribute('aria-checked', 'true');
+          stagedCategories.add('sports');
         }
+        renderStagedFilterView();
         return;
       }
 
       // Apply Filters
       const applyBtn = e.target.closest('[data-action="apply-filters"]');
       if (applyBtn) {
-        applySportsFilters(Array.from(stagedSports));
+        applyDiscoveryFilters({
+          categories: Array.from(stagedCategories),
+          sports: Array.from(stagedSports)
+        });
         return;
       }
 
       // Clear All
       const clearBtn = e.target.closest('[data-action="clear-filters"]') || e.target.closest('[data-action="clear-all"]');
       if (clearBtn) {
-        stagedSports.clear();
-        clearSavedSportsFilters();
-        store.setSportsFilter([]);
-        const allChips = filterOverlay.querySelectorAll('[data-sport]');
-        if (allChips && allChips.length > 0) {
-          allChips.forEach((c) => {
-            c.classList.remove('active');
-            c.setAttribute('aria-checked', 'false');
-          });
-        }
+        clearAllDiscoveryFilters();
+        renderStagedFilterView();
         return;
       }
 
@@ -1081,8 +1168,7 @@ export function initApp(options = {}) {
 
       const clearFiltersBtn = e.target.closest && e.target.closest('[data-action="clear-filters"]');
       if (clearFiltersBtn) {
-        clearSavedSportsFilters();
-        store.setSportsFilter([]);
+        clearAllDiscoveryFilters();
         return;
       }
 
@@ -1214,6 +1300,7 @@ export function initApp(options = {}) {
     closeLocationGate,
     openFilterView,
     closeFilterView,
+    applyDiscoveryFilters,
     applySportsFilters,
     highlightAndScrollToListing,
     highlightAndScrollToActivity: highlightAndScrollToListing,

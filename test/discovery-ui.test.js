@@ -9,6 +9,7 @@ import {
   renderEmptyState,
   renderLocationGate,
   renderFilterView,
+  CANONICAL_CATEGORIES_META,
   CANONICAL_SPORTS,
   createOutboundDirectionsUrl,
   formatScheduleText,
@@ -600,5 +601,82 @@ test('Seam 1 (Issue #16): Activity, Organizer, and Venue cards use query_place_i
   assert.ok(!placesVenueHtml.includes('badge-unverified'), 'Google Places venue without website must not display Unverified badge');
   assert.ok(placesVenueHtml.includes(`data-url="${expectedVenueMapsUrl}"`), 'Google Places venue whole-card click must open Google Maps Place URL');
   assert.ok(placesVenueHtml.includes(`data-directions-url="${expectedVenueMapsUrl}"`), 'Google Places venue maps row must use query_place_id');
+});
+
+test('Issue #33: renderFilterView renders all 9 categories and conditionally renders sport subcategories when sports is active', () => {
+  const expectedCategories = [
+    'sports', 'health', 'arts', 'music', 'community',
+    'family', 'food', 'hobbies', 'travel'
+  ];
+  assert.equal(CANONICAL_CATEGORIES_META.length, 9, 'Must define all 9 canonical categories');
+  for (const slug of expectedCategories) {
+    assert.ok(CANONICAL_CATEGORIES_META.some((c) => c.slug === slug), `Missing category: ${slug}`);
+  }
+
+  // When 'sports' is NOT selected, sport subcategories section is hidden/not shown
+  const musicOnlyHtml = renderFilterView({ categories: ['music'], sports: [] });
+  for (const cat of CANONICAL_CATEGORIES_META) {
+    assert.ok(musicOnlyHtml.includes(`data-category="${cat.slug}"`), `Must include category chip for ${cat.slug}`);
+    assert.ok(musicOnlyHtml.includes(cat.icon), `Must include category icon for ${cat.slug}`);
+  }
+  assert.ok(musicOnlyHtml.includes('data-category="music"') && musicOnlyHtml.includes('aria-checked="true"'));
+  assert.ok(!musicOnlyHtml.includes('data-sport="soccer"'), 'Sport subcategories must not be shown when sports is inactive');
+
+  // When 'sports' IS selected, sport subcategories section is rendered
+  const sportsHtml = renderFilterView({ categories: ['sports'], sports: ['soccer'] });
+  assert.ok(sportsHtml.includes('data-sport="soccer"'), 'Sport subcategories must be shown when sports is active');
+  assert.ok(sportsHtml.includes('data-sport="pickleball"'), 'All sport subcategories must be shown when sports is active');
+});
+
+test('Issue #33: non-sporting Listing cards render Category icon and label badge while sports cards render sport subcategory badges', () => {
+  const musicCard = renderActivityCard({
+    id: 'act_music_1',
+    title: 'Perth Jazz Jam',
+    category: 'music',
+    subcategory: 'music',
+    schedule: { recurrence: 'weekly', day_of_week: 4, start_time: '19:30' },
+    cost: { is_free: true },
+    source_url: 'https://example.com/jazz',
+    verified: true,
+    venue: { name: 'Ellington Jazz Club' }
+  });
+  assert.ok(musicCard.includes('badge-category'), 'Non-sporting card must render category badge');
+  assert.ok(musicCard.includes('Music'), 'Non-sporting card must render category label');
+  assert.ok(musicCard.includes('🎵'), 'Non-sporting card must render category icon');
+  assert.ok(!musicCard.includes('badge-sport'), 'Non-sporting card must not render sport badge');
+
+  const artsOrganizerCard = renderOrganizerCard({
+    id: 'org_arts_1',
+    name: 'Perth Printmakers',
+    category: 'arts',
+    address: '100 King St, Perth WA 6000',
+    coordinates: { lat: -31.95, lng: 115.85 }
+  });
+  assert.ok(artsOrganizerCard.includes('badge-category'), 'Non-sporting organizer card must render category badge');
+  assert.ok(artsOrganizerCard.includes('Arts &amp; Culture'), 'Non-sporting organizer card must render category label');
+
+  const foodVenueCard = renderVenueCard({
+    id: 'venue_food_1',
+    name: 'Fremantle Markets',
+    category: 'food',
+    address: 'South Terrace, Fremantle WA 6160',
+    coordinates: { lat: -32.05, lng: 115.74 }
+  });
+  assert.ok(foodVenueCard.includes('badge-category'), 'Non-sporting venue card must render category badge');
+  assert.ok(foodVenueCard.includes('Food &amp; Drink'), 'Non-sporting venue card must render category label');
+
+  const sportsCard = renderActivityCard({
+    id: 'act_sport_1',
+    title: 'Social Futsal',
+    category: 'sports',
+    subcategory: 'soccer',
+    schedule: { recurrence: 'weekly', day_of_week: 2, start_time: '18:30' },
+    cost: { is_free: false, display_price: '$10' },
+    source_url: 'https://example.com/futsal',
+    verified: true,
+    venue: { name: 'Loftus Centre' }
+  });
+  assert.ok(sportsCard.includes('badge-sport'), 'Sports card must render sport subcategory badge');
+  assert.ok(sportsCard.includes('soccer'), 'Sports card must render sport subcategory slug');
 });
 

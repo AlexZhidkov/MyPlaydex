@@ -8,6 +8,9 @@ import {
   getSavedSportsFilters,
   saveSportsFilters,
   clearSavedSportsFilters,
+  getSavedCategoryFilters,
+  saveCategoryFilters,
+  clearSavedCategoryFilters,
   unwrapFirestoreValue,
   parseFirestoreDocument,
   parseDiscoveryUrlParams,
@@ -229,10 +232,10 @@ test('Seam C: Hash Router & Application Controller Integration (/#filters, persi
     location: { name: 'Perth CBD', lat: -31.95, lng: 115.86 }
   });
 
-  // 1. Initial State: volleyball filter hydrated, header button is active, count is 1
+  // 1. Initial State: volleyball filter hydrated, header button is active without numeric count
   assert.equal(filterHeaderBtn.classList.contains('active'), true, 'Filter header button should be active');
-  assert.equal(filterCountBadge.classList.contains('hidden'), false, 'Filter count badge should be visible');
-  assert.equal(filterCountBadge.textContent, '1', 'Badge count should show 1');
+  assert.equal(filterCountBadge.classList.contains('hidden'), false, 'Filter active indicator should be visible');
+  assert.equal(filterCountBadge.textContent, '', 'Filter indicator should not display a numeric count');
 
   // Only volleyball activity matches
   const state1 = app.store.getState();
@@ -257,7 +260,7 @@ test('Seam C: Hash Router & Application Controller Integration (/#filters, persi
   app.applySportsFilters(['soccer', 'volleyball']);
   assert.deepEqual(getSavedSportsFilters(), ['soccer', 'volleyball'], 'LocalStorage should persist updated filters');
   assert.equal(filterHeaderBtn.classList.contains('active'), true);
-  assert.equal(filterCountBadge.textContent, '2');
+  assert.equal(filterCountBadge.textContent, '');
 
   // 5. Empty-state "clear-filters" resets filters and localStorage
   const clearTarget = {
@@ -1924,6 +1927,151 @@ test('Seam 3 (Issue #13): Deep-linking ?organizer=<id> and ?venue=<id> activates
     venue: 'v1'
   });
   assert.equal(typeof syncUrlState, 'function');
+
+  storage.clear();
+});
+
+test('Issue #33: Category filter persistence and two-tier filter modal interactions', () => {
+  const storage = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => storage.get(key) || null,
+    setItem: (key, val) => storage.set(key, String(val)),
+    removeItem: (key) => storage.delete(key),
+    clear: () => storage.clear()
+  };
+
+  // 1. Category storage helpers
+  assert.deepEqual(getSavedCategoryFilters(), []);
+  saveCategoryFilters(['sports', 'music']);
+  assert.deepEqual(getSavedCategoryFilters(), ['sports', 'music']);
+  clearSavedCategoryFilters();
+  assert.deepEqual(getSavedCategoryFilters(), []);
+
+  // 2. Hydrate both categories and sports on initApp
+  saveCategoryFilters(['sports', 'music']);
+  saveSportsFilters(['soccer']);
+
+  const elements = new Map();
+  const domListeners = new Map();
+  function createMockEl(id, tag = 'div', classes = []) {
+    const classSet = new Set(classes);
+    const listeners = new Map();
+    let innerHTML = '';
+    let textContent = '';
+    const attrs = new Map();
+    const el = {
+      id,
+      tagName: tag.toUpperCase(),
+      style: {},
+      get innerHTML() { return innerHTML; },
+      set innerHTML(val) { innerHTML = val; },
+      get textContent() { return textContent; },
+      set textContent(val) { textContent = val; },
+      classList: {
+        add: (...c) => c.forEach((n) => classSet.add(n)),
+        remove: (...c) => c.forEach((n) => classSet.delete(n)),
+        toggle: (n, force) => {
+          if (force === undefined) {
+            classSet.has(n) ? classSet.delete(n) : classSet.add(n);
+          } else if (force) {
+            classSet.add(n);
+          } else {
+            classSet.delete(n);
+          }
+        },
+        contains: (n) => classSet.has(n)
+      },
+      getAttribute: (n) => attrs.get(n) || null,
+      setAttribute: (n, v) => attrs.set(n, String(v)),
+      addEventListener: (type, cb) => {
+        if (!listeners.has(type)) listeners.set(type, []);
+        listeners.get(type).push(cb);
+      },
+      dispatchEvent: (e) => {
+        const cbs = listeners.get(e.type) || [];
+        cbs.forEach((cb) => cb(e));
+      }
+    };
+    elements.set(id, el);
+    return el;
+  }
+
+  const filterHeaderBtn = createMockEl('filter-header-btn', 'button');
+  const filterCountBadge = createMockEl('filter-count-badge', 'span', ['hidden']);
+  const filterOverlay = createMockEl('filter-view-overlay', 'div', ['hidden']);
+  createMockEl('location-gate-overlay', 'div', ['hidden']);
+  createMockEl('feed-container', 'section');
+  createMockEl('loading-label', 'span');
+  createMockEl('current-location-label', 'span');
+
+  globalThis.window = {
+    location: { hash: '', pathname: '/', search: '' },
+    history: { length: 1, pushState: () => {}, replaceState: () => {}, back: () => {} },
+    addEventListener: (evt, cb) => {
+      if (!domListeners.has(evt)) domListeners.set(evt, []);
+      domListeners.get(evt).push(cb);
+    }
+  };
+  globalThis.document = {
+    getElementById: (id) => elements.get(id) || null,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    addEventListener: () => {}
+  };
+
+  const app = initApp({
+    location: { name: 'Perth CBD', lat: -31.95, lng: 115.86 },
+    activities: [
+      { id: 's1', title: 'Social Soccer', category: 'sports', subcategory: 'soccer', venue: { coordinates: { lat: -31.95, lng: 115.86 } }, cost: { is_free: true } },
+      { id: 'v1', title: 'Beach Volleyball', category: 'sports', subcategory: 'volleyball', venue: { coordinates: { lat: -31.95, lng: 115.86 } }, cost: { is_free: true } },
+      { id: 'm1', title: 'Jazz Jam', category: 'music', subcategory: 'music', venue: { coordinates: { lat: -31.95, lng: 115.86 } }, cost: { is_free: true } }
+    ]
+  });
+
+  // Initial hydrated state filters to soccer + music (not volleyball)
+  assert.deepEqual(app.store.getState().filters.categories, ['sports', 'music']);
+  assert.deepEqual(app.store.getState().filters.sports, ['soccer']);
+  assert.deepEqual(app.store.getState().filteredActivities.map((a) => a.id).sort(), ['m1', 's1']);
+  assert.equal(filterHeaderBtn.classList.contains('active'), true);
+  assert.equal(filterCountBadge.classList.contains('hidden'), false);
+  assert.equal(filterCountBadge.textContent, '');
+
+  // Open filter modal and deselect 'sports' -> should clear staged sports and hide sport subcategories
+  app.openFilterView();
+  assert.ok(filterOverlay.innerHTML.includes('data-sport="soccer"'));
+  const deselectSportsTarget = {
+    closest: (sel) => sel === '[data-category]' ? { getAttribute: (n) => n === 'data-category' ? 'sports' : null } : null
+  };
+  filterOverlay.dispatchEvent({ type: 'click', target: deselectSportsTarget });
+  assert.ok(!filterOverlay.innerHTML.includes('data-sport="soccer"'), 'Deselecting sports must hide sport subcategories');
+
+  // Re-select a sport subcategory directly -> should auto-select 'sports'
+  const selectTennisTarget = {
+    closest: (sel) => sel === '[data-sport]' ? { getAttribute: (n) => n === 'data-sport' ? 'tennis' : null } : null
+  };
+  filterOverlay.dispatchEvent({ type: 'click', target: selectTennisTarget });
+  assert.ok(filterOverlay.innerHTML.includes('data-sport="tennis"'));
+
+  // Apply Filters -> persists both categories and sports
+  const applyTarget = {
+    closest: (sel) => sel === '[data-action="apply-filters"]' ? {} : null
+  };
+  filterOverlay.dispatchEvent({ type: 'click', target: applyTarget });
+  assert.deepEqual(getSavedCategoryFilters(), ['music', 'sports']);
+  assert.deepEqual(getSavedSportsFilters(), ['tennis']);
+
+  // Clear All -> clears both categories and sports
+  app.openFilterView();
+  const clearTarget = {
+    closest: (sel) => sel === '[data-action="clear-filters"]' ? {} : null
+  };
+  filterOverlay.dispatchEvent({ type: 'click', target: clearTarget });
+  assert.deepEqual(getSavedCategoryFilters(), []);
+  assert.deepEqual(getSavedSportsFilters(), []);
+  assert.deepEqual(app.store.getState().filters.categories, []);
+  assert.deepEqual(app.store.getState().filters.sports, []);
+  assert.equal(filterHeaderBtn.classList.contains('active'), false);
+  assert.equal(filterCountBadge.classList.contains('hidden'), true);
 
   storage.clear();
 });

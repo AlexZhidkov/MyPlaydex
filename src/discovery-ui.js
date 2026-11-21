@@ -12,6 +12,32 @@ import {
   getTodayAwstDate
 } from './discovery-engine.js';
 
+export const CATEGORY_ICONS = {
+  sports: '🏅',
+  health: '🧘',
+  arts: '🎨',
+  music: '🎵',
+  community: '🤝',
+  family: '👨‍👩‍👧‍👦',
+  food: '🍽️',
+  hobbies: '🧩',
+  travel: '🥾'
+};
+
+export const CANONICAL_CATEGORIES_META = [
+  { slug: 'sports', name: 'Sports & Fitness' },
+  { slug: 'health', name: 'Health & Wellness' },
+  { slug: 'arts', name: 'Arts & Culture' },
+  { slug: 'music', name: 'Music' },
+  { slug: 'community', name: 'Community' },
+  { slug: 'family', name: 'Family & Education' },
+  { slug: 'food', name: 'Food & Drink' },
+  { slug: 'hobbies', name: 'Hobbies' },
+  { slug: 'travel', name: 'Travel & Outdoor' }
+].map((cat) => ({ ...cat, icon: CATEGORY_ICONS[cat.slug] }));
+
+const CATEGORY_BY_SLUG = new Map(CANONICAL_CATEGORIES_META.map((cat) => [cat.slug, cat]));
+
 export const SPORT_ICONS = {
   soccer: '⚽',
   volleyball: '🏐',
@@ -246,12 +272,19 @@ function getItemSports(item = {}) {
 }
 
 /**
- * Renders Tier 1 sport badge(s) for a Listing.
+ * Renders Tier 1 Category badge for non-sporting Listings, or sport subcategory
+ * badge(s) for `sports` Listings.
  *
  * @param {object} [item={}]
  * @returns {string}
  */
 function renderSportBadges(item = {}) {
+  const categorySlug = typeof item.category === 'string' ? item.category.trim().toLowerCase() : '';
+  const categoryMeta = categorySlug && categorySlug !== 'sports' ? CATEGORY_BY_SLUG.get(categorySlug) : null;
+  if (categoryMeta) {
+    return `<span class="badge badge-category" data-category="${escapeHtml(categoryMeta.slug)}">${categoryMeta.icon} ${escapeHtml(categoryMeta.name)}</span>`;
+  }
+
   return getItemSports(item)
     .map((sportSlug) => {
       const sportIcon = SPORT_ICONS[sportSlug] || '🏅';
@@ -781,46 +814,94 @@ export function renderLocationGate() {
   `.trim();
 }
 
+function renderFilterChip({ slug, name, icon, dataAttr, isSelected, extraClass = '' }) {
+  const classNames = ['sport-filter-chip', extraClass, isSelected ? 'active' : ''].filter(Boolean).join(' ');
+  return `
+    <button
+      type="button"
+      class="${classNames}"
+      ${dataAttr}="${escapeHtml(slug)}"
+      role="checkbox"
+      aria-checked="${isSelected ? 'true' : 'false'}"
+    >
+      <span class="chip-icon" aria-hidden="true">${icon}</span>
+      <span class="chip-label">${escapeHtml(name)}</span>
+    </button>
+  `.trim();
+}
+
 /**
- * Renders the full-screen Dedicated Multi-Category Sport Filter View (/#filters).
+ * Renders the full-screen Two-Tier Category and Sport Subcategory Filter View (/#filters).
  *
- * @param {string[]} [selectedSports=[]]
+ * @param {{ categories?: string[], sports?: string[] } | string[]} [filterState={}]
  * @returns {string} HTML string
  */
-export function renderFilterView(selectedSports = []) {
-  const selectedSet = new Set(selectedSports);
+export function renderFilterView(filterState = {}) {
+  const normalizedState = Array.isArray(filterState)
+    ? {
+        categories: filterState.length > 0 ? ['sports'] : [],
+        sports: filterState
+      }
+    : (filterState || {});
 
-  const chipsHtml = CANONICAL_SPORTS.map((sport) => {
-    const isSelected = selectedSet.has(sport.slug);
-    return `
-      <button
-        type="button"
-        class="sport-filter-chip ${isSelected ? 'active' : ''}"
-        data-sport="${escapeHtml(sport.slug)}"
-        role="checkbox"
-        aria-checked="${isSelected ? 'true' : 'false'}"
-      >
-        <span class="chip-icon" aria-hidden="true">${sport.icon}</span>
-        <span class="chip-label">${escapeHtml(sport.name)}</span>
-      </button>
-    `.trim();
-  }).join('\n');
+  const selectedCategories = new Set(Array.isArray(normalizedState.categories) ? normalizedState.categories : []);
+  const selectedSports = new Set(Array.isArray(normalizedState.sports) ? normalizedState.sports : []);
+  const isSportsActive = selectedCategories.has('sports');
+
+  const categoryChipsHtml = CANONICAL_CATEGORIES_META.map((cat) =>
+    renderFilterChip({
+      slug: cat.slug,
+      name: cat.name,
+      icon: cat.icon,
+      dataAttr: 'data-category',
+      isSelected: selectedCategories.has(cat.slug),
+      extraClass: 'category-filter-chip'
+    })
+  ).join('\n');
+
+  const sportChipsHtml = isSportsActive
+    ? CANONICAL_SPORTS.map((sport) =>
+        renderFilterChip({
+          slug: sport.slug,
+          name: sport.name,
+          icon: sport.icon,
+          dataAttr: 'data-sport',
+          isSelected: selectedSports.has(sport.slug)
+        })
+      ).join('\n')
+    : '';
+
+  const sportSectionHtml = isSportsActive
+    ? `
+        <div class="filter-section filter-sport-subcategories" id="filter-sport-subcategories">
+          <h3 class="filter-section-title">Sport Subcategories</h3>
+          <p class="filter-instructions">Narrow sports results (leave empty for all sports):</p>
+          <div class="sport-chips-grid" role="group" aria-label="Sport subcategories">
+            ${sportChipsHtml}
+          </div>
+        </div>
+      `.trim()
+    : '';
 
   return `
     <div class="filter-view-modal" id="filter-view-modal" role="dialog" aria-modal="true" aria-labelledby="filter-view-title">
       <div class="filter-view-container">
         <div class="filter-view-header">
-          <h2 id="filter-view-title" class="filter-view-title">Filter by Sport</h2>
+          <h2 id="filter-view-title" class="filter-view-title">Filters</h2>
           <button type="button" class="btn-icon filter-close-btn" data-action="close-filters" aria-label="Close filters">
             &times;
           </button>
         </div>
 
         <div class="filter-view-body">
-          <p class="filter-instructions">Select sports to filter the feed (matches any selected sport):</p>
-          <div class="sport-chips-grid" role="group" aria-label="Sport categories">
-            ${chipsHtml}
+          <div class="filter-section">
+            <h3 class="filter-section-title">Categories</h3>
+            <p class="filter-instructions">Select categories to filter the feed (matches any selected category):</p>
+            <div class="sport-chips-grid category-chips-grid" role="group" aria-label="Categories">
+              ${categoryChipsHtml}
+            </div>
           </div>
+          ${sportSectionHtml}
         </div>
 
         <div class="filter-view-footer">

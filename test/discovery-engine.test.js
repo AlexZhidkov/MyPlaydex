@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   calculateDistanceKm,
+  filterListings,
   filterActivities,
   filterAndRankActivities,
   filterOrganizers,
@@ -926,6 +927,74 @@ test('Seam 2 (Issue #16): filterAndRankVenues returns all nearby Venues across a
     categories,
     'All venue categories must be returned when no sport filter is selected'
   );
+});
+
+test('Issue #33: filterListings supports two-tier categories and sport subcategories with legacy sports compatibility', () => {
+  const listings = [
+    { id: 'soc_1', title: 'Social Soccer', category: 'sports', subcategory: 'soccer' },
+    { id: 'vb_1', title: 'Beach Volleyball', category: 'sports', subcategory: 'volleyball' },
+    { id: 'legacy_1', title: 'Legacy Tennis', subcategory: 'tennis' },
+    { id: 'mus_1', title: 'Jazz Night', category: 'music', subcategory: 'music' },
+    { id: 'art_1', title: 'Pottery Class', category: 'arts', subcategory: 'arts' },
+    { id: 'food_1', title: 'Night Market', category: 'food', subcategory: 'food' }
+  ];
+
+  // 1. Selecting non-sporting category matches only that category
+  assert.deepEqual(
+    filterListings(listings, { categories: ['music'] }, { applyExpiration: false }).map((l) => l.id),
+    ['mus_1']
+  );
+
+  // 2. Selecting 'sports' without subcategories matches all sports listings (including legacy without category)
+  assert.deepEqual(
+    filterListings(listings, { categories: ['sports'], sports: [] }, { applyExpiration: false }).map((l) => l.id),
+    ['soc_1', 'vb_1', 'legacy_1']
+  );
+
+  // 3. Selecting 'sports' with subcategories narrows sports listings to those subcategories
+  assert.deepEqual(
+    filterListings(listings, { categories: ['sports'], sports: ['soccer'] }, { applyExpiration: false }).map((l) => l.id),
+    ['soc_1']
+  );
+
+  // 4. Selecting 'sports' (with subcategories) + other categories uses OR logic across categories
+  assert.deepEqual(
+    filterListings(listings, { categories: ['sports', 'music'], sports: ['soccer'] }, { applyExpiration: false }).map((l) => l.id),
+    ['soc_1', 'mus_1']
+  );
+
+  // 5. Multiple non-sport categories match via OR logic
+  assert.deepEqual(
+    filterListings(listings, { categories: ['arts', 'food'] }, { applyExpiration: false }).map((l) => l.id),
+    ['art_1', 'food_1']
+  );
+
+  // 6. Legacy callers passing filters.sports without filters.categories remain compatible
+  assert.deepEqual(
+    filterListings(listings, { sports: ['volleyball'] }, { applyExpiration: false }).map((l) => l.id),
+    ['vb_1']
+  );
+});
+
+test('Issue #33: createDiscoveryStore manages two-tier categories and sports filters', () => {
+  const perthCbd = { lat: -31.9505, lng: 115.8605 };
+  const store = createDiscoveryStore({
+    location: perthCbd,
+    radiusKm: 10,
+    activities: [
+      { id: 's1', title: 'Soccer', category: 'sports', subcategory: 'soccer', venue: { coordinates: perthCbd }, schedule: { recurrence: 'weekly', day_of_week: 1 } },
+      { id: 'm1', title: 'Jazz', category: 'music', subcategory: 'music', venue: { coordinates: perthCbd }, schedule: { recurrence: 'weekly', day_of_week: 1 } }
+    ]
+  });
+
+  store.setDiscoveryFilters({ categories: ['music'], sports: [] });
+  assert.deepEqual(store.getState().filters.categories, ['music']);
+  assert.deepEqual(store.getState().filteredActivities.map((a) => a.id), ['m1']);
+
+  store.clearFilters();
+  assert.deepEqual(store.getState().filters.categories, []);
+  assert.deepEqual(store.getState().filters.sports, []);
+  assert.equal(store.getState().filteredActivities.length, 2);
 });
 
 

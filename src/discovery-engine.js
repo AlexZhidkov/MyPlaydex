@@ -446,7 +446,7 @@ export function isActivityExpired(activity, referenceTime = new Date()) {
  * and optional AWST date expiration.
  *
  * @param {Array<object>} [listings=[]]
- * @param {{ sport?: string, sports?: string[], freeOnly?: boolean, gender?: string, age?: string }} [filters={}]
+ * @param {{ categories?: string[], sport?: string, sports?: string[], freeOnly?: boolean, gender?: string, age?: string }} [filters={}]
  * @param {object} [options={}]
  * @param {string} [options.todayAwst]
  * @param {Date | string} [options.referenceDate]
@@ -454,9 +454,11 @@ export function isActivityExpired(activity, referenceTime = new Date()) {
  * @returns {Array<object>} Filtered listings
  */
 export function filterListings(listings = [], filters = {}, options = {}) {
-  const { sport, sports, freeOnly, gender, age } = filters;
+  const { categories, sport, sports, freeOnly, gender, age } = filters;
   const expirationRef = options.referenceDate || options.todayAwst || new Date();
   const applyExpiration = options.applyExpiration !== false;
+  const hasCategoryFilter = Array.isArray(categories) && categories.length > 0;
+  const hasSportArrayFilter = Array.isArray(sports) && sports.length > 0;
 
   return listings.filter((item) => {
     // Expiration check (applied strictly to Activities, never Organizers/Venues)
@@ -464,15 +466,27 @@ export function filterListings(listings = [], filters = {}, options = {}) {
       return false;
     }
 
-    // Sport facets: multi-sport array (OR logic) or single sport string
-    if (Array.isArray(sports) && sports.length > 0) {
-      const itemSports = extractListingSports(item);
-      if (!itemSports.some((s) => sports.includes(s))) {
+    // Two-tier category & sport subcategory facets
+    const itemCategory = typeof item.category === 'string' && item.category.trim()
+      ? item.category.trim().toLowerCase()
+      : 'sports';
+
+    if (hasCategoryFilter) {
+      if (!categories.includes(itemCategory)) {
+        return false;
+      }
+      if (itemCategory === 'sports' && hasSportArrayFilter) {
+        if (!extractListingSports(item).some((s) => sports.includes(s))) {
+          return false;
+        }
+      }
+    } else if (hasSportArrayFilter) {
+      // Legacy compatibility: filters.sports without filters.categories
+      if (itemCategory !== 'sports' || !extractListingSports(item).some((s) => sports.includes(s))) {
         return false;
       }
     } else if (sport && sport !== 'all') {
-      const itemSports = extractListingSports(item);
-      if (!itemSports.includes(sport)) {
+      if (!extractListingSports(item).includes(sport)) {
         return false;
       }
     }
@@ -680,6 +694,7 @@ export function createDiscoveryStore(activitiesOrConfig = [], optionalConfig = {
   let radiusKm = config.radiusKm !== undefined ? config.radiusKm : 10;
   let maxResults = config.maxResults !== undefined ? config.maxResults : 50;
   let filters = {
+    categories: [],
     sports: [],
     sport: 'all',
     freeOnly: false,
@@ -751,7 +766,11 @@ export function createDiscoveryStore(activitiesOrConfig = [], optionalConfig = {
       location: location ? { ...location } : null,
       center: location ? { ...location } : null,
       radiusKm,
-      filters: { ...filters, sports: [...(filters.sports || [])] },
+      filters: {
+        ...filters,
+        categories: [...(filters.categories || [])],
+        sports: [...(filters.sports || [])]
+      },
       selectedActivityId,
       selectedOrganizerId,
       selectedVenueId,
@@ -814,8 +833,14 @@ export function createDiscoveryStore(activitiesOrConfig = [], optionalConfig = {
       filters.sports = Array.isArray(sportsList) ? [...sportsList] : [];
       notify('filter');
     },
+    setDiscoveryFilters({ categories = [], sports = [] } = {}) {
+      filters.categories = Array.isArray(categories) ? [...categories] : [];
+      filters.sports = Array.isArray(sports) ? [...sports] : [];
+      notify('filter');
+    },
     clearFilters() {
       filters = {
+        categories: [],
         sports: [],
         sport: 'all',
         freeOnly: false,
