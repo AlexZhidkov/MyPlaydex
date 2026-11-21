@@ -23,20 +23,20 @@ import {
   parseEventbritePage
 } from './eventbrite-parser.js';
 
-export const EVENTBRITE_PERTH_ALL_URL = 'https://www.eventbrite.com.au/d/australia--perth/all-events/';
-export const EVENTBRITE_PERTH_SPORTS_URL = 'https://www.eventbrite.com.au/d/australia--perth/sports--events/';
+export const EVENTBRITE_PERTH_ALL_URL = 'https://www.eventbrite.com.au/d/australia--perth--4807/all-events/';
+export const EVENTBRITE_PERTH_SPORTS_URL = 'https://www.eventbrite.com.au/d/australia--perth--4807/sports--events/';
 
 export const EVENTBRITE_PERTH_FEEDS = Object.freeze([
   { slug: 'all-events', url: EVENTBRITE_PERTH_ALL_URL, category: undefined, priority: 0 },
   { slug: 'sports', url: EVENTBRITE_PERTH_SPORTS_URL, category: 'sports', priority: 1 },
-  { slug: 'health', url: 'https://www.eventbrite.com.au/d/australia--perth/health--events/', category: 'health', priority: 1 },
-  { slug: 'arts', url: 'https://www.eventbrite.com.au/d/australia--perth/arts--events/', category: 'arts', priority: 1 },
-  { slug: 'music', url: 'https://www.eventbrite.com.au/d/australia--perth/music--events/', category: 'music', priority: 1 },
-  { slug: 'community', url: 'https://www.eventbrite.com.au/d/australia--perth/community--events/', category: 'community', priority: 1 },
-  { slug: 'family-and-education', url: 'https://www.eventbrite.com.au/d/australia--perth/family-and-education--events/', category: 'family', priority: 1 },
-  { slug: 'food-and-drink', url: 'https://www.eventbrite.com.au/d/australia--perth/food-and-drink--events/', category: 'food', priority: 1 },
-  { slug: 'hobbies', url: 'https://www.eventbrite.com.au/d/australia--perth/hobbies--events/', category: 'hobbies', priority: 1 },
-  { slug: 'travel-and-outdoor', url: 'https://www.eventbrite.com.au/d/australia--perth/travel-and-outdoor--events/', category: 'travel', priority: 1 }
+  { slug: 'health', url: 'https://www.eventbrite.com.au/d/australia--perth--4807/health--events/', category: 'health', priority: 1 },
+  { slug: 'arts', url: 'https://www.eventbrite.com.au/d/australia--perth--4807/arts--events/', category: 'arts', priority: 1 },
+  { slug: 'music', url: 'https://www.eventbrite.com.au/d/australia--perth--4807/music--events/', category: 'music', priority: 1 },
+  { slug: 'community', url: 'https://www.eventbrite.com.au/d/australia--perth--4807/community--events/', category: 'community', priority: 1 },
+  { slug: 'family-and-education', url: 'https://www.eventbrite.com.au/d/australia--perth--4807/family-and-education--events/', category: 'family', priority: 1 },
+  { slug: 'food-and-drink', url: 'https://www.eventbrite.com.au/d/australia--perth--4807/food-and-drink--events/', category: 'food', priority: 1 },
+  { slug: 'hobbies', url: 'https://www.eventbrite.com.au/d/australia--perth--4807/hobbies--events/', category: 'hobbies', priority: 1 },
+  { slug: 'travel-and-outdoor', url: 'https://www.eventbrite.com.au/d/australia--perth--4807/travel-and-outdoor--events/', category: 'travel', priority: 1 }
 ]);
 
 export {
