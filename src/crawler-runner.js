@@ -6,7 +6,7 @@
 
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { sanitizeListing, resolveListingType, extractCanonicalEntities } from './sanitizer.js';
+import { sanitizeListing, resolveListingType, extractCanonicalEntities, hasExplicitOrganizerName } from './sanitizer.js';
 import { reconcileListingWithCatalog } from './entity-matcher.js';
 import { createFirestoreAdapter, initFirestoreFromEnv } from './firestore-adapter.js';
 import { createUrlVerifier } from './url-verifier.js';
@@ -179,7 +179,11 @@ export async function runCrawlerHarness({ crawlers = [], adapter, options = {} }
 
           if (entry?.listingType === 'activity') {
             const entities = extractCanonicalEntities(reconciled, entry.raw);
-            if (reconciled.review_reason === 'unmatched_organizer' && entities.organizer) {
+            if (!hasExplicitOrganizerName(entry.raw)) {
+              entities.organizer = null;
+              reconciled.needs_review = true;
+              reconciled.review_reason = 'unmatched_organizer';
+            } else if (reconciled.review_reason === 'unmatched_organizer' && entities.organizer) {
               entities.organizer.needs_review = true;
               entities.organizer.review_reason = 'crawler_created';
             } else if (reconciled.review_reason === 'uncertain_organizer_match') {

@@ -39,6 +39,97 @@ export function slugify(str = '') {
     .replace(/^_+|_+$/g, '');
 }
 
+export const CANONICAL_CATEGORIES = Object.freeze([
+  'sports',
+  'health',
+  'arts',
+  'music',
+  'community',
+  'family',
+  'food',
+  'hobbies',
+  'travel'
+]);
+
+const CATEGORY_ALIAS_RULES = [
+  { category: 'sports', patterns: [/\bmartial\s+arts?\b/] },
+  { category: 'community', patterns: [/\bcommunity\b/] },
+  { category: 'health', patterns: [/\bhealth\b/, /\bwellness\b/] },
+  { category: 'arts', patterns: [/\barts?\b/, /\bperforming\b/, /\bvisual\s+arts?\b/, /\bculture\b/] },
+  { category: 'music', patterns: [/\bmusic\b/] },
+  { category: 'family', patterns: [/\bfamily\b/, /\beducation\b/] },
+  { category: 'food', patterns: [/\bfood\b/, /\bdrink\b/] },
+  { category: 'hobbies', patterns: [/\bhobb(?:y|ies)\b/, /\bspecial\s+interest\b/, /\bcrafts?\b/] },
+  { category: 'travel', patterns: [/\btravel\b/, /\boutdoors?\b/] },
+  { category: 'sports', patterns: [/\bsports?\b/, /\bfitness\b/, /\brecreation\b/] }
+];
+
+function matchCanonicalCategory(rawCategory = '') {
+  const normalized = String(rawCategory || '').toLowerCase().trim();
+  if (!normalized) return null;
+
+  if (CANONICAL_CATEGORIES.includes(normalized)) {
+    return normalized;
+  }
+
+  for (const rule of CATEGORY_ALIAS_RULES) {
+    if (rule.patterns.some(pattern => pattern.test(normalized))) {
+      return rule.category;
+    }
+  }
+
+  return null;
+}
+
+function extractRawSubcategoryInput(raw = {}) {
+  return raw.subcategory || raw.sport || (matchCanonicalCategory(raw.category) ? '' : raw.category) || '';
+}
+
+/**
+ * Checks whether a raw Activity payload contains an explicit Organizer name.
+ *
+ * @param {object} [raw={}]
+ * @returns {boolean}
+ */
+export function hasExplicitOrganizerName(raw = {}) {
+  const candidate =
+    raw?.organizer?.name ||
+    raw?.organizer_name ||
+    raw?.club_name ||
+    raw?.club?.name ||
+    (typeof raw?.club === 'string' ? raw.club : '');
+  return typeof candidate === 'string' && candidate.trim().length > 0;
+}
+
+/**
+ * Normalizes an input category string into one of the 9 canonical categories.
+ * Defaults to `'sports'` when missing or unrecognized.
+ *
+ * @param {string} [rawCategory='']
+ * @returns {string}
+ */
+export function normalizeCategory(rawCategory = '') {
+  return matchCanonicalCategory(rawCategory) || 'sports';
+}
+
+/**
+ * Resolves an Activity's subcategory:
+ * - Concrete matched sport slug when present (`soccer`, `running`, etc.)
+ * - Canonical `category` slug for non-sport categories
+ * - `'other'` for unclassified `sports` Activities
+ *
+ * @param {string} [rawSubcategory='']
+ * @param {string} [category='sports']
+ * @returns {string}
+ */
+export function resolveActivitySubcategory(rawSubcategory = '', category = 'sports') {
+  const matchedSport = normalizeSport(rawSubcategory);
+  if (matchedSport !== 'other') {
+    return matchedSport;
+  }
+  return category !== 'sports' ? category : 'other';
+}
+
 /**
  * Normalizes input sport names/aliases to canonical MVP taxonomy.
  *
@@ -730,8 +821,12 @@ export function extractCanonicalEntities(activity, raw = {}) {
   const venueGeohash = activity.venue?.geohash || raw.venue?.geohash || encodeGeohash(venueCoords.lat, venueCoords.lng, 9);
   const venueAddress = raw.address || raw.venue?.address || activity.venue?.address || activity.venue?.name || '';
 
-  const activitySubcategory = activity.subcategory || normalizeSport(raw.subcategory || raw.sport || raw.category || '');
-  const subcategories = normalizeSubcategories(
+  const category = normalizeCategory(activity.category || raw.category);
+  const rawSubInput = extractRawSubcategoryInput(raw);
+  const activitySubcategory = (activity.subcategory && activity.subcategory !== 'other')
+    ? activity.subcategory
+    : resolveActivitySubcategory(rawSubInput, category);
+  const sportSubcategories = normalizeSubcategories(
     {
       subcategories: raw.subcategories || activity.subcategories,
       sports: raw.sports,
@@ -739,8 +834,11 @@ export function extractCanonicalEntities(activity, raw = {}) {
     },
     activitySubcategory
   );
-  const primarySubcategory = subcategories[0] || activitySubcategory || 'other';
-  const category = activity.category || (typeof raw.category === 'string' && raw.category.trim() ? raw.category.trim().toLowerCase() : 'sports');
+  const hasConcreteSport = sportSubcategories.some(s => s !== 'other');
+  const primarySubcategory = hasConcreteSport
+    ? sportSubcategories[0]
+    : resolveActivitySubcategory('', category);
+  const subcategories = hasConcreteSport ? sportSubcategories : [primarySubcategory];
 
   const activityVerified = activity.verified !== false;
   const verifiedReferralUrl = activityVerified ? (activity.source_url || raw.external_url || null) : null;
@@ -1015,8 +1113,8 @@ export function sanitizeActivity(raw = {}, options = {}) {
   const { source_url: sourceUrl, raw_source_url: rawSourceUrl, verified } = resolveVerificationFields(raw);
   const description = typeof raw.description === 'string' ? raw.description.trim() : '';
 
-  const category = 'sports';
-  const subcategory = normalizeSport(raw.subcategory || raw.sport || raw.category || '');
+  const category = normalizeCategory(raw.category);
+  const subcategory = resolveActivitySubcategory(extractRawSubcategoryInput(raw), category);
 
   // Venue extraction
   const venueName = raw.venue_name || raw.venue?.name || title;

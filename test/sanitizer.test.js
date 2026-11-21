@@ -643,3 +643,71 @@ test('Seam 1: sanitizeOrganizer and extractCanonicalEntities do not copy generic
   assert.equal(entities.organizer.source_url, fallbackUrl);
   assert.equal(entities.organizer.verified, true);
 });
+
+test('Seam 1 (Issue #31): sanitizeActivity and extractCanonicalEntities normalize 9 canonical categories and resolve subcategories', () => {
+  const base = {
+    source: 'eventbrite',
+    venue_name: 'Perth Cultural Centre',
+    coordinates: { lat: -31.9495, lng: 115.8608 },
+    start_time: '2026-11-28T19:00:00+08:00',
+    organizer_name: 'Perth Arts Collective'
+  };
+
+  const cases = [
+    { input: 'sports', expectedCat: 'sports', expectedSub: 'other' },
+    { input: 'Sports & Fitness', expectedCat: 'sports', expectedSub: 'other' },
+    { input: 'health', expectedCat: 'health', expectedSub: 'health' },
+    { input: 'Health & Wellness', expectedCat: 'health', expectedSub: 'health' },
+    { input: 'arts', expectedCat: 'arts', expectedSub: 'arts' },
+    { input: 'Performing & Visual Arts', expectedCat: 'arts', expectedSub: 'arts' },
+    { input: 'music', expectedCat: 'music', expectedSub: 'music' },
+    { input: 'community', expectedCat: 'community', expectedSub: 'community' },
+    { input: 'Community & Culture', expectedCat: 'community', expectedSub: 'community' },
+    { input: 'family', expectedCat: 'family', expectedSub: 'family' },
+    { input: 'Family & Education', expectedCat: 'family', expectedSub: 'family' },
+    { input: 'food', expectedCat: 'food', expectedSub: 'food' },
+    { input: 'Food & Drink', expectedCat: 'food', expectedSub: 'food' },
+    { input: 'hobbies', expectedCat: 'hobbies', expectedSub: 'hobbies' },
+    { input: 'Hobbies & Special Interest', expectedCat: 'hobbies', expectedSub: 'hobbies' },
+    { input: 'travel', expectedCat: 'travel', expectedSub: 'travel' },
+    { input: 'Travel & Outdoor', expectedCat: 'travel', expectedSub: 'travel' },
+    { input: 'Martial Arts', expectedCat: 'sports', expectedSub: 'other' },
+    { input: 'Party', expectedCat: 'sports', expectedSub: 'other' },
+    { input: 'unknown-vertical', expectedCat: 'sports', expectedSub: 'other' },
+    { input: '', expectedCat: 'sports', expectedSub: 'other' }
+  ];
+
+  for (const [idx, c] of cases.entries()) {
+    const activity = sanitizeActivity({
+      ...base,
+      source_id: `cat-${idx}`,
+      title: `Activity ${idx}`,
+      category: c.input
+    });
+    assert.equal(activity.category, c.expectedCat, `category mismatch for "${c.input}"`);
+    assert.equal(activity.subcategory, c.expectedSub, `subcategory mismatch for "${c.input}"`);
+
+    const entities = extractCanonicalEntities(activity, { category: c.input });
+    assert.equal(entities.venue.category, c.expectedCat);
+    assert.equal(entities.venue.subcategory, c.expectedSub);
+    assert.deepEqual(entities.venue.subcategories, [c.expectedSub]);
+    assert.equal(entities.organizer.category, c.expectedCat);
+    assert.equal(entities.organizer.subcategory, c.expectedSub);
+    assert.deepEqual(entities.organizer.subcategories, [c.expectedSub]);
+  }
+
+  // Concrete sport slug takes precedence when matched
+  const charityRun = sanitizeActivity({
+    ...base,
+    source_id: 'charity-run',
+    title: 'Community Fun Run',
+    category: 'Community & Culture',
+    subcategory: 'running'
+  });
+  assert.equal(charityRun.category, 'community');
+  assert.equal(charityRun.subcategory, 'running');
+  const runEntities = extractCanonicalEntities(charityRun);
+  assert.equal(runEntities.venue.category, 'community');
+  assert.equal(runEntities.venue.subcategory, 'running');
+  assert.deepEqual(runEntities.venue.subcategories, ['running']);
+});

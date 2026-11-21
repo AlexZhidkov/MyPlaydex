@@ -1434,3 +1434,93 @@ test('createFileLogger and crawler-runner main write timestamped INFO, WARN, and
   }
 });
 
+test('Seam 4 (Issue #31): runCrawlerHarness suppresses standalone Organizer creation when raw Activity lacks Organizer name', async () => {
+  const store = {
+    venues: new Map([
+      ['venue_perth_town_hall_qd66hx', {
+        id: 'venue_perth_town_hall_qd66hx',
+        name: 'Perth Town Hall',
+        coordinates: { lat: -31.9547, lng: 115.8606 },
+        geohash: 'qd66hx123',
+        google_place_id: 'ChIJPerthTownHall'
+      }]
+    ]),
+    organizers: new Map(),
+    activities: new Map(),
+    regions: new Map()
+  };
+
+  const adapter = {
+    async loadCatalog() {
+      return {
+        venues: Array.from(store.venues.values()),
+        organizers: Array.from(store.organizers.values())
+      };
+    },
+    async batchUpsertListings(items) {
+      for (const item of items) {
+        const entities = item._canonicalEntities || {};
+        store.activities.set(item.id, item);
+        if (entities.organizer?.id) {
+          store.organizers.set(entities.organizer.id, entities.organizer);
+        }
+        if (entities.region?.id) {
+          store.regions.set(entities.region.id, entities.region);
+        }
+      }
+      return { upserted: items.length };
+    }
+  };
+
+  const crawler = {
+    name: 'eventbrite',
+    async fetchListings() {
+      return [
+        {
+          source: 'eventbrite',
+          source_id: 'no-org-matched-venue',
+          title: 'Nameless Community Choir',
+          category: 'music',
+          venue_name: 'Perth Town Hall',
+          coordinates: { lat: -31.9547, lng: 115.8606 },
+          start_time: '2026-11-28T19:00:00+08:00',
+          external_url: 'https://www.eventbrite.com.au/e/nameless-choir-111'
+        },
+        {
+          source: 'eventbrite',
+          source_id: 'no-org-unmatched-venue',
+          title: 'Nameless Pottery Workshop',
+          category: 'hobbies',
+          venue_name: 'Unknown Studio',
+          coordinates: { lat: -31.9450, lng: 115.8550 },
+          start_time: '2026-11-29T10:00:00+08:00',
+          external_url: 'https://www.eventbrite.com.au/e/nameless-pottery-222',
+          organizer: { name: '   ' }
+        }
+      ];
+    }
+  };
+
+  const summary = await runCrawlerHarness({
+    crawlers: [crawler],
+    adapter,
+    options: { skipUrlVerification: true }
+  });
+
+  assert.equal(summary.successfulCrawlers, 1);
+  assert.equal(summary.totalUpserted, 2);
+  assert.equal(store.organizers.size, 0, 'Must not create synthetic standalone Organizer documents');
+
+  const act1 = store.activities.get('eventbrite_no-org-matched-venue');
+  assert.equal(act1.category, 'music');
+  assert.equal(act1.subcategory, 'music');
+  assert.equal(act1.needs_review, true);
+  assert.equal(act1.review_reason, 'unmatched_organizer');
+
+  const act2 = store.activities.get('eventbrite_no-org-unmatched-venue');
+  assert.equal(act2.category, 'hobbies');
+  assert.equal(act2.subcategory, 'hobbies');
+  assert.equal(act2.needs_review, true);
+  assert.equal(act2.review_reason, 'unmatched_organizer');
+});
+
