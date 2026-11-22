@@ -81,6 +81,7 @@ test('mapCouncilCategory maps council tags across all 9 canonical categories', (
   assert.equal(mapCouncilCategory('Seniors'), 'community');
   assert.equal(mapCouncilCategory('Kids & Family'), 'family');
   assert.equal(mapCouncilCategory('School Holidays'), 'family');
+  assert.equal(mapCouncilCategory('Childrens Program'), 'family');
   assert.equal(mapCouncilCategory('Food & Markets'), 'food');
   assert.equal(mapCouncilCategory('Cooking Class'), 'food');
   assert.equal(mapCouncilCategory('Craft & Hobbies'), 'hobbies');

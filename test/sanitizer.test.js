@@ -711,3 +711,30 @@ test('Seam 1 (Issue #31): sanitizeActivity and extractCanonicalEntities normaliz
   assert.equal(runEntities.venue.subcategory, 'running');
   assert.deepEqual(runEntities.venue.subcategories, ['running']);
 });
+
+test('parseSchedule does not misclassify weekday names containing "T" (Tuesday/Thursday) as ISO timestamps', () => {
+  const tuesdayActivity = sanitizeActivity({
+    source: 'vincent',
+    source_id: 'tue-1',
+    title: 'Reusable Gift Wrapping Workshops',
+    venue_name: 'Kyilla Park',
+    coordinates: { lat: -31.92, lng: 115.84 },
+    start_time: 'Saturday 21 November - Tuesday 8 December 2026, 10am - 11am'
+  });
+  assert.equal(tuesdayActivity.schedule.start_date, '2026-11-21');
+  assert.equal(tuesdayActivity.schedule.end_date, '2026-12-08');
+  assert.equal(tuesdayActivity.schedule.start_time, '10:00');
+  assert.equal(tuesdayActivity.schedule.end_time, '11:00');
+
+  const thursdayActivity = sanitizeActivity({
+    source: 'vincent',
+    source_id: 'thu-1',
+    title: 'Social Strings: Term 4',
+    venue_name: 'Community Hall',
+    coordinates: { lat: -31.93, lng: 115.84 },
+    start_time: 'Thursday 26 November 2026, 6pm - 8pm'
+  });
+  assert.equal(thursdayActivity.schedule.start_date, '2026-11-26');
+  assert.equal(thursdayActivity.schedule.start_time, '18:00');
+  assert.equal(thursdayActivity.schedule.end_time, '20:00');
+});

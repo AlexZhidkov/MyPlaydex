@@ -429,7 +429,7 @@ export function parseSchedule(raw, nowIso) {
   }
 
   // Process start time if it contains an ISO timestamp (e.g. "2026-11-20T17:00:00+08:00")
-  if (startTime && typeof startTime === 'string' && (startTime.includes('T') || /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(startTime))) {
+  if (startTime && typeof startTime === 'string' && /^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}/.test(startTime.trim())) {
     const parsedStart = new Date(startTime);
     if (!Number.isNaN(parsedStart.getTime())) {
       const awst = formatAwstDateTime(parsedStart);
@@ -464,7 +464,7 @@ export function parseSchedule(raw, nowIso) {
   }
 
   // Process end time if it contains an ISO timestamp
-  if (endTime && typeof endTime === 'string' && (endTime.includes('T') || /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(endTime))) {
+  if (endTime && typeof endTime === 'string' && /^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}/.test(endTime.trim())) {
     const parsedEnd = new Date(endTime);
     if (!Number.isNaN(parsedEnd.getTime())) {
       const awst = formatAwstDateTime(parsedEnd);

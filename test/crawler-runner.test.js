@@ -489,22 +489,27 @@ test('Seam 4C: CLI exits with status 1 on anomaly and writes GITHUB_STEP_SUMMARY
   }
 });
 
-test('Seam 7: getDefaultCrawlers registers the 5 scheduled crawlers and excludes eventbrite unless requested', () => {
+test('Seam 7: getDefaultCrawlers registers the 6 scheduled crawlers and excludes eventbrite unless requested', () => {
   const crawlers = getDefaultCrawlers();
   const names = crawlers.map(c => c.name);
 
   assert.ok(names.includes('stirling'), 'stirling should be in default crawlers');
   assert.ok(names.includes('visit_perth'), 'visit_perth should be in default crawlers');
+  assert.ok(names.includes('vincent'), 'vincent should be in default crawlers');
   assert.ok(names.includes('dlgsc'), 'dlgsc should be in default crawlers');
   assert.ok(names.includes('volleyball_wa'), 'volleyball_wa should be in default crawlers');
   assert.ok(names.includes('meetup'), 'meetup should be in default crawlers');
   assert.ok(!names.includes('eventbrite'), 'eventbrite should be excluded from default scheduled crawlers');
-  assert.equal(names.length, 5);
+  assert.equal(names.length, 6);
+
+  const vincent = crawlers.find(c => c.name === 'vincent');
+  assert.equal(vincent?.group, 'councils');
+  assert.equal(vincent?.minExpectedListings, 0);
 
   const withEventbrite = getDefaultCrawlers({ includeEventbrite: true });
   const withEventbriteNames = withEventbrite.map(c => c.name);
   assert.ok(withEventbriteNames.includes('eventbrite'), 'eventbrite should be included when includeEventbrite is true');
-  assert.equal(withEventbriteNames.length, 6);
+  assert.equal(withEventbriteNames.length, 7);
 });
 
 test('Seam 7: runCrawlerHarness targets dlgsc, volleyball_wa, eventbrite, and meetup individually', async () => {
@@ -1770,6 +1775,7 @@ test('Issue #37: --crawler=councils runs all council-grouped crawlers and is sel
 
   const workflowYaml = readFileSync(resolve(process.cwd(), '.github/workflows/crawler-harness.yml'), 'utf8');
   assert.match(workflowYaml, /^\s*-\s*councils\s*$/m);
+  assert.match(workflowYaml, /^\s*-\s*vincent\s*$/m);
 });
 
 

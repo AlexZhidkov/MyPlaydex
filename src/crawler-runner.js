@@ -13,6 +13,7 @@ import { createFirestoreAdapter, initFirestoreFromEnv } from './firestore-adapte
 import { createUrlVerifier } from './url-verifier.js';
 import { createStirlingCrawler } from './crawlers/stirling-crawler.js';
 import { createVisitPerthCrawler } from './crawlers/visit-perth-crawler.js';
+import { createVincentCrawler } from './crawlers/vincent-crawler.js';
 import { createDlgscCrawler } from './crawlers/dlgsc-crawler.js';
 import { createVolleyballWaCrawler } from './crawlers/volleyball-wa-crawler.js';
 import { createEventbriteCrawler } from './crawlers/eventbrite-crawler.js';
@@ -318,6 +319,7 @@ export function getDefaultCrawlers(options = {}) {
   const crawlers = [
     createStirlingCrawler(),
     createVisitPerthCrawler(),
+    createVincentCrawler(),
     createDlgscCrawler(),
     createVolleyballWaCrawler(),
     createMeetupCrawler()
