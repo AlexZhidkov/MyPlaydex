@@ -139,11 +139,36 @@ Following empirical inspection of APIs, HTTP responses, bot protections, and sch
 
 #### 2.2.3 City of Vincent
 * **Primary Source URL**: [https://www.vincent.wa.gov.au/events/](https://www.vincent.wa.gov.au/events/)
-* **Underlying Architecture**: OpenCities CMS.
+* **Underlying Architecture**: Server-rendered HTML (`SparkSearch_Robots`, Cloudflare-fronted, HTTP 200). *(Note: Originally grouped under OpenCities in the MVP matrix; empirically uses `<article class="eventArticle">` cards with `<strong class="date">`, `<h3 class="title">`, and `<strong class="location">`.)*
 * **Coverage**: Vincent LGA (Leederville, Mount Lawley, Highgate, North Perth).
-* **Data Format**: Semantic HTML cards (`<article>`, `.event-dates`, `.location-info`).
-* **Technical Ingestion Mechanism**: Standard HTML parsing using Cheerio / BeautifulSoup.
+* **Data Format**: Semantic HTML cards (`<article class="eventArticle">`).
+* **Technical Ingestion Mechanism**: Zero-dependency HTML card parsing (per [ADR 0009](../adr/0009-council-crawler-platform-adapters-and-venue-fallback.md)).
 * **Constraints**: Relatively low sports-specific volume (focuses more on arts, community workshops, library sessions). Useful as an auxiliary source.
+
+#### 2.2.4 Greater Perth LGA Platform Survey (First-Wave Expansion)
+
+An empirical survey of 11 additional Greater Perth LGA event portals was conducted on 2026-11-22 (per [ADR 0009](../adr/0009-council-crawler-platform-adapters-and-venue-fallback.md)) to identify councils compatible with our shared **Kentico/Kendo** and **OpenCities / HTML `<article>` Card** adapters without adding browser or scraping dependencies.
+
+##### First-Wave Compatible Councils (4 Verified Additions → 7 Total Alongside Stirling, Visit Perth, and Vincent)
+
+| LGA | Event Portal URL | CMS / Platform | Data Mechanism & Selectors | Bot / WAF Notes | LGA Fallback Centroid (`src/perth-centroids.js`) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **City of Wanneroo** | [wanneroo.wa.gov.au/things-to-do/event-calendar](https://www.wanneroo.wa.gov.au/things-to-do/event-calendar) | **Kentico / AgencyWeb + Kendo UI** (`AWPT.Event`) | `POST /ksearch/eventresult` with `SearchParam` + `SearchFilter` JSON headers (`{"page":1,"pageSize":50,"skip":0,"take":50}`); returns `Data` & `Total` (123 live records observed) with `ArticleTitle`, `ArticleTeaser`, `Categories`, `Venues`, `ArticleReleaseDateString`. Fits shared **Kentico/Kendo** adapter. | HTTP 200; no Cloudflare challenge observed. | `-31.7508, 115.8039` (Wanneroo, 6065) |
+| **City of Gosnells** | [gosnells.wa.gov.au/Events-Directory](https://www.gosnells.wa.gov.au/Events-Directory) | **OpenCities (Granicus)** | SSR HTML `<article>` cards (`oc-events-listing`, `list-item-container`) with `h2.list-item-title`, `span.list-item-block-date` (`part-date`/`part-month`/`part-year`), `span.list-item-block-desc`, `p.list-item-address`, `p.tagged-as-list`. Fits shared **OpenCities HTML** adapter. | HTTP 200; no Cloudflare challenge observed. | `-32.0792, 115.9972` (Gosnells, 6110) |
+| **Town of Cambridge** | [cambridge.wa.gov.au/Discover/Whats-On](https://www.cambridge.wa.gov.au/Discover/Whats-On) | **OpenCities (Granicus)** | Identical SSR HTML `<article>` card markup to City of Gosnells (`oc-events-listing-full-width`, `list-item-container`, `h2.list-item-title`, `span.list-item-block-date`, `p.list-item-address`, `p.tagged-as-list`). Fits shared **OpenCities HTML** adapter. | HTTP 200; no Cloudflare challenge observed. | `-31.9392, 115.8097` (Wembley, 6014) |
+| **Town of Victoria Park** | [victoriapark.wa.gov.au/events/](https://www.victoriapark.wa.gov.au/events/) | **ASP.NET WebForms + Telerik RadListView** (`SparkSearch_Robots`) | SSR HTML `<article class="list-text">` cards (30 items on initial page) with `<h2 class="h4">`, `<strong>` date/time string, and `p.events-detail-location`. Shares the `SparkSearch` `<article>` card pattern with City of Vincent; fits the **HTML `<article>` Card** adapter via config selectors. | HTTP 200; no Cloudflare challenge observed. | `-31.9753, 115.8978` (Victoria Park, 6100) |
+
+##### Deferred Councils (Bespoke, Variant Endpoints, or WAF-Blocked)
+
+| LGA | Event Portal URL | CMS / Platform | Data Mechanism | Bot / WAF Notes | Deferral Reason |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **City of Melville** | [melvillecity.com.au/things-to-do/events](https://www.melvillecity.com.au/things-to-do/events) | Unknown (behind Cloudflare) | Blocked before origin response | **HTTP 403** Cloudflare Managed Challenge (`Just a moment...`, `server: cloudflare`) | **WAF-blocked**: Requires Cloudflare bypass or local-sync fallback (deferred per ADR 0009). |
+| **City of Joondalup** | [joondalup.wa.gov.au/whats-on/events-calendar](https://www.joondalup.wa.gov.au/whats-on/events-calendar) | **Kentico / AgencyWeb + Kendo UI** (`AWPT.Event`) | Uses `aw_pagetypelisting.js` (`POST /search/htmlresult` with `{SI, OB, Q, PS, FS, PG, PR, IncludeFirst}` returning HTML/Handlebars rather than `/ksearchevent/ksearchresult` JSON, which returns 404). | HTTP 200 (IIS 10 / ASP.NET); no Cloudflare. | **Variant endpoint**: Deferred to a follow-up `aw_pagetypelisting` adapter extension. Centroid: `-31.7456, 115.7660` (Joondalup, 6027). |
+| **City of Swan** | [swan.wa.gov.au/explore-and-do/events](https://www.swan.wa.gov.au/explore-and-do/events) | **Kentico / AgencyWeb + Kendo UI** (`AWPT.Event`) | Uses `aw_pagetypelisting.js` (`POST /v1/aapi/search/htmlresult` rather than `/ksearchevent/ksearchresult` JSON, which returns 404). | HTTP 200 (IIS 10 / ASP.NET); no Cloudflare. | **Variant endpoint**: Deferred to a follow-up `aw_pagetypelisting` adapter extension (shares pattern with Joondalup). Centroid: `-31.8906, 116.0028` (Midland, 6056). |
+| **City of Cockburn** | [cockburn.wa.gov.au/City-and-Council/Events-and-News/Events-and-Workshops](https://www.cockburn.wa.gov.au/City-and-Council/Events-and-News/Events-and-Workshops) | **Kentico CMS** (`/CMSPages/GetResource.ashx`) | Custom query-filtered `#eventslistingResultsFB` rather than Kendo `ksearch` JSON. | HTTP 200 with browser UA; `server: cloudflare`. | **Bespoke Kentico template**: Deferred for a future pass. Centroid: `-32.1278, 115.8569` (Cockburn Central, 6164). |
+| **City of Fremantle** | [fremantle.wa.gov.au/arts-and-culture/whats-on/](https://www.fremantle.wa.gov.au/arts-and-culture/whats-on/) | **WordPress 7.1.5** (`aw_festivalevents` theme) | WordPress event archive with `?feed=rss2` and `/page/N/` pagination. | HTTP 200 (`server: LiteSpeed`); no Cloudflare. | **Bespoke CMS (WordPress)**: Deferred for a future WordPress/RSS pass. Centroid: `-32.0569, 115.7439` (Fremantle, 6160). |
+| **City of Canning** | [canning.wa.gov.au/events/](https://www.canning.wa.gov.au/events/) | **Umbraco CMS** (Azure / ASP.NET) | Client-hydrated / Umbraco query endpoint (`?CurrentPageId=1271&SortBy=DateAsc&Page=1&PageSize=9...`); no SSR event cards in initial HTML. | HTTP 200; no Cloudflare. | **Bespoke CMS / JS-hydrated**: Deferred for a future Umbraco pass. Centroid: `-32.0167, 115.9333` (Cannington, 6107). |
+| **City of South Perth** | [southperth.wa.gov.au/discover/whats-on/events](https://southperth.wa.gov.au/discover/whats-on/events) | **Progress Sitefinity 14.4 DX** (IIS 10 / ASP.NET) | SSR HTML event listing with `/discover/whats-on/Events/N` pagination. | HTTP 200; no Cloudflare. | **Bespoke CMS (Sitefinity)**: Deferred for a future pass. Centroid: `-31.9808, 115.8617` (South Perth, 6151). |
 
 ---
 
