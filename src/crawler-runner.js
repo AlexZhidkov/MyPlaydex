@@ -8,6 +8,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { sanitizeListing, resolveListingType, extractCanonicalEntities, hasExplicitOrganizerName } from './sanitizer.js';
 import { reconcileListingWithCatalog } from './entity-matcher.js';
+import { applyVenueResolution, resolveActivityVenueAndCoordinates } from './venue-resolver.js';
 import { createFirestoreAdapter, initFirestoreFromEnv } from './firestore-adapter.js';
 import { createUrlVerifier } from './url-verifier.js';
 import { createStirlingCrawler } from './crawlers/stirling-crawler.js';
@@ -151,9 +152,29 @@ export async function runCrawlerHarness({ crawlers = [], adapter, options = {} }
           if (listingType === 'venue') {
             continue;
           }
-          const sanitized = sanitizeListing(item);
+          let resolvedVenue = null;
+          let itemForSanitization = item;
+          if (listingType === 'activity') {
+            resolvedVenue = resolveActivityVenueAndCoordinates(item, {
+              venuesCatalog,
+              organizersCatalog,
+              fallbackCentroid: item.fallbackCentroid || item.fallback_centroid || crawler.fallbackCentroid || options.fallbackCentroid || null
+            });
+            if (resolvedVenue.outOfArea && resolvedVenue.outOfRegionReason === 'explicit_out_of_region') {
+              continue;
+            }
+            if (!resolvedVenue.outOfArea) {
+              itemForSanitization = {
+                ...item,
+                coordinates: resolvedVenue.coordinates,
+                geohash: resolvedVenue.geohash,
+                ...(resolvedVenue.venueOverride ? { venue_name: resolvedVenue.venueOverride.name } : {})
+              };
+            }
+          }
+          const sanitized = sanitizeListing(itemForSanitization);
           validItems.push(sanitized);
-          validEntries.push({ raw: item, listingType });
+          validEntries.push({ raw: item, listingType, resolvedVenue, sanitizedVenue: sanitized.venue });
         } catch (err) {
           invalidItems.push({ item, error: err.message });
         }
@@ -178,6 +199,7 @@ export async function runCrawlerHarness({ crawlers = [], adapter, options = {} }
           );
 
           if (entry?.listingType === 'activity') {
+            applyVenueResolution(reconciled, entry.resolvedVenue, entry.sanitizedVenue);
             const entities = extractCanonicalEntities(reconciled, entry.raw);
             if (!hasExplicitOrganizerName(entry.raw)) {
               entities.organizer = null;

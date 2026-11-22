@@ -7,12 +7,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { calculateDistanceKm } from './discovery-engine.js';
-import {
-  matchOrganizerCandidate,
-  matchVenueByNameOnly,
-  reconcileListingWithCatalog
-} from './entity-matcher.js';
+import { reconcileListingWithCatalog } from './entity-matcher.js';
 import { DEFAULT_LOG_DIR, resolveCliLogger } from './crawler-reporter.js';
 import {
   extractFacebookEventIdFromUrl,
@@ -25,26 +20,25 @@ import {
 } from './facebook-parser.js';
 import { compactFileCache, createFileCacheStore } from './file-cache.js';
 import { createFirestoreAdapter, initFirestoreFromEnv } from './firestore-adapter.js';
-import { encodeGeohash } from './geohash.js';
-import { PERTH_SUBURB_CENTROIDS } from './perth-centroids.js';
 import { loadDotEnv } from './places-sync.js';
 import {
   computeActivityExpireAt,
   normalizeSport,
   parseSchedule,
-  sanitizeActivity,
-  slugify
+  sanitizeActivity
 } from './sanitizer.js';
 import {
   deriveFacebookEventsTabUrl,
   normalizeFacebookUrl,
   resolveOrganizerFacebookUrl
 } from './url-utils.js';
+import {
+  applyVenueResolution,
+  resolveActivityVenueAndCoordinates
+} from './venue-resolver.js';
 
 export { extractFacebookEvents };
 
-export const PERTH_CENTROID = { lat: -31.9505, lng: 115.8605 };
-export const MAX_PERTH_RADIUS_KM = 85;
 export const DEFAULT_FACEBOOK_CACHE_PATH = path.resolve(process.cwd(), '.scratch/facebook-sync-cache.json');
 export const DEFAULT_FETCH_DELAY_MS = 3500;
 
@@ -105,9 +99,6 @@ export async function cleanFacebookCache(cachePath = DEFAULT_FACEBOOK_CACHE_PATH
   };
 }
 
-const NON_WA_LOCATION_REGEX = /\b(NSW|VIC|QLD|SA|TAS|ACT|NT|New South Wales|Victoria|Queensland|South Australia|Tasmania|Northern Territory|Sydney|Melbourne|Brisbane|Adelaide|Hobart|Canberra|Darwin)\b/i;
-const WA_LOCATION_REGEX = /\b(WA|Western Australia|Perth)\b/i;
-
 function getArgValue(argv, flag) {
   const prefix = `--${flag}=`;
   const match = argv.find(a => a.startsWith(prefix));
@@ -156,40 +147,6 @@ export function parseCliArgs(argv = process.argv.slice(2), env = process.env) {
   };
 }
 
-function isWithinPerthRadius(coords) {
-  if (!coords || typeof coords.lat !== 'number' || typeof coords.lng !== 'number') {
-    return false;
-  }
-  return calculateDistanceKm(coords, PERTH_CENTROID) <= MAX_PERTH_RADIUS_KM;
-}
-
-function isNonWaText(locationText = '') {
-  if (!locationText) return false;
-  return NON_WA_LOCATION_REGEX.test(locationText) && !WA_LOCATION_REGEX.test(locationText);
-}
-
-function matchPerthCentroidFromText(text = '') {
-  const source = String(text || '');
-  if (!source.trim()) return null;
-
-  const postcodeMatches = source.match(/\b6\d{3}\b/g) || [];
-  for (const code of postcodeMatches) {
-    const found = PERTH_SUBURB_CENTROIDS.find(s => s.postcode === code);
-    if (found) return found;
-  }
-
-  const lower = source.toLowerCase();
-  const sorted = [...PERTH_SUBURB_CENTROIDS].sort((a, b) => b.name.length - a.name.length);
-  for (const suburb of sorted) {
-    const escaped = suburb.name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    if (new RegExp(`\\b${escaped}\\b`, 'i').test(lower)) {
-      return suburb;
-    }
-  }
-
-  return null;
-}
-
 function resolveOrganizerSubcategory(org) {
   if (!org) return null;
   if (typeof org.subcategory === 'string' && org.subcategory && org.subcategory !== 'other') {
@@ -200,69 +157,6 @@ function resolveOrganizerSubcategory(org) {
     if (firstSpecific) return firstSpecific;
   }
   return null;
-}
-
-function resolvedVenueResult(coordinates, { geohash, venueOverride = null, fallbackReviewReason = null } = {}) {
-  return {
-    outOfArea: false,
-    coordinates,
-    geohash: geohash || encodeGeohash(coordinates.lat, coordinates.lng, 9),
-    venueOverride,
-    fallbackReviewReason
-  };
-}
-
-function resolveActivityVenueAndCoordinates(ev, { venuesCatalog = [], organizersCatalog = [], parentOrganizer = null }) {
-  // Step 1: Explicit coordinates from Facebook payload
-  if (ev.coordinates) {
-    return isWithinPerthRadius(ev.coordinates)
-      ? resolvedVenueResult(ev.coordinates)
-      : { outOfArea: true };
-  }
-
-  if (isNonWaText(ev.location_text)) {
-    return { outOfArea: true };
-  }
-
-  // Step 2: Normalized name/slug lookup against /venues catalog
-  const nameMatch = matchVenueByNameOnly(ev.venue_name, venuesCatalog);
-  if (nameMatch.candidate && nameMatch.candidate.coordinates) {
-    if (!isWithinPerthRadius(nameMatch.candidate.coordinates)) {
-      return { outOfArea: true };
-    }
-    return resolvedVenueResult(nameMatch.candidate.coordinates, {
-      geohash: nameMatch.candidate.geohash,
-      venueOverride: {
-        id: nameMatch.candidate.id,
-        name: nameMatch.candidate.name,
-        coordinates: nameMatch.candidate.coordinates,
-        geohash: nameMatch.candidate.geohash,
-        google_place_id: nameMatch.candidate.google_place_id || null
-      },
-      fallbackReviewReason: nameMatch.status === 'uncertain' ? 'uncertain_venue_match' : null
-    });
-  }
-
-  // Step 3: Greater Perth suburb/postcode centroid lookup
-  const combinedText = [ev.location_text, ev.venue_name, ev.description, ev.title].filter(Boolean).join(' ');
-  const centroid = matchPerthCentroidFromText(combinedText);
-  if (centroid) {
-    return resolvedVenueResult(
-      { lat: centroid.lat, lng: centroid.lng },
-      { fallbackReviewReason: 'unmatched_venue' }
-    );
-  }
-
-  // Step 4: Parent Organizer coordinates
-  const matchedOrg = parentOrganizer || (ev.organizer_name
-    ? matchOrganizerCandidate({ name: ev.organizer_name }, organizersCatalog).candidate
-    : null);
-  const orgCoords = matchedOrg?.coordinates || matchedOrg?.venue?.coordinates || null;
-  if (orgCoords && isWithinPerthRadius(orgCoords)) {
-    return resolvedVenueResult(orgCoords, { fallbackReviewReason: 'unmatched_venue' });
-  }
-
-  return { outOfArea: true };
 }
 
 const ORGANIZER_CACHE_TTL_MS = 48 * 60 * 60 * 1000;
@@ -595,22 +489,7 @@ function ingestExtractedEvent(ev, { venuesCatalog, organizersCatalog, parentOrga
     'activity'
   );
 
-  if (resolved.venueOverride) {
-    reconciled.venue = {
-      ...reconciled.venue,
-      ...resolved.venueOverride
-    };
-  }
-  if (resolved.fallbackReviewReason) {
-    reconciled.needs_review = true;
-    reconciled.review_reason = resolved.fallbackReviewReason;
-    if (resolved.fallbackReviewReason === 'unmatched_venue') {
-      reconciled.venue = {
-        ...reconciled.venue,
-        id: null
-      };
-    }
-  }
+  applyVenueResolution(reconciled, resolved, sanitized.venue);
 
   if (!isOneHop && reconciled.subcategory === 'other') {
     const matchedOrg = (reconciled.organizer?.id

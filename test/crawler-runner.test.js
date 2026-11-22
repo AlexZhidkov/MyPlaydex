@@ -1524,3 +1524,204 @@ test('Seam 4 (Issue #31): runCrawlerHarness suppresses standalone Organizer crea
   assert.equal(act2.review_reason, 'unmatched_organizer');
 });
 
+test('Seam 4 (Issue #35): runCrawlerHarness resolves 4-step Venue and coordinate fallback before Activity sanitization', async () => {
+  const store = {
+    activities: new Map(),
+    organizers: new Map(),
+    venues: new Map([
+      ['venue_perth_town_hall_qd66hx', {
+        id: 'venue_perth_town_hall_qd66hx',
+        name: 'Perth Town Hall',
+        coordinates: { lat: -31.9547, lng: 115.8606 },
+        geohash: 'qd66hx999',
+        google_place_id: 'ChIJPTH'
+      }],
+      ['venue_lords_subiaco', {
+        id: 'venue_lords_subiaco',
+        name: 'Lords Recreation Centre Subiaco',
+        coordinates: { lat: -31.9463, lng: 115.8234 },
+        geohash: 'qd66hx456',
+        google_place_id: 'ChIJ_lords'
+      }]
+    ])
+  };
+
+  const adapter = {
+    async scanVenues() {
+      return Array.from(store.venues.values());
+    },
+    async scanOrganizers() {
+      return [
+        {
+          id: 'org_city_of_stirling',
+          name: 'City of Stirling',
+          coordinates: { lat: -31.8942, lng: 115.7571 }
+        }
+      ];
+    },
+    async batchUpsertListings(listings) {
+      for (const item of listings) {
+        store.activities.set(item.id, item);
+      }
+      return { upserted: listings.length };
+    }
+  };
+
+  const lgaCentroid = { lat: -31.8942, lng: 115.7571 };
+  const crawler = {
+    name: 'stirling',
+    fallbackCentroid: lgaCentroid,
+    async fetchListings() {
+      return [
+        // Step 1: Explicit Greater Perth coordinates -> preserves normal catalog matching
+        {
+          source: 'stirling',
+          source_id: 'step1_explicit',
+          title: 'Town Hall Choir',
+          category: 'music',
+          venue_name: 'Perth Town Hall',
+          coordinates: { lat: -31.9547, lng: 115.8606 },
+          organizer: { name: 'City of Stirling' },
+          start_time: '2026-11-28T19:00:00+08:00',
+          external_url: 'https://www.stirling.wa.gov.au/events/choir'
+        },
+        // Step 2a: No raw coords -> exact /venues catalog match
+        {
+          source: 'stirling',
+          source_id: 'step2_exact',
+          title: 'Town Hall Yoga',
+          category: 'health',
+          venue_name: 'Perth Town Hall',
+          organizer: { name: 'City of Stirling' },
+          start_time: '2026-11-29T08:00:00+08:00',
+          external_url: 'https://www.stirling.wa.gov.au/events/yoga'
+        },
+        // Step 2b: No raw coords -> uncertain /venues catalog match
+        {
+          source: 'stirling',
+          source_id: 'step2_uncertain',
+          title: 'Subiaco Swim Club',
+          category: 'sports',
+          venue_name: 'Lords Recreation Centre',
+          organizer: { name: 'City of Stirling' },
+          start_time: '2026-11-29T09:00:00+08:00',
+          external_url: 'https://www.stirling.wa.gov.au/events/swim'
+        },
+        // Step 3: No raw coords, no /venues match -> suburb/postcode centroid fallback
+        {
+          source: 'stirling',
+          source_id: 'step3_suburb',
+          title: 'Pottery Class',
+          category: 'hobbies',
+          venue_name: 'Unknown Community Studio',
+          address: '100 Rokeby Rd, 6008',
+          organizer: { name: 'City of Stirling' },
+          start_time: '2026-11-30T10:00:00+08:00',
+          external_url: 'https://www.stirling.wa.gov.au/events/pottery'
+        },
+        // Step 4: No raw coords, no /venues match, no suburb match -> supplied LGA fallbackCentroid
+        {
+          source: 'stirling',
+          source_id: 'step4_lga',
+          title: 'Council Craft Morning',
+          category: 'community',
+          venue_name: 'Secret Annex Room',
+          organizer: { name: 'City of Stirling' },
+          start_time: '2026-12-01T10:00:00+08:00',
+          external_url: 'https://www.stirling.wa.gov.au/events/craft'
+        }
+      ];
+    }
+  };
+
+  const summary = await runCrawlerHarness({
+    crawlers: [crawler],
+    adapter,
+    options: { skipUrlVerification: true }
+  });
+
+  assert.equal(summary.successfulCrawlers, 1);
+  assert.equal(summary.totalValid, 5);
+  assert.equal(summary.totalInvalid, 0);
+  assert.equal(summary.totalUpserted, 5);
+
+  const step1 = store.activities.get('stirling_step1_explicit');
+  assert.equal(step1.venue.id, 'venue_perth_town_hall_qd66hx');
+  assert.equal(step1.venue.google_place_id, 'ChIJPTH');
+  assert.equal(step1.needs_review, false);
+  assert.equal(step1.review_reason, null);
+
+  const step2Exact = store.activities.get('stirling_step2_exact');
+  assert.equal(step2Exact.venue.id, 'venue_perth_town_hall_qd66hx');
+  assert.equal(step2Exact.venue.google_place_id, 'ChIJPTH');
+  assert.deepEqual(step2Exact.venue.coordinates, { lat: -31.9547, lng: 115.8606 });
+  assert.equal(step2Exact.venue.geohash, 'qd66hx999');
+  assert.equal(step2Exact.needs_review, false);
+  assert.equal(step2Exact.review_reason, null);
+
+  const step2Uncertain = store.activities.get('stirling_step2_uncertain');
+  assert.equal(step2Uncertain.venue.id, 'venue_lords_subiaco');
+  assert.equal(step2Uncertain.venue.google_place_id, 'ChIJ_lords');
+  assert.equal(step2Uncertain.needs_review, true);
+  assert.equal(step2Uncertain.review_reason, 'uncertain_venue_match');
+
+  const step3 = store.activities.get('stirling_step3_suburb');
+  assert.equal(step3.venue.id, null);
+  assert.deepEqual(step3.venue.coordinates, { lat: -31.9463, lng: 115.8236 });
+  assert.equal(step3.venue.geohash.length, 9);
+  assert.equal(step3.needs_review, true);
+  assert.equal(step3.review_reason, 'unmatched_venue');
+
+  const step4 = store.activities.get('stirling_step4_lga');
+  assert.equal(step4.venue.id, null);
+  assert.deepEqual(step4.venue.coordinates, lgaCentroid);
+  assert.equal(step4.venue.geohash.length, 9);
+  assert.equal(step4.needs_review, true);
+  assert.equal(step4.review_reason, 'unmatched_venue');
+
+  // Step 4 (Organizer centroid without fallbackCentroid) + explicit out-of-region filtering
+  const orgOnlyCrawler = {
+    name: 'org_fallback',
+    async fetchListings() {
+      return [
+        {
+          source: 'org_fallback',
+          source_id: 'step4_org',
+          title: 'Organizer Fallback Activity',
+          category: 'sports',
+          venue_name: 'Unlisted Shed',
+          organizer: { name: 'City of Stirling' },
+          start_time: '2026-12-02T10:00:00+08:00',
+          external_url: 'https://www.stirling.wa.gov.au/events/org-fallback'
+        },
+        {
+          source: 'org_fallback',
+          source_id: 'sydney_skip',
+          title: 'Sydney Activity',
+          category: 'sports',
+          venue_name: 'Sydney Harbour',
+          coordinates: { lat: -33.8688, lng: 151.2093 },
+          organizer: { name: 'City of Stirling' },
+          start_time: '2026-12-02T10:00:00+08:00',
+          external_url: 'https://www.stirling.wa.gov.au/events/sydney'
+        }
+      ];
+    }
+  };
+
+  const orgSummary = await runCrawlerHarness({
+    crawlers: [orgOnlyCrawler],
+    adapter,
+    options: { skipUrlVerification: true }
+  });
+  assert.equal(orgSummary.successfulCrawlers, 1);
+  assert.equal(orgSummary.totalValid, 1);
+  assert.equal(orgSummary.totalInvalid, 0);
+  const step4Org = store.activities.get('org_fallback_step4_org');
+  assert.equal(step4Org.venue.id, null);
+  assert.deepEqual(step4Org.venue.coordinates, { lat: -31.8942, lng: 115.7571 });
+  assert.equal(step4Org.needs_review, true);
+  assert.equal(step4Org.review_reason, 'unmatched_venue');
+  assert.equal(store.activities.has('org_fallback_sydney_skip'), false);
+});
+
