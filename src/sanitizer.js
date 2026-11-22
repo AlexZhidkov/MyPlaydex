@@ -750,6 +750,21 @@ export function mergeActivityDocuments(prevDoc, nextDoc) {
     merged.created_at = prevDoc.created_at || nextDoc.created_at;
   }
 
+  if (Array.isArray(prevDoc.sources) || Array.isArray(nextDoc.sources)) {
+    const byKey = new Map();
+    for (const ref of [...(prevDoc.sources || []), ...(nextDoc.sources || [])]) {
+      if (ref && ref.source_key) {
+        byKey.set(ref.source_key, ref);
+      }
+    }
+    if (byKey.size > 0) {
+      merged.sources = Array.from(byKey.values()).sort((a, b) => a.source_key.localeCompare(b.source_key));
+      merged.source_keys = merged.sources.map(s => s.source_key);
+    }
+  } else if (Array.isArray(prevDoc.source_keys) || Array.isArray(nextDoc.source_keys)) {
+    merged.source_keys = Array.from(new Set([...(prevDoc.source_keys || []), ...(nextDoc.source_keys || [])])).sort();
+  }
+
   return applyApprovedCurationPreservation(prevDoc, nextDoc, merged);
 }
 

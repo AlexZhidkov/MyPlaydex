@@ -36,6 +36,7 @@ import {
   applyVenueResolution,
   resolveActivityVenueAndCoordinates
 } from './venue-resolver.js';
+import { deduplicateActivities } from './activity-deduplicator.js';
 
 export { extractFacebookEvents };
 
@@ -527,10 +528,14 @@ export async function runFacebookSync({
   const nowIso = now.toISOString();
   const facebookCookie = options.facebookCookie || env.FACEBOOK_COOKIE || '';
 
-  const [venuesCatalog, organizersCatalog] = await Promise.all([
+  const [venuesCatalog, organizersCatalog, initialActivities] = await Promise.all([
     adapter?.scanVenues ? adapter.scanVenues() : [],
-    adapter?.scanOrganizers ? adapter.scanOrganizers() : []
+    adapter?.scanOrganizers ? adapter.scanOrganizers() : [],
+    Array.isArray(options.existingActivities)
+      ? options.existingActivities
+      : (adapter?.scanActivities ? adapter.scanActivities() : [])
   ]);
+  let activitiesCatalog = initialActivities.map(a => ({ ...a }));
 
   const explicitOrganizer = options.organizer
     ? organizersCatalog.find(o => o.id === options.organizer) || { id: options.organizer, name: options.organizer }
@@ -645,10 +650,20 @@ export async function runFacebookSync({
     else if (outcome.status === 'filtered_non_sport') filteredNonSport += 1;
     else if (outcome.status === 'valid' && !seenIds.has(outcome.activity.id)) {
       seenIds.add(outcome.activity.id);
-      activities.push(outcome.activity);
-      pendingUpsertBatch.push(outcome.activity);
-      if (pendingUpsertBatch.length >= upsertBatchSize) {
-        await flushUpsertBatch();
+      const dedupResult = deduplicateActivities([outcome.activity], activitiesCatalog);
+      activitiesCatalog = dedupResult.catalog;
+      const deduped = dedupResult.activitiesToUpsert[0];
+      if (deduped) {
+        const upsertInList = (list) => {
+          const idx = list.findIndex(a => a.id === deduped.id);
+          if (idx !== -1) list[idx] = deduped;
+          else list.push(deduped);
+        };
+        upsertInList(activities);
+        upsertInList(pendingUpsertBatch);
+        if (pendingUpsertBatch.length >= upsertBatchSize) {
+          await flushUpsertBatch();
+        }
       }
     }
   };

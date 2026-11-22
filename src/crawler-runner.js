@@ -9,6 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { sanitizeListing, resolveListingType, extractCanonicalEntities, hasExplicitOrganizerName } from './sanitizer.js';
 import { reconcileListingWithCatalog } from './entity-matcher.js';
 import { applyVenueResolution, resolveActivityVenueAndCoordinates } from './venue-resolver.js';
+import { deduplicateActivities } from './activity-deduplicator.js';
 import { createFirestoreAdapter, initFirestoreFromEnv } from './firestore-adapter.js';
 import { createUrlVerifier } from './url-verifier.js';
 import { createStirlingCrawler } from './crawlers/stirling-crawler.js';
@@ -107,6 +108,9 @@ export async function runCrawlerHarness({ crawlers = [], adapter, options = {} }
   const organizersCatalog = Array.isArray(options.existingOrganizers)
     ? options.existingOrganizers
     : (typeof adapter?.scanOrganizers === 'function' ? await adapter.scanOrganizers() : []);
+  let activitiesCatalog = Array.isArray(options.existingActivities)
+    ? options.existingActivities.map(a => ({ ...a }))
+    : (typeof adapter?.scanActivities === 'function' ? await adapter.scanActivities() : []);
 
   const results = [];
   let totalRaw = 0;
@@ -232,9 +236,26 @@ export async function runCrawlerHarness({ crawlers = [], adapter, options = {} }
           reconciledItems.push(reconciled);
         }
 
+        const activityItems = [];
+        const nonActivityItems = [];
+        for (const item of reconciledItems) {
+          if (resolveListingType(item) === 'activity') {
+            activityItems.push(item);
+          } else {
+            nonActivityItems.push(item);
+          }
+        }
+
+        let itemsToPersist = nonActivityItems;
+        if (activityItems.length > 0) {
+          const dedupResult = deduplicateActivities(activityItems, activitiesCatalog);
+          activitiesCatalog = dedupResult.catalog;
+          itemsToPersist = [...dedupResult.activitiesToUpsert, ...nonActivityItems];
+        }
+
         const writeResult = typeof adapter.batchUpsertListings === 'function'
-          ? await adapter.batchUpsertListings(reconciledItems)
-          : await adapter.batchUpsertActivities(reconciledItems);
+          ? await adapter.batchUpsertListings(itemsToPersist)
+          : await adapter.batchUpsertActivities(itemsToPersist);
         upsertedCount = writeResult.upserted;
         totalUpserted += upsertedCount;
       }

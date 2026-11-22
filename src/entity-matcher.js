@@ -15,7 +15,7 @@ const VENUE_UNCERTAIN_EXACT_KM = 5.0;
 const VENUE_UNCERTAIN_PARTIAL_KM = 2.5;
 const VENUE_UNCERTAIN_CLOSE_KM = 0.15;
 
-function tokenizeNormalized(name = '') {
+export function tokenizeNormalized(name = '') {
   const slug = slugify(name);
   if (!slug) return [];
   return slug.split('_').filter(Boolean);
@@ -26,7 +26,7 @@ function stripOrganizerNoise(tokens = []) {
   return filtered.length > 0 ? filtered : tokens;
 }
 
-function computeTokenSimilarity(tokensA = [], tokensB = []) {
+export function computeTokenSimilarity(tokensA = [], tokensB = []) {
   if (tokensA.length === 0 || tokensB.length === 0) {
     return { jaccard: 0, sharedCount: 0, allSmallerContained: false };
   }
