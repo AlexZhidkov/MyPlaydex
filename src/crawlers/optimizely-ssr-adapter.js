@@ -10,6 +10,7 @@ import {
   DEFAULT_MAX_ACTIVITIES,
   DEFAULT_MAX_PAGES,
   DEFAULT_PAGE_DELAY_MS,
+  deriveDeterministicCouncilSourceId,
   filterCouncilItem,
   paginateCouncilPages,
   resolveCouncilCategoryAndSubcategory
@@ -140,9 +141,17 @@ function mapOptimizelyRecord(item, index, config, extracted = null) {
   const endTime = extracted ? extracted.endTime : extractScheduleTimes(props).endTime;
   const organizer = resolveOrganizer(item, props, config.defaultOrganizer);
 
+  const rawItemUrl = props.Url || item.url;
+  const sourceId = deriveDeterministicCouncilSourceId({
+    nativeId: item.contentGuid || props.Id || item.id,
+    url: rawItemUrl ? url : '',
+    title,
+    startTime
+  });
+
   return {
     source: config.source,
-    source_id: String(item.contentGuid || props.Id || item.id || index + 1),
+    source_id: sourceId,
     source_url: url,
     external_url: url,
     region_id: config.regionId || 'perth',

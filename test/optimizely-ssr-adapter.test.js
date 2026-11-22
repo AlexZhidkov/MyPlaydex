@@ -301,3 +301,68 @@ test('Optimizely SSR Adapter filters civic/admin notices, online-only items, Exp
   assert.equal(items.length, 1);
   assert.equal(items[0].source_id, 'keep-1');
 });
+
+test('Optimizely SSR Adapter derives deterministic source_id from canonical URL or normalized title + start date when CMS IDs are absent', async () => {
+  const itemA = {
+    properties: {
+      Name: 'Morning Yoga in the Park',
+      Url: 'https://www.visitperth.com/events/morning-yoga/?utm_source=feed',
+      Categories: [{ name: 'Health' }],
+      Location: 'Kings Park',
+      EventListing: { dateParts: [{ isoDateTime: '2026-11-20' }] }
+    }
+  };
+  const itemB = {
+    properties: {
+      Name: 'Sunset Tai Chi!',
+      Categories: [{ name: 'Health' }],
+      Location: 'Langley Park',
+      EventListing: { dateParts: [{ isoDateTime: '2026-11-22' }] }
+    }
+  };
+  const itemC = {
+    properties: {
+      Name: 'Inserted Morning Walk',
+      Url: '/events/inserted-morning-walk',
+      Categories: [{ name: 'Community' }],
+      Location: 'Elizabeth Quay',
+      EventListing: { dateParts: [{ isoDateTime: '2026-11-19' }] }
+    }
+  };
+
+  const makeCrawler = (resultsList) => createOptimizelySsrCrawler(
+    {
+      source: 'visit_perth',
+      label: 'Visit Perth',
+      endpoint: 'https://www.visitperth.com/events',
+      baseUrl: 'https://www.visitperth.com'
+    },
+    {
+      now: TEST_NOW,
+      pageDelayMs: 0,
+      fetchFn: async () => ({
+        ok: true,
+        async text() {
+          return wrapAppStateHtml({
+            schemaVersion: 1,
+            results: { totalRecords: resultsList.length, page: 1, pageSize: 24, results: resultsList }
+          });
+        }
+      })
+    }
+  );
+
+  const crawl1 = await makeCrawler([itemA, itemB]).fetchListings();
+  const crawl2 = await makeCrawler([itemC, itemB, itemA]).fetchListings();
+
+  const a1 = crawl1.find(i => i.title === 'Morning Yoga in the Park');
+  const b1 = crawl1.find(i => i.title === 'Sunset Tai Chi!');
+  const a2 = crawl2.find(i => i.title === 'Morning Yoga in the Park');
+  const b2 = crawl2.find(i => i.title === 'Sunset Tai Chi!');
+
+  assert.equal(a1.source_id, a2.source_id);
+  assert.equal(b1.source_id, b2.source_id);
+  assert.notEqual(a1.source_id, b1.source_id);
+  assert.ok(!/^\d+$/.test(a1.source_id));
+  assert.ok(!/^\d+$/.test(b1.source_id));
+});

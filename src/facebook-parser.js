@@ -597,6 +597,32 @@ function parseRelayJsonCandidates(text) {
   return candidates;
 }
 
+function extractRelayChildNodes(eventNode) {
+  const childEvents = eventNode?.child_events;
+  if (!childEvents) return [];
+  if (Array.isArray(childEvents)) return childEvents.filter(Boolean);
+  if (Array.isArray(childEvents.nodes)) return childEvents.nodes.filter(Boolean);
+  if (Array.isArray(childEvents.edges)) {
+    return childEvents.edges.map(edge => edge?.node || edge).filter(Boolean);
+  }
+  return [];
+}
+
+function suppressBareParentsForDatedRecurrences(records) {
+  const parentIdsWithDatedOccurrences = new Set();
+  for (const record of records) {
+    if (record.eventId && record.source_id && record.source_id.startsWith(`${record.eventId}_`)) {
+      parentIdsWithDatedOccurrences.add(record.eventId);
+    }
+  }
+  if (parentIdsWithDatedOccurrences.size === 0) {
+    return records;
+  }
+  return records.filter(
+    record => !(parentIdsWithDatedOccurrences.has(record.eventId) && record.source_id === record.eventId)
+  );
+}
+
 function extractFromRelayJson(text, context = {}) {
   const candidates = parseRelayJsonCandidates(text);
 
@@ -606,16 +632,29 @@ function extractFromRelayJson(text, context = {}) {
   }
 
   const targetEventId = context.targetEventId || extractFacebookEventIdFromUrl(context.sourceUrl);
+  const childOccurrenceIds = new Set();
+  if (!targetEventId) {
+    for (const eventNode of mergedById.values()) {
+      for (const child of extractRelayChildNodes(eventNode)) {
+        const childId = child?.id || child?.event_id;
+        if (childId) childOccurrenceIds.add(String(childId));
+      }
+    }
+  }
+
   const results = [];
   for (const [mergedId, eventNode] of mergedById.entries()) {
     if (targetEventId && mergedId !== String(targetEventId)) {
       continue;
     }
+    if (!targetEventId && childOccurrenceIds.has(mergedId)) {
+      continue;
+    }
     if (!Boolean(eventNode.name || eventNode.title) || !hasRelaySchedule(eventNode) || eventNode.is_canceled === true) {
       continue;
     }
-    const childNodes = eventNode.child_events?.nodes || eventNode.child_events || [];
-    if (Array.isArray(childNodes) && childNodes.length > 0) {
+    const childNodes = extractRelayChildNodes(eventNode);
+    if (childNodes.length > 0) {
       for (const child of childNodes) {
         const record = buildRelayEventRecord(child, eventNode, context, true);
         if (record && record.title) results.push(record);
@@ -625,7 +664,7 @@ function extractFromRelayJson(text, context = {}) {
       if (record && record.title) results.push(record);
     }
   }
-  return results;
+  return suppressBareParentsForDatedRecurrences(results);
 }
 
 function decodeHtmlEntities(str = '') {
@@ -804,7 +843,7 @@ export function extractFacebookEvents(payload, context = {}) {
   const text = typeof payload === 'string' ? payload : JSON.stringify(payload);
 
   if (context.format === 'ics' || text.includes('BEGIN:VCALENDAR')) {
-    return extractFromIcs(text, context);
+    return suppressBareParentsForDatedRecurrences(extractFromIcs(text, context));
   }
 
   if (isNonExtractableFacebookPayload(text)) {
@@ -813,7 +852,7 @@ export function extractFacebookEvents(payload, context = {}) {
 
   const jsonLdEvents = extractFromJsonLd(text, context);
   if (jsonLdEvents.length > 0) {
-    return jsonLdEvents;
+    return suppressBareParentsForDatedRecurrences(jsonLdEvents);
   }
 
   const relayEvents = extractFromRelayJson(text, context);

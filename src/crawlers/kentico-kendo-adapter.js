@@ -10,6 +10,7 @@ import {
   DEFAULT_MAX_ACTIVITIES,
   DEFAULT_MAX_PAGES,
   DEFAULT_PAGE_DELAY_MS,
+  deriveDeterministicCouncilSourceId,
   filterCouncilItem,
   paginateCouncilPages,
   resolveCouncilCategoryAndSubcategory
@@ -112,7 +113,12 @@ function mapKenticoRecord(item, index, config) {
   const rawStart = extractKenticoStartDate(item);
   const rawEnd = item.EventEndDate || item.EndDate || null;
   const organizer = resolveOrganizer(item, config.defaultOrganizer);
-  const sourceId = String(item.NodeGUID || item.ArticleID || item.id || deriveSlugFromPageUrl(item.PageUrl) || index + 1);
+  const sourceId = deriveDeterministicCouncilSourceId({
+    nativeId: item.NodeGUID || item.ArticleID || item.id || deriveSlugFromPageUrl(item.PageUrl),
+    url: item.PageUrl ? url : '',
+    title,
+    startTime: rawStart
+  });
 
   return {
     source: config.source,

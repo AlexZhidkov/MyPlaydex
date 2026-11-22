@@ -9,7 +9,8 @@ import {
   normalizeCategory,
   normalizeSport,
   parseSchedule,
-  resolveActivitySubcategory
+  resolveActivitySubcategory,
+  slugify
 } from '../sanitizer.js';
 
 export const DEFAULT_MAX_PAGES = 20;
@@ -257,4 +258,38 @@ export async function paginateCouncilPages({
   }
 
   return collected;
+}
+
+/**
+ * Derives a deterministic source_id for a council CMS item, preferring a native CMS ID
+ * and falling back to the canonical Listing URL path or normalized title + start date.
+ *
+ * @param {object} params
+ * @param {string | number} [params.nativeId]
+ * @param {string} [params.url]
+ * @param {string} [params.title]
+ * @param {string} [params.startTime]
+ * @returns {string}
+ */
+export function deriveDeterministicCouncilSourceId({ nativeId, url, title, startTime } = {}) {
+  if (nativeId !== undefined && nativeId !== null && String(nativeId).trim() !== '') {
+    return String(nativeId).trim();
+  }
+
+  if (url && typeof url === 'string') {
+    try {
+      const pathname = /^https?:\/\//i.test(url) ? new URL(url).pathname : url.split(/[?#]/)[0];
+      const urlSlug = slugify(pathname);
+      if (urlSlug) {
+        return urlSlug;
+      }
+    } catch {
+      // Fall through to title + start date
+    }
+  }
+
+  const titleSlug = slugify(title || '');
+  const schedule = startTime ? parseSchedule({ start_time: startTime }) : null;
+  const dateSlug = schedule?.start_date ? slugify(schedule.start_date) : '';
+  return [titleSlug, dateSlug].filter(Boolean).join('_') || 'activity';
 }

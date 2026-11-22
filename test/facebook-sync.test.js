@@ -2634,4 +2634,90 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it('Issue #41: extractFacebookEvents expands child_events.edges and suppresses bare parent or duplicate standalone child records when dated occurrences exist', () => {
+    const now = new Date('2026-11-19T14:00:00+08:00');
+    // 1. child_events.edges + standalone duplicate child node in multi-event payload
+    const edgesPayload = `
+      <html><body>
+        <script type="application/json">${JSON.stringify({
+          require: [['ScheduledServerJS', 'handle', null, [{
+            __bbox: {
+              result: {
+                data: {
+                  event: {
+                    id: '2468013579',
+                    name: 'Sunday Social Volleyball',
+                    day_time_sentence: 'Sun, Jun 20, 2027 at 5\u202fPM',
+                    is_canceled: false,
+                    url: 'https://www.facebook.com/events/2468013579/',
+                    child_events: {
+                      edges: [
+                        { node: { id: '24680135791', start_timestamp: 1813482000, end_timestamp: 1813489200 } },
+                        { node: { id: '24680135792', start_timestamp: 1814086800, end_timestamp: 1814094000 } }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }]]]
+        })}</script>
+        <script type="application/json">${JSON.stringify({
+          require: [['ScheduledServerJS', 'handle', null, [{
+            __bbox: {
+              result: {
+                data: {
+                  node: {
+                    __typename: 'Event',
+                    id: '24680135791',
+                    name: 'Sunday Social Volleyball',
+                    start_timestamp: 1813482000,
+                    is_canceled: false
+                  }
+                }
+              }
+            }
+          }]]]
+        })}</script>
+      </body></html>
+    `;
+
+    const edgesActivities = extractFacebookEvents(edgesPayload, { now });
+    assert.deepEqual(edgesActivities.map(e => e.source_id), ['2468013579_20270620', '2468013579_20270627']);
+
+    // 2. Undated child node alongside dated child node must not emit bare parent source_id
+    const undatedChildPayload = `
+      <html><body>
+        <script type="application/json">${JSON.stringify({
+          require: [['ScheduledServerJS', 'handle', null, [{
+            __bbox: {
+              result: {
+                data: {
+                  event: {
+                    id: '2468013579',
+                    name: 'Sunday Social Volleyball',
+                    is_canceled: false,
+                    url: 'https://www.facebook.com/events/2468013579/',
+                    child_events: {
+                      nodes: [
+                        { id: '24680135791', start_timestamp: 1813482000, end_timestamp: 1813489200 },
+                        { id: '24680135792' }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }]]]
+        })}</script>
+      </body></html>
+    `;
+
+    const undatedActivities = extractFacebookEvents(undatedChildPayload, {
+      sourceUrl: 'https://www.facebook.com/events/2468013579/',
+      now
+    });
+    assert.deepEqual(undatedActivities.map(e => e.source_id), ['2468013579_20270620']);
+  });
 });

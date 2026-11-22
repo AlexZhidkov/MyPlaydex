@@ -212,3 +212,54 @@ test('Kentico/Kendo adapter supports per-council minExpectedListings=0 and conti
   assert.equal(listings[0].source_id, 'g2');
   assert.equal(listings[0].category, 'health');
 });
+
+test('Kentico/Kendo adapter derives deterministic source_id from canonical URL or normalized title + start date when CMS IDs are absent', async () => {
+  const now = new Date('2026-11-01T08:00:00+08:00');
+  const itemA = {
+    ArticleTitle: 'Archery Come & Try',
+    ArticleCategories: 'Sports',
+    ArticleAddressTitle: 'Civic Reserve',
+    EventDisplayDate: '2026-11-18T09:00:00+08:00',
+    PageUrl: '/events/archery-come-try?utm_source=feed'
+  };
+  const itemB = {
+    ArticleTitle: 'Twilight Bowls',
+    ArticleCategories: 'Sports',
+    ArticleAddressTitle: 'Bowls Club',
+    EventDisplayDate: '2026-11-22T17:00:00+08:00'
+  };
+  const itemC = {
+    ArticleTitle: 'Inserted Community Walk',
+    ArticleCategories: 'Community',
+    ArticleAddressTitle: 'Lake Monger',
+    EventDisplayDate: '2026-11-15T08:00:00+08:00'
+  };
+
+  const makeCrawler = (dataList) => createKenticoKendoCrawler(
+    BASE_CONFIG,
+    {
+      now,
+      pageDelayMs: 0,
+      fetchFn: async () => ({
+        ok: true,
+        async json() {
+          return { Total: dataList.length, Data: dataList };
+        }
+      })
+    }
+  );
+
+  const crawl1 = await makeCrawler([itemA, itemB]).fetchListings();
+  const crawl2 = await makeCrawler([itemC, itemB, itemA]).fetchListings();
+
+  const a1 = crawl1.find(i => i.title === 'Archery Come & Try');
+  const b1 = crawl1.find(i => i.title === 'Twilight Bowls');
+  const a2 = crawl2.find(i => i.title === 'Archery Come & Try');
+  const b2 = crawl2.find(i => i.title === 'Twilight Bowls');
+
+  assert.equal(a1.source_id, a2.source_id);
+  assert.equal(b1.source_id, b2.source_id);
+  assert.notEqual(a1.source_id, b1.source_id);
+  assert.ok(!/^\d+$/.test(a1.source_id));
+  assert.ok(!/^\d+$/.test(b1.source_id));
+});
