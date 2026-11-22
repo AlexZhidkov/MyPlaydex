@@ -87,9 +87,13 @@ export async function runCrawlerHarness({ crawlers = [], adapter, options = {} }
     ...options.urlVerifierOptions
   });
 
-  const activeCrawlers = targetCrawler === 'all'
+  const normalizedTarget = targetCrawler.toLowerCase();
+  const activeCrawlers = normalizedTarget === 'all'
     ? crawlers
-    : crawlers.filter(c => c.name.toLowerCase() === targetCrawler.toLowerCase());
+    : crawlers.filter(c =>
+        c.name.toLowerCase() === normalizedTarget ||
+        (typeof c.group === 'string' && c.group.toLowerCase() === normalizedTarget)
+      );
 
   const venuesCatalog = Array.isArray(options.existingVenues)
     ? options.existingVenues

@@ -1,13 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createStirlingCrawler } from '../src/crawlers/stirling-crawler.js';
+import { createStirlingCrawler, STIRLING_LGA_CENTROID } from '../src/crawlers/stirling-crawler.js';
 import { sanitizeActivity } from '../src/sanitizer.js';
+import { resolveActivityVenueAndCoordinates } from '../src/venue-resolver.js';
+
+const TEST_NOW = new Date('2026-11-01T08:00:00+08:00');
 
 test('Seam 3: Stirling Crawler parses Kendo UI event response and formats listings conforming to canonical schema', async () => {
   const mockFetch = async () => ({
     ok: true,
     async json() {
       return {
+        Total: 1,
         Data: [
           {
             NodeGUID: 'guid-123',
@@ -26,7 +30,10 @@ test('Seam 3: Stirling Crawler parses Kendo UI event response and formats listin
     }
   });
 
-  const crawler = createStirlingCrawler({ fetchFn: mockFetch });
+  const crawler = createStirlingCrawler({ fetchFn: mockFetch, pageDelayMs: 0, now: TEST_NOW });
+  assert.equal(crawler.group, 'councils');
+  assert.deepEqual(crawler.fallbackCentroid, STIRLING_LGA_CENTROID);
+
   const listings = await crawler.fetchListings();
 
   assert.equal(listings.length, 1);
@@ -35,7 +42,8 @@ test('Seam 3: Stirling Crawler parses Kendo UI event response and formats listin
   assert.equal(raw.source_id, 'guid-123');
   assert.equal(raw.title, 'Scarborough Community Beach Volleyball');
   assert.equal(raw.region_id, 'perth');
-  assert.equal(raw.sport, 'Volleyball');
+  assert.equal(raw.category, 'sports');
+  assert.equal(raw.subcategory, 'volleyball');
   assert.equal(raw.venue_name, 'Scarborough Beach, WA');
   assert.equal(raw.coordinates.lat, -31.8942);
   assert.equal(raw.coordinates.lng, 115.7571);
@@ -60,16 +68,73 @@ test('Seam 3: Stirling Crawler parses Kendo UI event response and formats listin
   assert.equal(sanitized.cost.display_price, 'Free');
 });
 
+test('Seam 3: Stirling Crawler maps non-sports categories, omits hardcoded Scarborough fallback coords, and prefers explicit organizer', async () => {
+  const mockFetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        Total: 2,
+        Data: [
+          {
+            NodeGUID: 'guid-arts-1',
+            ArticleTitle: 'Mount Lawley Watercolour Workshop',
+            ArticleCategories: 'Arts & Culture',
+            ArticleAddressTitle: 'Inglewood Community Hall',
+            OrganizerName: 'Stirling Arts Collective',
+            Cost: '$20',
+            EventDisplayDate: '2026-11-22T10:00:00+08:00',
+            PageUrl: '/events/watercolour'
+          },
+          {
+            NodeGUID: 'guid-family-1',
+            ArticleTitle: 'Rhyme Time for Toddlers',
+            ArticleCategories: 'Kids & Family',
+            ArticleAddressTitle: 'Stirling Civic Library',
+            Cost: 'Free',
+            EventDisplayDate: '2026-11-24T09:30:00+08:00',
+            PageUrl: '/events/rhyme-time'
+          }
+        ]
+      };
+    }
+  });
+
+  const crawler = createStirlingCrawler({ fetchFn: mockFetch, pageDelayMs: 0, now: TEST_NOW });
+  const listings = await crawler.fetchListings();
+
+  assert.equal(listings.length, 2);
+
+  // First item: Arts & Culture -> 'arts', explicit organizer preferred, no hardcoded Scarborough coords
+  assert.equal(listings[0].category, 'arts');
+  assert.equal(listings[0].organizer.name, 'Stirling Arts Collective');
+  assert.equal(listings[0].coordinates, undefined);
+  assert.notEqual(listings[0].address, 'Scarborough WA');
+
+  // Shared venue resolver falls back to Stirling LGA centroid when suburb isn't matched
+  const resolved = resolveActivityVenueAndCoordinates(listings[1], {
+    venuesCatalog: [],
+    organizersCatalog: [],
+    fallbackCentroid: crawler.fallbackCentroid
+  });
+  assert.equal(resolved.outOfArea, false);
+  assert.deepEqual(resolved.coordinates, STIRLING_LGA_CENTROID);
+
+  // Second item: Kids & Family -> 'family', fallback Organizer is City of Stirling
+  assert.equal(listings[1].category, 'family');
+  assert.equal(listings[1].organizer.name, 'City of Stirling');
+});
+
 test('Seam 3: Stirling Crawler does not fabricate crawl execution timestamp when EventDisplayDate is missing or human-readable', async () => {
   const mockFetch = async () => ({
     ok: true,
     async json() {
       return {
+        Total: 2,
         Data: [
           {
             NodeGUID: 'guid-no-date',
             ArticleTitle: 'Scarborough Seniors Club',
-            ArticleCategories: 'Other',
+            ArticleCategories: 'Seniors',
             ArticleAddressTitle: 'Scarborough Community Hub',
             Latitude: -31.8942,
             Longitude: 115.7571,
@@ -79,7 +144,7 @@ test('Seam 3: Stirling Crawler does not fabricate crawl execution timestamp when
           {
             NodeGUID: 'guid-human-date',
             ArticleTitle: 'Stirling Farmers Market',
-            ArticleCategories: 'Other',
+            ArticleCategories: 'Food & Markets',
             ArticleAddressTitle: 'Stirling Farmers Market',
             Latitude: -31.8847,
             Longitude: 115.8079,
@@ -92,7 +157,7 @@ test('Seam 3: Stirling Crawler does not fabricate crawl execution timestamp when
     }
   });
 
-  const crawler = createStirlingCrawler({ fetchFn: mockFetch });
+  const crawler = createStirlingCrawler({ fetchFn: mockFetch, pageDelayMs: 0, now: TEST_NOW });
   const listings = await crawler.fetchListings();
 
   assert.equal(listings.length, 2);
@@ -103,6 +168,7 @@ test('Seam 3: Stirling Crawler does not fabricate crawl execution timestamp when
   assert.equal(sanitizedNoDate.schedule.start_date, null);
   assert.equal(sanitizedNoDate.schedule.start_time, null);
   assert.equal(sanitizedNoDate.schedule.day_of_week, null);
+  assert.equal(sanitizedNoDate.category, 'community');
 
   // 2. Human-readable EventDisplayDate parses into structured date and time range
   const sanitizedHuman = sanitizeActivity(listings[1]);
@@ -110,6 +176,7 @@ test('Seam 3: Stirling Crawler does not fabricate crawl execution timestamp when
   assert.equal(sanitizedHuman.schedule.start_time, '07:30');
   assert.equal(sanitizedHuman.schedule.end_time, '11:30');
   assert.equal(sanitizedHuman.schedule.day_of_week, 0);
+  assert.equal(sanitizedHuman.category, 'food');
 });
 
 test('Seam 3: Stirling Crawler throws descriptive error on HTTP failure', async () => {
@@ -119,7 +186,7 @@ test('Seam 3: Stirling Crawler throws descriptive error on HTTP failure', async 
     statusText: 'Internal Server Error'
   });
 
-  const crawler = createStirlingCrawler({ fetchFn: mockFailingFetch });
+  const crawler = createStirlingCrawler({ fetchFn: mockFailingFetch, pageDelayMs: 0, now: TEST_NOW });
   await assert.rejects(
     () => crawler.fetchListings(),
     /Stirling API responded with HTTP 500: Internal Server Error/

@@ -108,8 +108,9 @@ export function hasExplicitOrganizerName(raw = {}) {
  * @param {string} [rawCategory='']
  * @returns {string}
  */
-export function normalizeCategory(rawCategory = '') {
-  return matchCanonicalCategory(rawCategory) || 'sports';
+export function normalizeCategory(rawCategory = '', options = {}) {
+  const defaultCategory = options.defaultCategory !== undefined ? options.defaultCategory : 'sports';
+  return matchCanonicalCategory(rawCategory) || defaultCategory;
 }
 
 /**

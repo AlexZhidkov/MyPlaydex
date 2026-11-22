@@ -1725,3 +1725,50 @@ test('Seam 4 (Issue #35): runCrawlerHarness resolves 4-step Venue and coordinate
   assert.equal(store.activities.has('org_fallback_sydney_skip'), false);
 });
 
+test('Issue #37: --crawler=councils runs all council-grouped crawlers and is selectable in crawler-harness.yml', async () => {
+  const ran = [];
+  const makeStub = (name, group) => ({
+    name,
+    ...(group ? { group } : {}),
+    async fetchListings() {
+      ran.push(name);
+      return [{
+        source: name,
+        source_id: `${name}_1`,
+        title: `${name} Activity`,
+        category: 'community',
+        venue_name: 'Perth Town Hall',
+        coordinates: { lat: -31.9547, lng: 115.8606 },
+        start_time: '2026-12-01T10:00:00+08:00',
+        external_url: 'https://example.org/activity'
+      }];
+    }
+  });
+
+  const summary = await main(
+    ['--dry-run', '--crawler=councils'],
+    {},
+    {
+      crawlers: [
+        makeStub('stirling', 'councils'),
+        makeStub('vincent', 'councils'),
+        makeStub('meetup')
+      ],
+      exitOnFailure: false,
+      firestoreEnv: { db: null, dryRun: true, projectId: null },
+      logger: { log: () => {}, warn: () => {}, error: () => {} }
+    }
+  );
+
+  assert.deepEqual(ran, ['stirling', 'vincent']);
+  assert.equal(summary.totalCrawlers, 2);
+  assert.equal(summary.successfulCrawlers, 2);
+
+  const defaultStirling = getDefaultCrawlers().find(c => c.name === 'stirling');
+  assert.equal(defaultStirling?.group, 'councils');
+
+  const workflowYaml = readFileSync(resolve(process.cwd(), '.github/workflows/crawler-harness.yml'), 'utf8');
+  assert.match(workflowYaml, /^\s*-\s*councils\s*$/m);
+});
+
+

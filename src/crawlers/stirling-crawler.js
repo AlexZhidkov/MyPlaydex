@@ -1,113 +1,43 @@
 /**
- * City of Stirling Activities Crawler Adapter
- * Implements scraping of Stirling community sports and leisure activities
- * based on the researched Kendo UI JSON endpoint.
+ * City of Stirling Activities Crawler
+ * Configured on top of the shared Kentico/Kendo UI council adapter.
  */
 
-import { determineIsFree } from '../sanitizer.js';
+import { createKenticoKendoCrawler } from './kentico-kendo-adapter.js';
 
 export const STIRLING_ENDPOINT = 'https://www.stirling.wa.gov.au/ksearchevent/ksearchresult';
+export const STIRLING_BASE_URL = 'https://www.stirling.wa.gov.au';
+export const STIRLING_LGA_CENTROID = Object.freeze({ lat: -31.8847, lng: 115.8079 });
+
+export const STIRLING_CONFIG = {
+  source: 'stirling',
+  label: 'Stirling',
+  group: 'councils',
+  endpoint: STIRLING_ENDPOINT,
+  baseUrl: STIRLING_BASE_URL,
+  regionId: 'perth',
+  fallbackCentroid: STIRLING_LGA_CENTROID,
+  minExpectedListings: 1,
+  searchParam: [
+    { key: 'classname', values: ['AWPT.Event'], or: 'true', operator: 'eq' },
+    { key: 'searchindexes', values: ['Events'], or: 'true', operator: 'eq' },
+    { key: 'nodealiaspath', values: ['/'], or: 'true', operator: 'eq' },
+    { key: 'FilterIsExpired', values: ['false'], or: 'true', operator: 'eq' }
+  ],
+  searchFilter: [],
+  defaultOrganizer: {
+    id: 'org_city_of_stirling',
+    name: 'City of Stirling',
+    website: STIRLING_BASE_URL
+  }
+};
 
 /**
  * Creates a City of Stirling crawler instance.
  *
  * @param {object} [options]
- * @param {typeof fetch} [options.fetchFn=globalThis.fetch]
- * @param {number} [options.pageSize=50]
- * @returns {object} Crawler instance with name and fetchListings method
+ * @returns {object} Crawler instance
  */
 export function createStirlingCrawler(options = {}) {
-  const fetchFn = options.fetchFn || globalThis.fetch;
-  const pageSize = options.pageSize || 50;
-  const timeoutMs = options.timeoutMs || 15000;
-
-  return {
-    name: 'stirling',
-    ...(typeof options.minExpectedListings === 'number' ? { minExpectedListings: options.minExpectedListings } : {}),
-
-    async fetchListings() {
-      const searchParam = JSON.stringify([
-        { key: 'classname', values: ['AWPT.Event'], or: 'true', operator: 'eq' },
-        { key: 'searchindexes', values: ['Events'], or: 'true', operator: 'eq' },
-        { key: 'nodealiaspath', values: ['/'], or: 'true', operator: 'eq' },
-        { key: 'FilterIsExpired', values: ['false'], or: 'true', operator: 'eq' }
-      ]);
-
-      const headers = {
-        'Content-Type': 'application/json',
-        'SearchParam': searchParam,
-        'SearchFilter': '[]',
-        'User-Agent': 'Mozilla/5.0 (compatible; MyPlaydexCrawler/1.0; +https://myplaydex.com/bot)'
-      };
-
-      const body = JSON.stringify({
-        page: 1,
-        pageSize,
-        skip: 0,
-        take: pageSize
-      });
-
-      const signal = options.signal || (typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(timeoutMs) : undefined);
-
-      const response = await fetchFn(STIRLING_ENDPOINT, {
-        method: 'POST',
-        headers,
-        body,
-        ...(signal ? { signal } : {})
-      });
-
-      if (!response.ok) {
-        throw new Error(`Stirling API responded with HTTP ${response.status}: ${response.statusText}`);
-      }
-
-      const json = await response.json();
-      const records = json.Data || json.data || [];
-
-      // Map raw API records to canonical intermediate crawler format
-      return records.map((item, index) => {
-        // Fallback default coordinates for Scarborough Beach / Stirling area if missing
-        const lat = typeof item.Latitude === 'number' ? item.Latitude : -31.8942;
-        const lng = typeof item.Longitude === 'number' ? item.Longitude : 115.7571;
-        const url = item.PageUrl ? `https://www.stirling.wa.gov.au${item.PageUrl}` : 'https://www.stirling.wa.gov.au';
-        const costStr = item.Cost || 'Free';
-        const rawStart = item.EventStartDate || item.StartDate || item.EventDate || item.EventDisplayDate || null;
-        const rawEnd = item.EventEndDate || item.EndDate || null;
-
-        return {
-          source: 'stirling',
-          source_id: item.NodeGUID || item.ArticleID || String(index + 1),
-          source_url: url,
-          external_url: url,
-          region_id: 'perth',
-          title: item.ArticleTitle || 'Community Activity',
-          description: item.ArticleTeaser || item.ArticleDescription || '',
-          category: 'sports',
-          subcategory: item.ArticleCategories || 'other',
-          sport: item.ArticleCategories || 'other',
-          organizer: {
-            id: 'org_city_of_stirling',
-            name: 'City of Stirling',
-            website: 'https://www.stirling.wa.gov.au'
-          },
-          venue: {
-            name: item.ArticleAddressTitle || 'City of Stirling Venue',
-            address: item.ArticleAddressTitle || 'Scarborough WA',
-            coordinates: { lat, lng }
-          },
-          venue_name: item.ArticleAddressTitle || 'City of Stirling Venue',
-          address: item.ArticleAddressTitle || 'Scarborough WA',
-          coordinates: { lat, lng },
-          start_time: rawStart,
-          ...(rawEnd ? { end_time: rawEnd } : {}),
-          cost_description: costStr,
-          display_price: costStr,
-          is_free: determineIsFree(costStr),
-          demographics: {
-            gender: 'all',
-            age: 'all'
-          }
-        };
-      });
-    }
-  };
+  return createKenticoKendoCrawler(STIRLING_CONFIG, options);
 }
