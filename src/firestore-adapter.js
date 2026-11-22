@@ -233,6 +233,7 @@ export function createFirestoreAdapter(options = {}) {
             verified: Boolean(item.verified),
             source_url: item.verified ? (item.source_url || null) : null,
             raw_source_url: item.raw_source_url !== undefined ? item.raw_source_url : (item.source_url || null),
+            ...(Array.isArray(item.sources) ? { sources: item.sources } : {}),
             updated_at: toFirestoreTimestamp(item.updated_at, now)
           };
           batch.set(docRef, updatePayload, { merge: true });

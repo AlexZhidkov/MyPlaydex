@@ -544,4 +544,281 @@ test('Seam 2 & 3 (Issue #19): URL verifier bypasses probing for valid Facebook U
   assert.equal(normalSite.source_url, 'https://example.com/organizer-login-redirect');
 });
 
+test('Seam 3 (Issue #43): createUrlVerifier fails over to healthy secondary Source Reference when primary URL fails', async () => {
+  const probedUrls = [];
+  const mockProber = {
+    async probeAll(urls) {
+      probedUrls.push(...urls);
+      return urls.map(url => {
+        if (url === 'https://www.eventbrite.com.au/e/broken-event') {
+          return { reachable: false, status: 404, url: null, error: 'HTTP 404' };
+        }
+        if (url === 'https://www.meetup.com/perth-sports/events/12345') {
+          return { reachable: true, status: 200, url: 'https://www.meetup.com/perth-sports/events/12345' };
+        }
+        return { reachable: false, status: 500, url: null, error: 'Unexpected URL' };
+      });
+    }
+  };
+
+  const verifier = createUrlVerifier({ prober: mockProber, force: true });
+  const results = await verifier.verifyListings([
+    {
+      id: 'eventbrite_broken_1',
+      source: 'eventbrite',
+      source_id: 'broken_1',
+      source_url: 'https://www.eventbrite.com.au/e/broken-event',
+      raw_source_url: 'https://www.eventbrite.com.au/e/broken-event',
+      verified: true,
+      sources: [
+        {
+          source: 'eventbrite',
+          source_id: 'broken_1',
+          source_key: 'eventbrite_broken_1',
+          source_url: 'https://www.eventbrite.com.au/e/broken-event',
+          raw_source_url: 'https://www.eventbrite.com.au/e/broken-event',
+          verified: true
+        },
+        {
+          source: 'meetup',
+          source_id: '12345',
+          source_key: 'meetup_12345',
+          source_url: 'https://www.meetup.com/perth-sports/events/12345',
+          raw_source_url: 'https://www.meetup.com/perth-sports/events/12345',
+          verified: true
+        }
+      ]
+    }
+  ]);
+
+  assert.equal(results.length, 1);
+  const act = results[0];
+  assert.equal(act.verified, true);
+  assert.equal(act.source_url, 'https://www.meetup.com/perth-sports/events/12345');
+  assert.equal(act.raw_source_url, 'https://www.meetup.com/perth-sports/events/12345');
+
+  const ebRef = act.sources.find(s => s.source_key === 'eventbrite_broken_1');
+  assert.equal(ebRef.verified, false);
+  assert.equal(ebRef.source_url, null);
+  assert.equal(ebRef.raw_source_url, 'https://www.eventbrite.com.au/e/broken-event');
+
+  const meetupRef = act.sources.find(s => s.source_key === 'meetup_12345');
+  assert.equal(meetupRef.verified, true);
+  assert.equal(meetupRef.source_url, 'https://www.meetup.com/perth-sports/events/12345');
+});
+
+test('Seam 3 (Issue #43): createUrlVerifier evaluates secondary Source References in priority order (eventbrite > meetup > council > facebook)', async () => {
+  const probedUrls = [];
+  const mockProber = {
+    async probeAll(urls) {
+      probedUrls.push(...urls);
+      return urls.map(url => {
+        if (url.includes('dead')) {
+          return { reachable: false, status: 404, url: null, error: 'HTTP 404' };
+        }
+        return { reachable: true, status: 200, url };
+      });
+    }
+  };
+
+  const verifier = createUrlVerifier({ prober: mockProber, force: true });
+
+  // 1. eventbrite fails, meetup + council + facebook healthy -> meetup wins, council not probed
+  const [meetupWins, councilWins, fbWins] = await verifier.verifyListings([
+    {
+      id: 'act_meetup_wins',
+      source: 'eventbrite',
+      source_url: 'https://www.eventbrite.com.au/e/dead-1',
+      raw_source_url: 'https://www.eventbrite.com.au/e/dead-1',
+      verified: true,
+      sources: [
+        { source: 'facebook', source_id: 'fb1', source_key: 'facebook_fb1', source_url: 'https://www.facebook.com/events/111', raw_source_url: 'https://www.facebook.com/events/111', verified: true },
+        { source: 'stirling', source_id: 'c1', source_key: 'stirling_c1', source_url: 'https://stirling.wa.gov.au/events/111', raw_source_url: 'https://stirling.wa.gov.au/events/111', verified: true },
+        { source: 'meetup', source_id: 'm1', source_key: 'meetup_m1', source_url: 'https://www.meetup.com/perth/events/111', raw_source_url: 'https://www.meetup.com/perth/events/111', verified: true },
+        { source: 'eventbrite', source_id: 'e1', source_key: 'eventbrite_e1', source_url: 'https://www.eventbrite.com.au/e/dead-1', raw_source_url: 'https://www.eventbrite.com.au/e/dead-1', verified: true }
+      ]
+    },
+    {
+      id: 'act_council_wins',
+      source: 'eventbrite',
+      source_url: 'https://www.eventbrite.com.au/e/dead-2',
+      raw_source_url: 'https://www.eventbrite.com.au/e/dead-2',
+      verified: true,
+      sources: [
+        { source: 'facebook', source_id: 'fb2', source_key: 'facebook_fb2', source_url: 'https://www.facebook.com/events/222', raw_source_url: 'https://www.facebook.com/events/222', verified: true },
+        { source: 'council', source_id: 'c2', source_key: 'council_c2', source_url: 'https://perth.wa.gov.au/events/222', raw_source_url: 'https://perth.wa.gov.au/events/222', verified: true },
+        { source: 'meetup', source_id: 'm2', source_key: 'meetup_m2', source_url: 'https://www.meetup.com/perth/events/dead-2', raw_source_url: 'https://www.meetup.com/perth/events/dead-2', verified: true },
+        { source: 'eventbrite', source_id: 'e2', source_key: 'eventbrite_e2', source_url: 'https://www.eventbrite.com.au/e/dead-2', raw_source_url: 'https://www.eventbrite.com.au/e/dead-2', verified: true }
+      ]
+    },
+    {
+      id: 'act_fb_wins',
+      source: 'meetup',
+      source_url: 'https://www.meetup.com/perth/events/dead-3',
+      raw_source_url: 'https://www.meetup.com/perth/events/dead-3',
+      verified: true,
+      sources: [
+        { source: 'facebook', source_id: 'fb3', source_key: 'facebook_fb3', source_url: 'https://m.facebook.com/events/333?fbclid=xyz', raw_source_url: 'https://m.facebook.com/events/333?fbclid=xyz', verified: true },
+        { source: 'council', source_id: 'c3', source_key: 'council_c3', source_url: 'https://perth.wa.gov.au/events/dead-3', raw_source_url: 'https://perth.wa.gov.au/events/dead-3', verified: true },
+        { source: 'meetup', source_id: 'm3', source_key: 'meetup_m3', source_url: 'https://www.meetup.com/perth/events/dead-3', raw_source_url: 'https://www.meetup.com/perth/events/dead-3', verified: true }
+      ]
+    }
+  ]);
+
+  assert.equal(meetupWins.verified, true);
+  assert.equal(meetupWins.source_url, 'https://www.meetup.com/perth/events/111');
+  assert.equal(probedUrls.includes('https://stirling.wa.gov.au/events/111'), false);
+
+  assert.equal(councilWins.verified, true);
+  assert.equal(councilWins.source_url, 'https://perth.wa.gov.au/events/222');
+  assert.equal(councilWins.sources.find(s => s.source_key === 'eventbrite_e2').verified, false);
+  assert.equal(councilWins.sources.find(s => s.source_key === 'meetup_m2').verified, false);
+  assert.equal(councilWins.sources.find(s => s.source_key === 'council_c2').verified, true);
+
+  assert.equal(fbWins.verified, true);
+  assert.equal(fbWins.source_url, 'https://www.facebook.com/events/333');
+  assert.equal(fbWins.sources.find(s => s.source_key === 'facebook_fb3').verified, true);
+  assert.equal(fbWins.sources.find(s => s.source_key === 'facebook_fb3').source_url, 'https://www.facebook.com/events/333');
+  assert.equal(probedUrls.some(u => u.includes('facebook.com')), false);
+});
+
+test('Seam 3 (Issue #43): createUrlVerifier degrades to Unverified Listing when all Source References fail while preserving history for self-healing', async () => {
+  let meetupHealthy = false;
+  const mockProber = {
+    async probeAll(urls) {
+      return urls.map(url => {
+        if (meetupHealthy && url === 'https://www.meetup.com/perth/events/heal-1') {
+          return { reachable: true, status: 200, url };
+        }
+        return { reachable: false, status: 404, url: null, error: 'HTTP 404' };
+      });
+    }
+  };
+
+  const initialActivity = {
+    id: 'eventbrite_all_dead',
+    source: 'eventbrite',
+    source_url: 'https://www.eventbrite.com.au/e/all-dead',
+    raw_source_url: 'https://www.eventbrite.com.au/e/all-dead',
+    verified: true,
+    sources: [
+      {
+        source: 'eventbrite',
+        source_id: 'all_dead',
+        source_key: 'eventbrite_all_dead',
+        source_url: 'https://www.eventbrite.com.au/e/all-dead',
+        raw_source_url: 'https://www.eventbrite.com.au/e/all-dead',
+        verified: true
+      },
+      {
+        source: 'meetup',
+        source_id: 'heal_1',
+        source_key: 'meetup_heal_1',
+        source_url: 'https://www.meetup.com/perth/events/heal-1',
+        raw_source_url: 'https://www.meetup.com/perth/events/heal-1',
+        verified: true
+      },
+      {
+        source: 'council',
+        source_id: 'dead_c',
+        source_key: 'council_dead_c',
+        source_url: null,
+        raw_source_url: 'http://perth.wa.gov.au/events/dead-c',
+        verified: false
+      }
+    ]
+  };
+
+  // Run 1: all links fail -> degrades to Unverified Listing, preserves raw_source_url history
+  const verifier1 = createUrlVerifier({ prober: mockProber, force: true });
+  const [degraded] = await verifier1.verifyListings([initialActivity]);
+
+  assert.equal(degraded.verified, false);
+  assert.equal(degraded.source_url, null);
+  assert.equal(degraded.raw_source_url, 'https://www.eventbrite.com.au/e/all-dead');
+  assert.equal(degraded.sources.length, 3);
+  for (const ref of degraded.sources) {
+    assert.equal(ref.verified, false);
+    assert.equal(ref.source_url, null);
+  }
+  assert.equal(degraded.sources.find(s => s.source_key === 'eventbrite_all_dead').raw_source_url, 'https://www.eventbrite.com.au/e/all-dead');
+  assert.equal(degraded.sources.find(s => s.source_key === 'meetup_heal_1').raw_source_url, 'https://www.meetup.com/perth/events/heal-1');
+  assert.equal(degraded.sources.find(s => s.source_key === 'council_dead_c').raw_source_url, 'http://perth.wa.gov.au/events/dead-c');
+
+  // Run 2: meetup link recovers -> self-heals without force because existing verified is false
+  meetupHealthy = true;
+  const verifier2 = createUrlVerifier({
+    prober: mockProber,
+    existingDocsMap: new Map([[degraded.id, degraded]])
+  });
+  const [healed] = await verifier2.verifyListings([degraded]);
+
+  assert.equal(healed.verified, true);
+  assert.equal(healed.source_url, 'https://www.meetup.com/perth/events/heal-1');
+  assert.equal(healed.sources.find(s => s.source_key === 'meetup_heal_1').verified, true);
+  assert.equal(healed.sources.find(s => s.source_key === 'eventbrite_all_dead').verified, false);
+});
+
+test('Seam 3 (Issue #43): createUrlVerifier fails over to existing Firestore Source References during ingestion', async () => {
+  const mockProber = {
+    async probeAll(urls) {
+      return urls.map(url => {
+        if (url.includes('dead-incoming')) {
+          return { reachable: false, status: 404, url: null, error: 'HTTP 404' };
+        }
+        return { reachable: true, status: 200, url };
+      });
+    }
+  };
+
+  const existingDocsMap = new Map([
+    [
+      'eventbrite_ingest_1',
+      {
+        id: 'eventbrite_ingest_1',
+        source: 'eventbrite',
+        source_url: 'https://www.eventbrite.com.au/e/dead-incoming',
+        raw_source_url: 'https://www.eventbrite.com.au/e/dead-incoming',
+        verified: true,
+        sources: [
+          {
+            source: 'eventbrite',
+            source_id: 'ingest_1',
+            source_key: 'eventbrite_ingest_1',
+            source_url: 'https://www.eventbrite.com.au/e/dead-incoming',
+            raw_source_url: 'https://www.eventbrite.com.au/e/dead-incoming',
+            verified: true
+          },
+          {
+            source: 'meetup',
+            source_id: 'm_backup',
+            source_key: 'meetup_m_backup',
+            source_url: 'https://www.meetup.com/perth/events/backup',
+            raw_source_url: 'https://www.meetup.com/perth/events/backup',
+            verified: true
+          }
+        ]
+      }
+    ]
+  ]);
+
+  const verifier = createUrlVerifier({ prober: mockProber, existingDocsMap, force: true });
+  const [verified] = await verifier.verifyListings([
+    {
+      id: 'eventbrite_ingest_1',
+      source: 'eventbrite',
+      source_id: 'ingest_1',
+      source_url: 'https://www.eventbrite.com.au/e/dead-incoming'
+    }
+  ]);
+
+  assert.equal(verified.verified, true);
+  assert.equal(verified.source_url, 'https://www.meetup.com/perth/events/backup');
+  assert.equal(verified.sources.find(s => s.source_key === 'meetup_m_backup').verified, true);
+  assert.equal(verified.sources.find(s => s.source_key === 'eventbrite_ingest_1').verified, false);
+});
+
+
+
+
 

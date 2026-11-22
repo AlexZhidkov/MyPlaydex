@@ -516,6 +516,78 @@ test('main writes timestamped INFO logs to disk when configured with --log-file'
   }
 });
 
+test('Seam 2 (Issue #43): runVerifier promotes healthy secondary Source Reference and persists updated sources', async () => {
+  const activityUpdates = [];
+  const mockAdapter = {
+    isDryRun: () => false,
+    async scanActivities() {
+      return [
+        {
+          id: 'eventbrite_failover_1',
+          source: 'eventbrite',
+          source_url: 'https://www.eventbrite.com.au/e/dead-primary',
+          raw_source_url: 'https://www.eventbrite.com.au/e/dead-primary',
+          verified: true,
+          sources: [
+            {
+              source: 'eventbrite',
+              source_id: 'failover_1',
+              source_key: 'eventbrite_failover_1',
+              source_url: 'https://www.eventbrite.com.au/e/dead-primary',
+              raw_source_url: 'https://www.eventbrite.com.au/e/dead-primary',
+              verified: true
+            },
+            {
+              source: 'meetup',
+              source_id: 'm_healthy',
+              source_key: 'meetup_m_healthy',
+              source_url: 'https://www.meetup.com/perth/events/healthy',
+              raw_source_url: 'https://www.meetup.com/perth/events/healthy',
+              verified: true
+            }
+          ]
+        }
+      ];
+    },
+    async batchUpdateActivityUrls(updates) {
+      activityUpdates.push(...updates);
+      return { total: updates.length, updated: updates.length, failed: 0, dryRun: false };
+    }
+  };
+
+  const mockProber = {
+    async probeAll(urls) {
+      return urls.map(url => {
+        if (url.includes('dead-primary')) {
+          return { reachable: false, status: 404, url: null, error: 'HTTP 404' };
+        }
+        return { reachable: true, status: 200, url };
+      });
+    }
+  };
+
+  const summary = await runVerifier({
+    adapter: mockAdapter,
+    prober: mockProber,
+    options: { force: true, collections: ['activities'] },
+    logger: { log: () => {}, warn: () => {}, error: () => {} }
+  });
+
+  assert.equal(summary.verifiedCount, 1);
+  assert.equal(summary.repairedCount, 1);
+  assert.equal(summary.updatedCount, 1);
+  assert.equal(activityUpdates.length, 1);
+
+  const update = activityUpdates[0];
+  assert.equal(update.id, 'eventbrite_failover_1');
+  assert.equal(update.verified, true);
+  assert.equal(update.source_url, 'https://www.meetup.com/perth/events/healthy');
+  assert.ok(Array.isArray(update.sources));
+  assert.equal(update.sources.find(s => s.source_key === 'eventbrite_failover_1').verified, false);
+  assert.equal(update.sources.find(s => s.source_key === 'eventbrite_failover_1').source_url, null);
+  assert.equal(update.sources.find(s => s.source_key === 'meetup_m_healthy').verified, true);
+});
+
 
 
 

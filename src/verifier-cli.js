@@ -13,6 +13,18 @@ import { loadDotEnv } from './places-sync.js';
 
 export const DEFAULT_VERIFIER_LOG_PATH = resolve(DEFAULT_LOG_DIR, 'verifier-cli.log');
 
+function areSourcesEqual(a, b) {
+  if (!Array.isArray(a) && !Array.isArray(b)) return true;
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  return a.every((entryA, idx) => {
+    const entryB = b[idx];
+    return entryA?.source_key === entryB?.source_key &&
+      Boolean(entryA?.verified) === Boolean(entryB?.verified) &&
+      (entryA?.source_url || null) === (entryB?.source_url || null) &&
+      (entryA?.raw_source_url || null) === (entryB?.raw_source_url || null);
+  });
+}
+
 /**
  * Runs the standalone verifier pipeline against an activities collection.
  *
@@ -63,7 +75,8 @@ export async function runVerifier({
       source_url: a.source_url,
       raw_source_url: a.raw_source_url,
       external_url: a.external_url,
-      website: a.website
+      website: a.website,
+      sources: Array.isArray(a.sources) ? a.sources.map(s => ({ ...s })) : undefined
     }])
   );
 
@@ -108,16 +121,19 @@ export async function runVerifier({
       unverifiedCount++;
     }
 
+    const sourcesChanged = !areSourcesEqual(item.sources, orig.sources);
     const hasChanged = (item.verified !== orig.verified) ||
       (item.source_url !== orig.source_url) ||
-      (item.raw_source_url !== orig.raw_source_url);
+      (item.raw_source_url !== orig.raw_source_url) ||
+      sourcesChanged;
 
     if (hasChanged) {
       updatesToCommit.push({
         id: item.id,
         verified: item.verified,
         source_url: item.source_url,
-        raw_source_url: item.raw_source_url
+        raw_source_url: item.raw_source_url,
+        ...(Array.isArray(item.sources) ? { sources: item.sources } : {})
       });
     }
   }

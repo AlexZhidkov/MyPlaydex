@@ -6,6 +6,7 @@
  */
 
 import { resolveCollectionForListingId } from './firestore-adapter.js';
+import { getSourcePriority } from './activity-deduplicator.js';
 import {
   parseNormalizedUrl,
   isFacebookUrl,
@@ -189,6 +190,205 @@ export function createUrlProber(options = {}) {
   };
 }
 
+function resolveCandidateUrls(entry = {}) {
+  const rawCandidate = entry.source_url || entry.raw_source_url || entry.external_url || entry.url || entry.website;
+  const candidateUrl = typeof rawCandidate === 'string' ? rawCandidate.trim() : '';
+  const preservedRawUrl = (typeof entry.raw_source_url === 'string' && entry.raw_source_url.trim())
+    ? entry.raw_source_url.trim()
+    : (candidateUrl || null);
+  return { candidateUrl, preservedRawUrl };
+}
+
+function readRunCache(runCache, key, force) {
+  if (force || !key) {
+    return null;
+  }
+  const cached = runCache.get(key);
+  if (!cached) {
+    return null;
+  }
+  return {
+    done: true,
+    reachable: Boolean(cached.reachable),
+    url: cached.reachable ? cached.url : null
+  };
+}
+
+function tryResolveWithoutProbing(candidateUrl, runCache, force) {
+  if (!candidateUrl) {
+    return { done: true, reachable: false, url: null };
+  }
+
+  const cached = readRunCache(runCache, candidateUrl, force);
+  if (cached) {
+    return cached;
+  }
+
+  const recovered = recoverUrl(candidateUrl);
+  if (!recovered) {
+    runCache.set(candidateUrl, { reachable: false, url: null });
+    return { done: true, reachable: false, url: null };
+  }
+
+  if (isFacebookUrl(recovered)) {
+    const fbResult = { reachable: true, url: recovered };
+    runCache.set(candidateUrl, fbResult);
+    runCache.set(recovered, fbResult);
+    return { done: true, reachable: true, url: recovered };
+  }
+
+  const cachedRecovered = readRunCache(runCache, recovered, force);
+  if (cachedRecovered) {
+    runCache.set(candidateUrl, runCache.get(recovered));
+    return cachedRecovered;
+  }
+
+  return { done: false, candidateUrl, recoveredUrl: recovered };
+}
+
+function prepareOrderedCandidates(item) {
+  const hasSources = Array.isArray(item.sources) && item.sources.length > 0;
+  if (!hasSources) {
+    const { candidateUrl, preservedRawUrl } = resolveCandidateUrls(item);
+    return [{
+      ref: null,
+      candidateUrl,
+      preservedRawUrl
+    }];
+  }
+
+  item.sources = item.sources.map(ref => ({ ...ref }));
+  const candidates = item.sources.map(ref => {
+    const { candidateUrl, preservedRawUrl } = resolveCandidateUrls(ref);
+    ref.raw_source_url = preservedRawUrl;
+    return {
+      ref,
+      source: ref.source,
+      sourceKey: ref.source_key || '',
+      isPrimary: false,
+      candidateUrl,
+      preservedRawUrl
+    };
+  });
+
+  const { candidateUrl: primaryUrl, preservedRawUrl: primaryRawUrl } = resolveCandidateUrls(item);
+  if (primaryUrl) {
+    const alreadyInSources = candidates.some(c =>
+      c.candidateUrl === primaryUrl || c.preservedRawUrl === primaryUrl
+    );
+    if (!alreadyInSources) {
+      candidates.push({
+        ref: null,
+        source: item.source,
+        sourceKey: '',
+        isPrimary: true,
+        candidateUrl: primaryUrl,
+        preservedRawUrl: primaryRawUrl
+      });
+    }
+  }
+
+  candidates.sort((a, b) => {
+    const priorityDiff = getSourcePriority(b.source) - getSourcePriority(a.source);
+    if (priorityDiff !== 0) return priorityDiff;
+    const primaryDiff = Number(b.isPrimary) - Number(a.isPrimary);
+    if (primaryDiff !== 0) return primaryDiff;
+    return String(a.sourceKey).localeCompare(String(b.sourceKey));
+  });
+
+  return candidates;
+}
+
+function applyCandidateOutcome(item, candidate, reachable, resolvedUrl) {
+  if (candidate.ref) {
+    candidate.ref.verified = reachable;
+    candidate.ref.source_url = reachable ? resolvedUrl : null;
+    candidate.ref.raw_source_url = candidate.preservedRawUrl;
+  }
+
+  if (reachable) {
+    item.verified = true;
+    item.source_url = resolvedUrl;
+    if (candidate.ref && candidate.preservedRawUrl) {
+      item.raw_source_url = candidate.preservedRawUrl;
+    }
+  }
+}
+
+function finalizeAllFailed(item) {
+  item.verified = false;
+  item.source_url = null;
+}
+
+async function resolveCandidatesInWaves(pendingStates, prober, runCache, force) {
+  while (pendingStates.length > 0) {
+    const waveItems = [];
+    const nextRoundStates = [];
+
+    for (const state of pendingStates) {
+      let queuedForProbe = false;
+
+      while (state.cursor < state.candidates.length) {
+        const candidate = state.candidates[state.cursor];
+        const instant = tryResolveWithoutProbing(candidate.candidateUrl, runCache, force);
+
+        if (!instant.done) {
+          waveItems.push({ state, candidate, recoveredUrl: instant.recoveredUrl });
+          queuedForProbe = true;
+          break;
+        }
+
+        if (instant.reachable) {
+          applyCandidateOutcome(state.item, candidate, true, instant.url);
+          break;
+        }
+
+        applyCandidateOutcome(state.item, candidate, false, null);
+        state.cursor += 1;
+      }
+
+      if (!queuedForProbe && state.cursor >= state.candidates.length) {
+        finalizeAllFailed(state.item);
+      }
+    }
+
+    if (waveItems.length === 0) {
+      break;
+    }
+
+    const uniqueRecoveredUrls = Array.from(new Set(waveItems.map(w => w.recoveredUrl)));
+    const probeResults = await prober.probeAll(uniqueRecoveredUrls);
+
+    const probeResultsMap = new Map();
+    for (let j = 0; j < uniqueRecoveredUrls.length; j++) {
+      const url = uniqueRecoveredUrls[j];
+      const res = probeResults[j];
+      probeResultsMap.set(url, res);
+      runCache.set(url, res);
+    }
+
+    for (const { state, candidate, recoveredUrl } of waveItems) {
+      const probeResult = probeResultsMap.get(recoveredUrl);
+      runCache.set(candidate.candidateUrl, probeResult);
+
+      if (probeResult && probeResult.reachable) {
+        applyCandidateOutcome(state.item, candidate, true, probeResult.url || recoveredUrl);
+      } else {
+        applyCandidateOutcome(state.item, candidate, false, null);
+        state.cursor += 1;
+        if (state.cursor < state.candidates.length) {
+          nextRoundStates.push(state);
+        } else {
+          finalizeAllFailed(state.item);
+        }
+      }
+    }
+
+    pendingStates.length = 0;
+    pendingStates.push(...nextRoundStates);
+  }
+}
+
 /**
  * Creates an ingestion URL verifier that validates and degrades URLs before writing to Firestore.
  * - Deduplicates against existing Firestore /activities via getAll
@@ -291,31 +491,32 @@ export function createUrlVerifier(options = {}) {
         }
       }
 
-      // 2. Classify listings: skip / cache-hit / probe needed
-      const itemsToProbe = [];
+      // 2. Classify listings: skip / cache-hit / build priority-ordered candidate queues
+      const pendingStates = [];
       const resolvedListings = listings.map(l => ({ ...l }));
 
       for (let i = 0; i < resolvedListings.length; i++) {
         const item = resolvedListings[i];
-        const rawCandidate = item.source_url || item.raw_source_url || item.external_url || item.url || item.website;
-        const candidateUrl = typeof rawCandidate === 'string' ? rawCandidate.trim() : '';
-
-        // Strict preservation of raw_source_url
-        const preservedRawUrl = (typeof item.raw_source_url === 'string' && item.raw_source_url.trim())
-          ? item.raw_source_url.trim()
-          : (candidateUrl || null);
+        const { candidateUrl, preservedRawUrl } = resolveCandidateUrls(item);
         item.raw_source_url = preservedRawUrl;
 
-        // If no candidate URL at all, degrade to Unverified
-        if (!candidateUrl) {
-          item.verified = false;
-          item.source_url = null;
+        const hasSources = Array.isArray(item.sources) && item.sources.length > 0;
+
+        const existing = existingDocsMap.get(item.id);
+        if (!hasSources && existing && Array.isArray(existing.sources) && existing.sources.length > 0) {
+          item.sources = existing.sources.map(ref => ({ ...ref }));
+        }
+
+        const effectiveHasSources = Array.isArray(item.sources) && item.sources.length > 0;
+
+        // If no candidate URL and no Source References at all, degrade to Unverified
+        if (!candidateUrl && !effectiveHasSources) {
+          finalizeAllFailed(item);
           continue;
         }
 
         // Check existing Firestore record:
         // If already verified: true and matching URL, skip probing (unless force is true)
-        const existing = existingDocsMap.get(item.id);
         if (!force && existing && existing.verified === true) {
           const existingUrl = existing.source_url || existing.raw_source_url || existing.external_url || existing.url || existing.website;
           if (existingUrl === candidateUrl || existing.source_url === candidateUrl) {
@@ -332,93 +533,15 @@ export function createUrlVerifier(options = {}) {
           }
         }
 
-        // Check in-memory run cache (unless force is true)
-        if (!force) {
-          const cached = runCache.get(candidateUrl);
-          if (cached) {
-            if (cached.reachable) {
-              item.verified = true;
-              item.source_url = cached.url;
-            } else {
-              item.verified = false;
-              item.source_url = null;
-            }
-            continue;
-          }
-        }
-
-        // Attempt automated link recovery
-        const recovered = recoverUrl(candidateUrl);
-        if (!recovered) {
-          item.verified = false;
-          item.source_url = null;
-          runCache.set(candidateUrl, { reachable: false, url: null });
-          continue;
-        }
-
-        // Bypass HTTP probing for valid Facebook URLs (ADR 0007)
-        if (isFacebookUrl(recovered)) {
-          const fbResult = { reachable: true, url: recovered };
-          item.verified = true;
-          item.source_url = recovered;
-          runCache.set(candidateUrl, fbResult);
-          runCache.set(recovered, fbResult);
-          continue;
-        }
-
-        // Check run cache with recovered URL (unless force is true)
-        if (!force) {
-          const cachedRecovered = runCache.get(recovered);
-          if (cachedRecovered) {
-            if (cachedRecovered.reachable) {
-              item.verified = true;
-              item.source_url = cachedRecovered.url;
-            } else {
-              item.verified = false;
-              item.source_url = null;
-            }
-            runCache.set(candidateUrl, cachedRecovered);
-            continue;
-          }
-        }
-
-        itemsToProbe.push({
-          index: i,
-          candidateUrl,
-          recoveredUrl: recovered
+        pendingStates.push({
+          item,
+          candidates: prepareOrderedCandidates(item),
+          cursor: 0
         });
       }
 
-      if (itemsToProbe.length === 0) {
-        return resolvedListings;
-      }
-
-      // 3. Deduplicate unique URLs to probe in parallel via bounded concurrency pool
-      const uniqueRecoveredUrls = Array.from(new Set(itemsToProbe.map(p => p.recoveredUrl)));
-      const probeResults = await prober.probeAll(uniqueRecoveredUrls);
-
-      const probeResultsMap = new Map();
-      for (let j = 0; j < uniqueRecoveredUrls.length; j++) {
-        const url = uniqueRecoveredUrls[j];
-        const res = probeResults[j];
-        probeResultsMap.set(url, res);
-        runCache.set(url, res);
-      }
-
-      // 4. Update listings with probe results
-      for (const { index, candidateUrl, recoveredUrl } of itemsToProbe) {
-        const probeResult = probeResultsMap.get(recoveredUrl);
-        runCache.set(candidateUrl, probeResult);
-
-        const item = resolvedListings[index];
-        if (probeResult && probeResult.reachable) {
-          item.verified = true;
-          item.source_url = probeResult.url || recoveredUrl;
-        } else {
-          item.verified = false;
-          item.source_url = null;
-        }
-      }
+      // 3. Resolve candidates in priority-ordered waves using bounded concurrency
+      await resolveCandidatesInWaves(pendingStates, prober, runCache, force);
 
       return resolvedListings;
     }
