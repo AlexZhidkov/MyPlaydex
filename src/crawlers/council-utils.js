@@ -46,13 +46,13 @@ const ONLINE_VENUE_PATTERNS = [
 const COUNCIL_CATEGORY_RULES = [
   { category: 'sports', patterns: [/\bmartial\s+arts?\b/i, /\bsports?\b/i, /\brecreation\b/i, /\bfitness\b/i, /\bswimming\b/i, /\bvolleyball\b/i, /\btriathlon\b/i, /\bsurf\b/i, /\btennis\b/i, /\bsoccer\b/i, /\bbasketball\b/i, /\bcricket\b/i, /\bgym\b/i, /\brunning\b/i, /\bcycling\b/i] },
   { category: 'health', patterns: [/\bhealth\b/i, /\bwellbeing\b/i, /\bwellness\b/i, /\byoga\b/i, /\bpilates\b/i, /\bmindfulness\b/i, /\bmeditation\b/i, /\bmental\s+health\b/i, /\bblood\s+donor\b/i] },
-  { category: 'arts', patterns: [/\barts?\b/i, /\bculture\b/i, /\bexhibition\b/i, /\bgallery\b/i, /\btheatre\b/i, /\btheater\b/i, /\bdance\b/i, /\bperforming\b/i, /\bfilm\b/i, /\bcinema\b/i, /\bsculpture\b/i, /\bpoetry\b/i, /\bliterature\b/i] },
-  { category: 'music', patterns: [/\bmusic\b/i, /\bconcert\b/i, /\bband\b/i, /\bchoir\b/i, /\bjazz\b/i, /\bsymphony\b/i, /\borchestra\b/i, /\bacoustic\b/i] },
-  { category: 'family', patterns: [/\bfamily\b/i, /\bkids?\b/i, /\bchildren\b/i, /\bschool\s+holiday/i, /\btoddler\b/i, /\bstory\s*time\b/i, /\brhyme\s*time\b/i, /\bplaygroup\b/i, /\byouth\b/i, /\bparenting\b/i] },
+  { category: 'arts', patterns: [/\barts?\b/i, /\bcultur(?:e|al)\b/i, /\bexhibitions?\b/i, /\bgallery\b/i, /\btheatre\b/i, /\btheater\b/i, /\bdance\b/i, /\bperforming\b/i, /\bfilm\b/i, /\bcinema\b/i, /\bcomedy\b/i, /\bsculpture\b/i, /\bpoetry\b/i, /\bliterature\b/i] },
+  { category: 'music', patterns: [/\bmusic\b/i, /\bconcerts?\b/i, /\bband\b/i, /\bchoir\b/i, /\bjazz\b/i, /\bsymphony\b/i, /\borchestra\b/i, /\bacoustic\b/i] },
+  { category: 'family', patterns: [/\bfamil(?:y|ies)\b/i, /\bkids?\b/i, /\bchildren\b/i, /\bschool\s+holiday/i, /\btoddler\b/i, /\bstory\s*time\b/i, /\brhyme\s*time\b/i, /\bplaygroup\b/i, /\byouth\b/i, /\bparenting\b/i] },
   { category: 'food', patterns: [/\bfood\b/i, /\bdrink\b/i, /\bmarkets?\b/i, /\bcooking\b/i, /\bculinary\b/i, /\btasting\b/i, /\bpicnic\b/i, /\bfarmers\b/i, /\bcoffee\b/i] },
-  { category: 'hobbies', patterns: [/\bhobb(?:y|ies)\b/i, /\bcrafts?\b/i, /\bgardening\b/i, /\bcompost/i, /\bsewing\b/i, /\bknitting\b/i, /\bphotography\b/i, /\bwoodwork\b/i, /\bpainting\b/i, /\bpottery\b/i, /\bspecial\s+interest\b/i, /\bworkshop\b/i] },
-  { category: 'travel', patterns: [/\btravel\b/i, /\boutdoors?\b/i, /\bnature\b/i, /\bguided\s+walk\b/i, /\btour\b/i, /\bhiking\b/i, /\bbushwalk/i, /\btrail\b/i, /\bwildlife\b/i, /\bbirdwatch/i] },
-  { category: 'community', patterns: [/\bcommunity\b/i, /\bseniors?\b/i, /\bvolunteer/i, /\blibrary\b/i, /\bmulticultural\b/i, /\bcharity\b/i, /\bclub\b/i, /\bsocial\b/i, /\bneighbour/i, /\bcivic\b/i] }
+  { category: 'hobbies', patterns: [/\bhobb(?:y|ies)\b/i, /\bcrafts?\b/i, /\bgardening\b/i, /\bcompost/i, /\bsewing\b/i, /\bknitting\b/i, /\bphotography\b/i, /\bwoodwork\b/i, /\bpainting\b/i, /\bpottery\b/i, /\bspecial\s+interest\b/i, /\bworkshops?\b/i] },
+  { category: 'travel', patterns: [/\btravel\b/i, /\boutdoors?\b/i, /\bnature\b/i, /\bguided\s+walk\b/i, /\btours?\b/i, /\bhiking\b/i, /\bbushwalk/i, /\btrail\b/i, /\bwildlife\b/i, /\bbirdwatch/i] },
+  { category: 'community', patterns: [/\bcommunity\b/i, /\bseniors?\b/i, /\bvolunteer/i, /\blibrary\b/i, /\bmulticultural\b/i, /\bcharity\b/i, /\bclub\b/i, /\bsocial\b/i, /\bneighbour/i, /\bcivic\b/i, /\bfestivals?\b/i] }
 ];
 
 function resolveNowDate(now) {

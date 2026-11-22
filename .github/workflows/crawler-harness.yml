@@ -15,6 +15,7 @@ on:
           - all
           - councils
           - stirling
+          - visit_perth
           - dlgsc
           - volleyball_wa
           - meetup

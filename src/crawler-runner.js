@@ -12,6 +12,7 @@ import { applyVenueResolution, resolveActivityVenueAndCoordinates } from './venu
 import { createFirestoreAdapter, initFirestoreFromEnv } from './firestore-adapter.js';
 import { createUrlVerifier } from './url-verifier.js';
 import { createStirlingCrawler } from './crawlers/stirling-crawler.js';
+import { createVisitPerthCrawler } from './crawlers/visit-perth-crawler.js';
 import { createDlgscCrawler } from './crawlers/dlgsc-crawler.js';
 import { createVolleyballWaCrawler } from './crawlers/volleyball-wa-crawler.js';
 import { createEventbriteCrawler } from './crawlers/eventbrite-crawler.js';
@@ -316,6 +317,7 @@ export async function runCrawlerHarness({ crawlers = [], adapter, options = {} }
 export function getDefaultCrawlers(options = {}) {
   const crawlers = [
     createStirlingCrawler(),
+    createVisitPerthCrawler(),
     createDlgscCrawler(),
     createVolleyballWaCrawler(),
     createMeetupCrawler()
