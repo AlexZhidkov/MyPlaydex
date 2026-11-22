@@ -12,7 +12,7 @@ import { PERTH_SUBURB_CENTROIDS } from './perth-centroids.js';
 export const PERTH_CENTROID = { lat: -31.9505, lng: 115.8605 };
 export const MAX_PERTH_RADIUS_KM = 85;
 
-const NON_WA_LOCATION_REGEX = /\b(NSW|VIC|QLD|SA|TAS|ACT|NT|New South Wales|Victoria|Queensland|South Australia|Tasmania|Northern Territory|Sydney|Melbourne|Brisbane|Adelaide|Hobart|Canberra|Darwin)\b/i;
+const NON_WA_LOCATION_REGEX = /\b(NSW|VIC|QLD|SA|TAS|ACT|NT|New South Wales|Victoria(?!\s+(?:Park|Quay|Square|St(?:reet)?|Rd|Road|Ave(?:nue)?|Pde|Parade|Pl(?:ace)?|Dr(?:ive)?|Ct|Court|Way|Ln|Lane|Tce|Terrace|Cres(?:cent)?|Gardens|Bridge|Library|Leisurelife)\b)|Queensland|South Australia|Tasmania|Northern Territory|Sydney|Melbourne|Brisbane|Adelaide|Hobart|Canberra|Darwin)\b/i;
 const WA_LOCATION_REGEX = /\b(WA|Western Australia|Perth)\b/i;
 
 /**

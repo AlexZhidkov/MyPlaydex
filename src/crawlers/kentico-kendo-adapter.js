@@ -4,7 +4,7 @@
  * Kentico Kendo UI JSON search endpoints.
  */
 
-import { determineIsFree } from '../sanitizer.js';
+import { determineIsFree, slugify } from '../sanitizer.js';
 import {
   DEFAULT_HORIZON_DAYS,
   DEFAULT_MAX_ACTIVITIES,
@@ -49,6 +49,47 @@ function resolveOrganizer(item, defaultOrganizer) {
   return undefined;
 }
 
+function normalizeKenticoTimestamp(rawDate) {
+  if (typeof rawDate !== 'string') return rawDate || null;
+  const trimmed = rawDate.trim();
+  if (!trimmed) return null;
+  // Naive ISO datetimes from Kentico (e.g. "2026-11-22T00:00:00") are in AWST (+08:00).
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/.test(trimmed)) {
+    return `${trimmed}+08:00`;
+  }
+  return trimmed;
+}
+
+function extractKenticoStartDate(item) {
+  const raw = item.EventStartDate || item.StartDate || item.EventDate || item.EventDisplayDate || item.ArticleReleaseDate || null;
+  return normalizeKenticoTimestamp(raw);
+}
+
+function extractKenticoVenueName(item) {
+  const rawVenues = Array.isArray(item.Venues)
+    ? item.Venues.find(v => typeof v === 'string' && v.trim().length > 0)
+    : item.Venues;
+  return (item.ArticleAddressTitle || item.VenueName || item.Location || rawVenues || '').trim();
+}
+
+function extractKenticoDescription(item) {
+  const teaser = typeof item.ArticleTeaser === 'string' && !/^\/getContentAsset\//i.test(item.ArticleTeaser.trim())
+    ? item.ArticleTeaser
+    : '';
+  return (item.ArticleSummary || teaser || item.ArticleDescription || '').trim();
+}
+
+function deriveSlugFromPageUrl(pageUrl) {
+  if (!pageUrl || typeof pageUrl !== 'string') return '';
+  try {
+    const pathname = /^https?:\/\//i.test(pageUrl) ? new URL(pageUrl).pathname : pageUrl.split(/[?#]/)[0];
+    const lastSegment = pathname.split('/').filter(Boolean).pop() || '';
+    return slugify(lastSegment);
+  } catch {
+    return '';
+  }
+}
+
 function mapKenticoRecord(item, index, config) {
   const title = (item.ArticleTitle || item.Title || '').trim() || 'Community Activity';
   const rawTags = item.ArticleCategories || item.Categories || item.Category || '';
@@ -64,22 +105,23 @@ function mapKenticoRecord(item, index, config) {
     ? { lat: item.Latitude, lng: item.Longitude }
     : undefined;
 
-  const venueName = (item.ArticleAddressTitle || item.VenueName || item.Location || '').trim();
+  const venueName = extractKenticoVenueName(item);
   const address = (item.ArticleAddress || item.Address || venueName || '').trim();
   const url = resolveUrl(config.baseUrl, item.PageUrl);
   const costStr = item.Cost || 'Free';
-  const rawStart = item.EventStartDate || item.StartDate || item.EventDate || item.EventDisplayDate || null;
+  const rawStart = extractKenticoStartDate(item);
   const rawEnd = item.EventEndDate || item.EndDate || null;
   const organizer = resolveOrganizer(item, config.defaultOrganizer);
+  const sourceId = String(item.NodeGUID || item.ArticleID || item.id || deriveSlugFromPageUrl(item.PageUrl) || index + 1);
 
   return {
     source: config.source,
-    source_id: String(item.NodeGUID || item.ArticleID || item.id || index + 1),
+    source_id: sourceId,
     source_url: url,
     external_url: url,
     region_id: config.regionId || 'perth',
     title,
-    description: item.ArticleTeaser || item.ArticleDescription || '',
+    description: extractKenticoDescription(item),
     category,
     subcategory,
     ...(organizer ? { organizer } : {}),
@@ -187,9 +229,19 @@ export function createKenticoKendoCrawler(config, options = {}) {
           const mappedAndFiltered = [];
           for (let i = 0; i < records.length; i++) {
             const record = records[i];
-            const rawStart = record.EventStartDate || record.StartDate || record.EventDate || record.EventDisplayDate || null;
+            const rawStart = extractKenticoStartDate(record);
             const rawEnd = record.EventEndDate || record.EndDate || null;
-            if (filterCouncilItem({ ...record, start_time: rawStart, ...(rawEnd ? { end_time: rawEnd } : {}) }, filterOptions)) {
+            const venueName = extractKenticoVenueName(record);
+            const rawCategory = Array.isArray(record.ArticleCategories || record.Categories)
+              ? (record.ArticleCategories || record.Categories).join(', ')
+              : (record.ArticleCategories || record.Categories || record.Category || '');
+            if (filterCouncilItem({
+              ...record,
+              venueName,
+              category: rawCategory,
+              start_time: rawStart,
+              ...(rawEnd ? { end_time: rawEnd } : {})
+            }, filterOptions)) {
               mappedAndFiltered.push(mapKenticoRecord(record, skip + i, config));
             }
           }

@@ -249,7 +249,7 @@ function extractDataCoordinates(innerHtml = '', extraAttrs = '') {
 
 function parseTagList(rawText = '') {
   const cleaned = String(rawText || '')
-    .replace(/^(?:tagged\s+as|categories|category)\s*:\s*/i, '')
+    .replace(/^(?:tagged\s+as|categories|category|type)\s*:\s*/i, '')
     .trim();
   if (!cleaned) return [];
   return cleaned
@@ -343,6 +343,7 @@ function parseArticleCard(cleanHtml, match, config) {
     'tagged-as-list',
     'event-categories',
     'events-detail-category',
+    'events-detail-type',
     'event-tags',
     'tags',
     'category'
@@ -707,6 +708,7 @@ export function parseOpenCitiesDetailPage(html = '', config = {}) {
 
   const rawTagText = extractTextByClassOrder(cleanHtml, [
     'events-detail-category',
+    'events-detail-type',
     'tagged-as-list',
     'event-categories',
     'event-tags',
