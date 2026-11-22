@@ -952,6 +952,42 @@ test('Seam 3: Activity card click delegates to source_url in new tab, and card-v
   assert.equal(openedWindows.length, 1, 'Pressing Enter on focused card should trigger window.open');
   assert.equal(openedWindows[0].url, 'https://example.com/tennis-perth');
 
+  // Case 5b: Pressing Space on focused activity-card triggers source_url on keyup and prevents scroll on keydown
+  openedWindows.length = 0;
+  let spacePrevented = false;
+  feedContainer.dispatchEvent({
+    type: 'keydown',
+    key: ' ',
+    target: cardEl,
+    preventDefault: () => { spacePrevented = true; }
+  });
+  assert.equal(spacePrevented, true, 'Space keydown on focused card should call preventDefault');
+  assert.equal(openedWindows.length, 0, 'Space keydown should not open window before keyup');
+
+  feedContainer.dispatchEvent({
+    type: 'keyup',
+    key: ' ',
+    target: cardEl
+  });
+  assert.equal(openedWindows.length, 1, 'Pressing Space (keyup) on focused card should trigger window.open');
+  assert.equal(openedWindows[0].url, 'https://example.com/tennis-perth');
+
+  // Case 5c: Clicking or pressing Enter/Space on a secondary-source-link does NOT trigger card navigation
+  const secondaryLinkEl = createMockEl('sec-link-1', 'a', ['secondary-source-link']);
+  secondaryLinkEl.setAttribute('href', 'https://www.facebook.com/events/200');
+  secondaryLinkEl.closest = (sel) => {
+    if (sel.includes('a, button')) return secondaryLinkEl;
+    if (sel.includes('activity-card')) return cardEl;
+    return null;
+  };
+  openedWindows.length = 0;
+  feedContainer.dispatchEvent({ type: 'click', target: secondaryLinkEl });
+  assert.equal(openedWindows.length, 0, 'Clicking secondary-source-link must not trigger card window.open');
+
+  feedContainer.dispatchEvent({ type: 'keydown', key: 'Enter', target: secondaryLinkEl });
+  feedContainer.dispatchEvent({ type: 'keyup', key: ' ', target: secondaryLinkEl });
+  assert.equal(openedWindows.length, 0, 'Keyboard activation on secondary-source-link must not trigger card window.open');
+
   // Case 6: Unverified Listing card does NOT trigger window.open on whole-card click or Enter key,
   //even if a stale data-url attribute is present on an .activity-card-unverified element,
   // while Venue directions row and Suggest an edit link remain interactive.

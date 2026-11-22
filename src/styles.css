@@ -648,6 +648,49 @@ body.modal-open {
   flex: 1 1 auto;
 }
 
+/* Secondary Source Reference links row */
+.card-secondary-sources {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  font-size: 0.74rem;
+  line-height: 1.35;
+  color: var(--text-muted);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.secondary-sources-label {
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.secondary-sources-links {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.secondary-source-link {
+  color: var(--primary);
+  font-weight: 500;
+  text-decoration: none;
+  padding: 0.1rem 0.15rem;
+  border-radius: var(--radius-sm);
+}
+
+.secondary-source-link:hover,
+.secondary-source-link:focus-visible {
+  text-decoration: underline;
+}
+
+.secondary-source-sep {
+  color: var(--text-muted);
+}
+
 /* Tier 4 */
 .card-tier-4 {
   margin-top: auto;

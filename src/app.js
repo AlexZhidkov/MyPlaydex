@@ -1158,6 +1158,13 @@ export function initApp(options = {}) {
     }
   }
 
+  const LISTING_CARD_SELECTOR = '.activity-card, .organizer-card, .venue-card';
+
+  function getFocusedListingCard(e) {
+    const card = e.target.closest && e.target.closest(LISTING_CARD_SELECTOR);
+    return card && e.target === card ? card : null;
+  }
+
   // Activity Feed Interaction Delegation (Empty State Recovery, Venue Map Directions, Card Navigation)
   if (feedContainer) {
     feedContainer.addEventListener('click', (e) => {
@@ -1192,26 +1199,36 @@ export function initApp(options = {}) {
         return;
       }
 
-      // 3. Other interactive links (e.g. Suggest an edit mailto link)
+      // 3. Other interactive links (e.g. Suggest an edit mailto link, secondary source links)
       if (e.target.closest && e.target.closest('a, button')) {
         return;
       }
 
       // 4. Listing card: whole-card click opens verified source_url (or Venue directions) in a new tab
-      const card = e.target.closest && e.target.closest('.activity-card, .organizer-card, .venue-card');
+      const card = e.target.closest && e.target.closest(LISTING_CARD_SELECTOR);
       if (card) {
         openVerifiedCardUrl(card);
         return;
       }
     });
 
-    // Support keyboard accessibility (Enter key on focused listing card)
+    // Support keyboard accessibility (Enter on keydown, Space on keyup per button pattern)
     feedContainer.addEventListener('keydown', (e) => {
+      const card = getFocusedListingCard(e);
+      if (!card) return;
+
       if (e.key === 'Enter') {
-        const card = e.target.closest && e.target.closest('.activity-card, .organizer-card, .venue-card');
-        if (card && e.target === card) {
-          openVerifiedCardUrl(card);
-        }
+        openVerifiedCardUrl(card);
+      } else if (e.key === ' ' && typeof e.preventDefault === 'function') {
+        e.preventDefault();
+      }
+    });
+
+    feedContainer.addEventListener('keyup', (e) => {
+      if (e.key !== ' ') return;
+      const card = getFocusedListingCard(e);
+      if (card) {
+        openVerifiedCardUrl(card);
       }
     });
   }

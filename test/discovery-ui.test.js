@@ -680,3 +680,180 @@ test('Issue #33: non-sporting Listing cards render Category icon and label badge
   assert.ok(sportsCard.includes('soccer'), 'Sports card must render sport subcategory slug');
 });
 
+test('Issue #44: renderActivityCard renders Also on secondary links for multi-source Activities and omits row for single-source', () => {
+  const multiSourceHtml = renderActivityCard({
+    id: 'act_multi_1',
+    title: 'Perth Social Basketball',
+    category: 'sports',
+    subcategory: 'basketball',
+    schedule: { recurrence: 'weekly', day_of_week: 3, start_time: '19:00' },
+    cost: { is_free: false, display_price: '$12' },
+    source_url: 'https://www.eventbrite.com.au/e/social-hoops-1',
+    verified: true,
+    venue: { name: 'Herb Graham Recreation Centre' },
+    sources: [
+      {
+        source: 'eventbrite',
+        source_id: '1',
+        source_key: 'eventbrite_1',
+        source_url: 'https://www.eventbrite.com.au/e/social-hoops-1',
+        verified: true
+      },
+      {
+        source: 'facebook',
+        source_id: '200',
+        source_key: 'facebook_200',
+        source_url: 'https://www.facebook.com/events/200',
+        verified: true
+      },
+      {
+        source: 'stirling',
+        source_id: '300',
+        source_key: 'stirling_300',
+        source_url: 'https://www.stirling.wa.gov.au/events/hoops',
+        verified: true
+      }
+    ]
+  });
+
+  assert.ok(multiSourceHtml.includes('card-secondary-sources'), 'Multi-source card must render secondary sources row');
+  assert.ok(multiSourceHtml.includes('Also on:'), 'Multi-source card must include "Also on:" label');
+  assert.ok(
+    multiSourceHtml.includes('href="https://www.facebook.com/events/200"'),
+    'Secondary row must link to Facebook source_url'
+  );
+  assert.ok(multiSourceHtml.includes('>Facebook</a>'), 'Secondary row must render human-readable Facebook label');
+  assert.ok(
+    multiSourceHtml.includes('href="https://www.stirling.wa.gov.au/events/hoops"'),
+    'Secondary row must link to City of Stirling source_url'
+  );
+  assert.ok(
+    multiSourceHtml.includes('>City of Stirling</a>'),
+    'Secondary row must render human-readable City of Stirling label'
+  );
+  assert.ok(
+    !multiSourceHtml.includes('>Eventbrite</a>'),
+    'Primary source_url must be excluded from secondary links row'
+  );
+  assert.match(
+    multiSourceHtml,
+    /<a[^>]*class="secondary-source-link"[^>]*target="_blank"[^>]*rel="noopener noreferrer"/,
+    'Secondary links must open in a new tab with noopener noreferrer'
+  );
+
+  const singleSourceHtml = renderActivityCard({
+    id: 'act_single_1',
+    title: 'Solo Tennis',
+    category: 'sports',
+    subcategory: 'tennis',
+    schedule: { recurrence: 'weekly', day_of_week: 1, start_time: '18:00' },
+    cost: { is_free: true },
+    source_url: 'https://www.eventbrite.com.au/e/solo-tennis-1',
+    verified: true,
+    venue: { name: 'Robertson Park' },
+    sources: [
+      {
+        source: 'eventbrite',
+        source_id: '1',
+        source_key: 'eventbrite_1',
+        source_url: 'https://www.eventbrite.com.au/e/solo-tennis-1',
+        verified: true
+      }
+    ]
+  });
+
+  assert.ok(!singleSourceHtml.includes('card-secondary-sources'), 'Single-source card must not render secondary sources row');
+  assert.ok(!singleSourceHtml.includes('Also on:'), 'Single-source card must not render "Also on:" text');
+});
+
+test('Issue #44: renderActivityCard excludes unverified and duplicate-URL Source References from secondary row', () => {
+  const filteredHtml = renderActivityCard({
+    id: 'act_filtered_1',
+    title: 'Coastal Volleyball',
+    category: 'sports',
+    subcategory: 'volleyball',
+    schedule: { recurrence: 'weekly', day_of_week: 6, start_time: '09:00' },
+    cost: { is_free: true },
+    source_url: 'https://www.meetup.com/perth-volley/events/1/',
+    verified: true,
+    venue: { name: 'Scarborough Beach' },
+    sources: [
+      {
+        source: 'meetup',
+        source_id: '1',
+        source_key: 'meetup_1',
+        source_url: 'https://www.meetup.com/perth-volley/events/1/',
+        verified: true
+      },
+      {
+        source: 'eventbrite',
+        source_id: '2',
+        source_key: 'eventbrite_2',
+        source_url: 'https://www.eventbrite.com.au/e/dead-link',
+        verified: false
+      },
+      {
+        source: 'facebook',
+        source_id: '3',
+        source_key: 'facebook_3',
+        source_url: 'https://www.meetup.com/perth-volley/events/1/', // duplicate of primary URL
+        verified: true
+      },
+      {
+        source: 'vincent',
+        source_id: '4',
+        source_key: 'vincent_4',
+        source_url: 'https://www.vincent.wa.gov.au/events/volley',
+        verified: true
+      },
+      {
+        source: 'council',
+        source_id: '5',
+        source_key: 'council_5',
+        source_url: 'https://www.vincent.wa.gov.au/events/volley', // duplicate of another secondary URL
+        verified: true
+      }
+    ]
+  });
+
+  assert.ok(filteredHtml.includes('card-secondary-sources'), 'Card with one distinct verified secondary URL must render secondary row');
+  assert.ok(filteredHtml.includes('>City of Vincent</a>'), 'Valid distinct secondary source must render');
+  assert.ok(!filteredHtml.includes('>Eventbrite</a>'), 'Unverified Source Reference must be excluded');
+  assert.ok(!filteredHtml.includes('>Facebook</a>'), 'Source Reference duplicating primary URL must be excluded');
+  assert.ok(!filteredHtml.includes('>Council</a>'), 'Duplicate secondary URL must be excluded');
+
+  const onlyUnverifiedSecondaryHtml = renderActivityCard({
+    id: 'act_filtered_2',
+    title: 'Morning Yoga',
+    category: 'health',
+    subcategory: 'health',
+    schedule: { recurrence: 'weekly', day_of_week: 0, start_time: '08:00' },
+    cost: { is_free: true },
+    source_url: 'https://www.eventbrite.com.au/e/yoga-1',
+    verified: true,
+    venue: { name: 'Kings Park' },
+    sources: [
+      {
+        source: 'eventbrite',
+        source_id: '1',
+        source_key: 'eventbrite_1',
+        source_url: 'https://www.eventbrite.com.au/e/yoga-1',
+        verified: true
+      },
+      {
+        source: 'facebook',
+        source_id: '2',
+        source_key: 'facebook_2',
+        source_url: null,
+        raw_source_url: 'https://www.facebook.com/events/broken',
+        verified: false
+      }
+    ]
+  });
+
+  assert.ok(
+    !onlyUnverifiedSecondaryHtml.includes('card-secondary-sources'),
+    'Card with only unverified secondary sources must not render secondary sources row'
+  );
+});
+

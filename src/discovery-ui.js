@@ -487,11 +487,92 @@ export function renderActivityCard(activity = {}) {
         ${renderMapsRow(directionsUrl, venue.name || 'Venue location')}
         ${organizer.name ? `<div class="card-organizer-row"><span class="organizer-icon" aria-hidden="true">👥</span> <span class="organizer-name">${escapeHtml(organizer.name)}</span></div>` : ''}
       </div>
+      ${isVerified ? renderSecondarySourcesRow(activity.sources, trimmedSourceUrl) : ''}
 
       <!-- Tier 4: Suggest edit link -->
       ${renderSuggestEditTier(editMailtoUrl, 'Suggest an edit for this activity')}
     </article>
   `.trim();
+}
+
+const SOURCE_PLATFORM_LABELS = {
+  eventbrite: 'Eventbrite',
+  meetup: 'Meetup',
+  facebook: 'Facebook',
+  stirling: 'City of Stirling',
+  vincent: 'City of Vincent',
+  wanneroo: 'City of Wanneroo',
+  gosnells: 'City of Gosnells',
+  cambridge: 'Town of Cambridge',
+  victoria_park: 'Town of Victoria Park',
+  visit_perth: 'Visit Perth',
+  dlgsc: 'DLGSC',
+  volleyball_wa: 'Volleyball WA',
+  google_places: 'Google Places',
+  council: 'Council'
+};
+
+/**
+ * Formats a Source Reference platform slug into a human-readable label.
+ *
+ * @param {string} [source]
+ * @returns {string}
+ */
+function formatSourcePlatformLabel(source) {
+  const normalized = trimmedString(source).toLowerCase();
+  if (!normalized) return 'External link';
+  if (normalized in SOURCE_PLATFORM_LABELS) {
+    return SOURCE_PLATFORM_LABELS[normalized];
+  }
+  return normalized
+    .split(/[_-]+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+/**
+ * Renders the compact "Also on: ..." secondary Source Reference links row
+ * when an Activity has verified Source Reference links distinct from its primary source_url.
+ *
+ * @param {Array<object>} [sources=[]]
+ * @param {string} [primarySourceUrl='']
+ * @returns {string}
+ */
+function renderSecondarySourcesRow(sources = [], primarySourceUrl = '') {
+  if (!Array.isArray(sources) || sources.length === 0) return '';
+
+  const seenUrls = new Set();
+  if (primarySourceUrl) {
+    seenUrls.add(primarySourceUrl);
+  }
+
+  const secondaryLinks = [];
+  for (const ref of sources) {
+    if (!ref || ref.verified !== true) continue;
+    const url = trimmedString(ref.source_url);
+    if (!url || url === '#' || seenUrls.has(url)) continue;
+    seenUrls.add(url);
+    secondaryLinks.push({
+      url,
+      label: formatSourcePlatformLabel(ref.source)
+    });
+  }
+
+  if (secondaryLinks.length === 0) return '';
+
+  const linksHtml = secondaryLinks
+    .map(
+      (item) =>
+        `<a href="${escapeHtml(item.url)}" class="secondary-source-link" target="_blank" rel="noopener noreferrer">${escapeHtml(item.label)}</a>`
+    )
+    .join('<span class="secondary-source-sep" aria-hidden="true"> · </span>');
+
+  return `
+      <div class="card-secondary-sources">
+        <span class="secondary-sources-label">Also on:</span>
+        <span class="secondary-sources-links">${linksHtml}</span>
+      </div>`.trim();
 }
 
 function trimmedString(value) {
