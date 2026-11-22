@@ -103,8 +103,8 @@ export function parseFirestoreDocument(doc) {
 /**
  * Fetches documents from a public Cloud Firestore collection.
  * By default (`paginate: false`), caps to a single request of up to 50 documents.
- * When `paginate: true` (used for `/organizers` and `/venues`), pages through `nextPageToken`
- * (or queries the full collection on an injected SDK `db`) so regional ranking operates on the full catalog.
+ * When `paginate: true` (used for `/activities`, `/organizers`, and `/venues`), pages through `nextPageToken`
+ * (or queries the full collection on an injected SDK `db`) so filtering and regional ranking operate on the full catalog.
  *
  * @param {object} [options={}]
  * @param {object} [options.db] - Optional Firestore instance with collection(name)
@@ -186,13 +186,15 @@ export async function fetchCollectionFromFirestore(options = {}) {
 }
 
 /**
- * Fetches up to 50 activity documents from `/activities`.
+ * Fetches activity documents across the full `/activities` collection for client-side filtering and ranking.
  *
  * @param {object} [options={}]
  * @returns {Promise<Array<object>>}
  */
 export function fetchActivitiesFromFirestore(options = {}) {
   return fetchCollectionFromFirestore({
+    paginate: true,
+    pageSize: DEFAULT_FULL_CATALOG_PAGE_SIZE,
     ...options,
     collectionName: options.collectionName || DEFAULT_FIRESTORE_COLLECTION
   });

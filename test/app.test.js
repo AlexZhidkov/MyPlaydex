@@ -1137,9 +1137,10 @@ test('Firestore Client: fetchers cap REST loads to 50 records in a single reques
   };
 
   // Even when pageSize > 50 or nextPageToken is returned, default single-page REST fetch executes a single request capped at 50
-  const results = await fetchActivitiesFromFirestore({
+  const results = await fetchCollectionFromFirestore({
     fetchImpl: mockFetch,
     projectId: 'myplaydex',
+    collectionName: 'activities',
     pageSize: 300
   });
 
@@ -1265,6 +1266,17 @@ test('Firestore Client (Issue #16): fetchOrganizersFromFirestore and fetchVenues
   const dbVenues = await fetchVenuesFromFirestore({ db: mockDb });
   assert.equal(limitCalled, false, 'Full-catalog SDK venue query must not call .limit(50)');
   assert.equal(dbVenues.length, 65, 'Full-catalog SDK venue query must return all 65 documents');
+
+  // 4. Activities paginate until nextPageToken is exhausted
+  requestedUrls.length = 0;
+  const activities = await fetchActivitiesFromFirestore({
+    fetchImpl: createPaginatedFetch('activities', 110),
+    pageSize: 50
+  });
+  assert.equal(requestedUrls.length, 3, 'Activities must paginate across 3 pages');
+  assert.ok(requestedUrls[1].includes('pageToken=50'));
+  assert.ok(requestedUrls[2].includes('pageToken=100'));
+  assert.equal(activities.length, 110, 'Activities must return all 110 documents across pages');
 });
 
 test('Firestore Client: src/app.js has no MOCK_PERTH_ACTIVITIES fallback and loads /activities asynchronously from Firestore', async () => {
