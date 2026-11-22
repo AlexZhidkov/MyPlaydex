@@ -29,9 +29,13 @@ A published Listing whose external referral link is missing or unreachable, surf
 _Avoid_: Broken Listing, Dead Listing, Draft
 
 **Unreviewed Listing**:
-A published Activity or Organizer Listing created by an automated crawler or linked with an uncertain or missing Venue or Organizer match, awaiting human curation.
+A published Activity or Organizer Listing created by an automated crawler, linked with an uncertain or missing Venue or Organizer match, or flagged as a borderline duplicate Activity candidate awaiting human curation.
 _Avoid_: Draft, Unverified Listing, Pending Approval, Flagged Record
 
 **Expired Activity**:
 A non-recurring Activity whose scheduled end date (or start date) has passed the retention grace window in AWST and is eligible for database purge.
 _Avoid_: Past Event, Old Record, Dead Activity
+
+**Source Reference**:
+An external platform listing (such as an Eventbrite, Meetup, Facebook, or council page) linked to a canonical Activity for referral and re-crawl idempotency.
+_Avoid_: Mirror, Alias, External Copy, Child Listing
