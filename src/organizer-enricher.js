@@ -10,6 +10,7 @@ import { pathToFileURL } from 'node:url';
 import { resolveCliLogger } from './crawler-reporter.js';
 import { DEFAULT_FACEBOOK_CACHE_PATH, isCachedFacebookNonEntity } from './facebook-sync.js';
 import { createFileCacheStore } from './file-cache.js';
+import { createFirecrawlClientFromEnv } from './firecrawl-client.js';
 import { createFirestoreAdapter, initFirestoreFromEnv } from './firestore-adapter.js';
 import { loadDotEnv } from './places-sync.js';
 import {
@@ -124,6 +125,36 @@ export function extractFacebookUrlFromHtml(html) {
   return null;
 }
 
+/**
+ * Extracts and resolves the primary Organizer Facebook Page or Public Group URL
+ * from a Firecrawl scrape result (`rawHtml` / `html` first, then `links`).
+ *
+ * @param {object|null} result
+ * @returns {string | null}
+ */
+export function extractFacebookUrlFromFirecrawlResult(result) {
+  if (!result || typeof result !== 'object') {
+    return null;
+  }
+
+  const fromRawHtml = extractFacebookUrlFromHtml(result.rawHtml);
+  if (fromRawHtml) return fromRawHtml;
+
+  const fromHtml = extractFacebookUrlFromHtml(result.html);
+  if (fromHtml) return fromHtml;
+
+  if (Array.isArray(result.links)) {
+    for (const link of result.links) {
+      const resolved = resolveOrganizerFacebookUrl(link);
+      if (resolved) {
+        return resolved;
+      }
+    }
+  }
+
+  return null;
+}
+
 function normalizeEligibleWebsiteUrl(rawWebsite) {
   const trimmed = typeof rawWebsite === 'string' ? rawWebsite.trim() : '';
   if (!trimmed) {
@@ -228,6 +259,7 @@ export async function runOrganizerEnricher({
   fetchFn = globalThis.fetch,
   cacheStore,
   facebookCacheStore,
+  firecrawlClient = null,
   options = {},
   logger = console
 } = {}) {
@@ -260,14 +292,18 @@ export async function runOrganizerEnricher({
   let scanned = 0;
   let failedTargets = 0;
   let cacheHits = 0;
+  let firecrawlFallbacks = 0;
+  let firecrawlMatched = 0;
   const updates = [];
 
   try {
     for (const { org, websiteUrl, existingFacebook } of targets) {
       scanned += 1;
-      let fetched;
+      let discoveredFacebook = null;
+      let rawFetchError = null;
+
       try {
-        fetched = await fetchWebsiteHtml({
+        const fetched = await fetchWebsiteHtml({
           url: websiteUrl,
           fetchFn,
           cacheStore,
@@ -278,13 +314,37 @@ export async function runOrganizerEnricher({
         if (fetched.fromCache) {
           cacheHits += 1;
         }
+        discoveredFacebook = extractFacebookUrlFromHtml(fetched.body);
       } catch (err) {
+        rawFetchError = err;
+      }
+
+      if (!discoveredFacebook && firecrawlClient) {
+        firecrawlFallbacks += 1;
+        try {
+          const rendered = await firecrawlClient.scrape(websiteUrl, {
+            formats: ['rawHtml', 'html', 'links'],
+            onlyMainContent: false,
+            refresh
+          });
+          discoveredFacebook = extractFacebookUrlFromFirecrawlResult(rendered);
+          if (discoveredFacebook) {
+            firecrawlMatched += 1;
+          }
+          rawFetchError = null;
+        } catch (fcErr) {
+          logger?.warn?.(
+            `[Organizer Enricher] Firecrawl fallback failed for ${websiteUrl} (organizer ${org.id}): ${fcErr.message}`
+          );
+        }
+      }
+
+      if (rawFetchError) {
         failedTargets += 1;
-        logger?.warn?.(`[Organizer Enricher] Failed to fetch ${websiteUrl} for organizer ${org.id}: ${err.message}`);
+        logger?.warn?.(`[Organizer Enricher] Failed to fetch ${websiteUrl} for organizer ${org.id}: ${rawFetchError.message}`);
         continue;
       }
 
-      const discoveredFacebook = extractFacebookUrlFromHtml(fetched.body);
       if (!discoveredFacebook) {
         continue;
       }
@@ -319,6 +379,7 @@ export async function runOrganizerEnricher({
     }
   } finally {
     await cacheStore?.flush?.();
+    await firecrawlClient?.flushCache?.();
   }
 
   let updated = 0;
@@ -328,13 +389,15 @@ export async function runOrganizerEnricher({
   }
 
   logger?.log?.(
-    `[Organizer Enricher] Eligible: ${targets.length}, Scanned: ${scanned}, CacheHits: ${cacheHits}, Failed: ${failedTargets}, Matched: ${updates.length}, Updated: ${updated} (dryRun=${dryRun})`
+    `[Organizer Enricher] Eligible: ${targets.length}, Scanned: ${scanned}, CacheHits: ${cacheHits}, FirecrawlFallbacks: ${firecrawlFallbacks}, FirecrawlMatched: ${firecrawlMatched}, Failed: ${failedTargets}, Matched: ${updates.length}, Updated: ${updated} (dryRun=${dryRun})`
   );
 
   return {
     eligible: targets.length,
     scanned,
     cacheHits,
+    firecrawlFallbacks,
+    firecrawlMatched,
     failedTargets,
     matched: updates.length,
     updated,
@@ -367,6 +430,10 @@ export function parseCliArgs(argv = process.argv.slice(2), env = process.env) {
 
   const useAdc = argv.includes('--use-adc') || Boolean(env.FIREBASE_USE_ADC);
   const project = getArgValue(argv, 'project') || env.FIREBASE_PROJECT_ID || 'myplaydex';
+  const noFirecrawl = argv.includes('--no-firecrawl');
+  const firecrawlUrl = noFirecrawl
+    ? null
+    : (getArgValue(argv, 'firecrawl-url') || env.FIRECRAWL_LOCAL_URL || null);
 
   return {
     organizer,
@@ -375,7 +442,8 @@ export function parseCliArgs(argv = process.argv.slice(2), env = process.env) {
     refresh,
     force,
     useAdc,
-    project
+    project,
+    firecrawlUrl
   };
 }
 
@@ -396,7 +464,7 @@ export async function main(argv = process.argv.slice(2), env = process.env, opti
   const logger = resolveCliLogger('organizer-enricher.log', argv, options, env);
 
   logger.log?.(
-    `[Organizer Enricher] Initializing run (project: ${parsedArgs.project}, dry-run: ${parsedArgs.dryRun}, refresh: ${parsedArgs.refresh}, force: ${parsedArgs.force})`
+    `[Organizer Enricher] Initializing run (project: ${parsedArgs.project}, dry-run: ${parsedArgs.dryRun}, refresh: ${parsedArgs.refresh}, force: ${parsedArgs.force}, firecrawl: ${parsedArgs.firecrawlUrl ? 'enabled' : 'disabled'})`
   );
 
   let adapter = options.adapter;
@@ -417,12 +485,22 @@ export async function main(argv = process.argv.slice(2), env = process.env, opti
 
   const cacheStore = options.cacheStore || createFileCacheStore(DEFAULT_ORGANIZER_ENRICH_CACHE_PATH, { flushEvery: 25 });
   const facebookCacheStore = options.facebookCacheStore || createFileCacheStore(DEFAULT_FACEBOOK_CACHE_PATH);
+  const firecrawlClient = options.firecrawlClient !== undefined
+    ? options.firecrawlClient
+    : (parsedArgs.firecrawlUrl
+        ? createFirecrawlClientFromEnv(env, {
+            baseUrl: parsedArgs.firecrawlUrl,
+            fetchFn: options.fetchFn,
+            logger
+          })
+        : null);
 
   return runOrganizerEnricher({
     adapter,
     fetchFn: options.fetchFn,
     cacheStore,
     facebookCacheStore,
+    firecrawlClient,
     options: {
       organizer: parsedArgs.organizer,
       limit: parsedArgs.limit,

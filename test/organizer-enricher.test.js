@@ -6,6 +6,7 @@ import path from 'node:path';
 import { createFileCacheStore } from '../src/places-sync.js';
 import { resolveOrganizerFacebookUrl } from '../src/url-utils.js';
 import {
+  extractFacebookUrlFromFirecrawlResult,
   extractFacebookUrlFromHtml,
   main,
   parseCliArgs,
@@ -327,7 +328,8 @@ test('Seam 4: parseCliArgs, main dry-run, and package.json script registration',
     refresh: true,
     force: true,
     useAdc: true,
-    project: 'custom-proj'
+    project: 'custom-proj',
+    firecrawlUrl: null
   });
 
   const envParsed = parseCliArgs([], { FIREBASE_USE_ADC: '1', FIREBASE_PROJECT_ID: 'env-proj' });
@@ -657,4 +659,104 @@ test('Seam 6: --force re-enriches existing Organizers when Facebook handle diffe
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
+});
+
+test('Seam 6: runOrganizerEnricher uses firecrawlClient only as a JS/error fallback and respects CLI flags', async () => {
+  assert.equal(
+    extractFacebookUrlFromFirecrawlResult({
+      rawHtml: '<html><body><p>No link in raw</p></body></html>',
+      links: ['https://www.facebook.com/wix', 'https://m.facebook.com/PerthSpaClub/events']
+    }),
+    'https://www.facebook.com/PerthSpaClub'
+  );
+
+  assert.equal(parseCliArgs([], { FIRECRAWL_LOCAL_URL: 'http://127.0.0.1:3002' }).firecrawlUrl, 'http://127.0.0.1:3002');
+  assert.equal(parseCliArgs(['--no-firecrawl'], { FIRECRAWL_LOCAL_URL: 'http://127.0.0.1:3002' }).firecrawlUrl, null);
+  assert.equal(parseCliArgs(['--firecrawl-url=http://127.0.0.1:4000'], {}).firecrawlUrl, 'http://127.0.0.1:4000');
+
+  const orgs = [
+    {
+      id: 'org_ssr',
+      name: 'SSR Club',
+      website: 'https://ssr.example.org',
+      contact: { email: null, phone: null, facebook: null }
+    },
+    {
+      id: 'org_spa',
+      name: 'Wix SPA Club',
+      website: 'https://spa.example.org',
+      contact: { email: null, phone: null, facebook: null }
+    },
+    {
+      id: 'org_403_recovered',
+      name: 'Blocked Static Club',
+      website: 'https://blocked.example.org',
+      contact: { email: null, phone: null, facebook: null }
+    }
+  ];
+
+  const firecrawlCalls = [];
+  let flushed = false;
+  const firecrawlClient = {
+    async scrape(url, opts) {
+      firecrawlCalls.push({ url, opts });
+      if (url === 'https://spa.example.org/') {
+        return {
+          html: '<footer><a href="https://www.facebook.com/WixSpaClub">FB</a></footer>',
+          links: ['https://www.facebook.com/WixSpaClub']
+        };
+      }
+      if (url === 'https://blocked.example.org/') {
+        return {
+          html: '<html><body>Rendered</body></html>',
+          links: ['https://www.facebook.com/RecoveredClub']
+        };
+      }
+      throw new Error(`Unexpected firecrawl call: ${url}`);
+    },
+    async flushCache() {
+      flushed = true;
+    }
+  };
+
+  const fetchFn = async (url) => {
+    if (url === 'https://ssr.example.org/') {
+      return { ok: true, status: 200, text: async () => '<a href="https://www.facebook.com/SsrClub">FB</a>' };
+    }
+    if (url === 'https://spa.example.org/') {
+      return { ok: true, status: 200, text: async () => '<div id="root"></div>' };
+    }
+    if (url === 'https://blocked.example.org/') {
+      return { ok: false, status: 403, text: async () => 'Forbidden' };
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+
+  const summary = await runOrganizerEnricher({
+    adapter: { async scanOrganizers() { return orgs; } },
+    fetchFn,
+    firecrawlClient,
+    options: { dryRun: true },
+    logger: { log() {}, warn() {} }
+  });
+
+  assert.equal(summary.scanned, 3);
+  assert.equal(summary.failedTargets, 0);
+  assert.equal(summary.firecrawlFallbacks, 2);
+  assert.equal(summary.firecrawlMatched, 2);
+  assert.equal(summary.matched, 3);
+  assert.equal(flushed, true);
+  assert.deepEqual(firecrawlCalls.map(c => c.url), [
+    'https://spa.example.org/',
+    'https://blocked.example.org/'
+  ]);
+  assert.equal(firecrawlCalls[0].opts.onlyMainContent, false);
+  assert.deepEqual(
+    summary.updates.map(u => [u.id, u.contact.facebook]),
+    [
+      ['org_ssr', 'https://www.facebook.com/SsrClub'],
+      ['org_spa', 'https://www.facebook.com/WixSpaClub'],
+      ['org_403_recovered', 'https://www.facebook.com/RecoveredClub']
+    ]
+  );
 });
