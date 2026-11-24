@@ -8,9 +8,12 @@ import { resolveOrganizerFacebookUrl } from '../src/url-utils.js';
 import {
   extractFacebookUrlFromFirecrawlResult,
   extractFacebookUrlFromHtml,
+  formatFetchError,
   main,
+  normalizeEligibleWebsiteUrl,
   parseCliArgs,
-  runOrganizerEnricher
+  runOrganizerEnricher,
+  shouldFallbackToFirecrawl
 } from '../src/organizer-enricher.js';
 
 test('Seam 1: resolveOrganizerFacebookUrl normalizes Page and Group URLs, resolves permalinks, and rejects share/pixel/CMS handles', () => {
@@ -331,6 +334,15 @@ test('Seam 4: parseCliArgs, main dry-run, and package.json script registration',
     project: 'custom-proj',
     firecrawlUrl: null
   });
+
+  const spaceParsed = parseCliArgs(
+    ['--organizer', 'org_456', '--limit', '10', '--project', 'space-proj', '--firecrawl-url', 'http://127.0.0.1:3002'],
+    {}
+  );
+  assert.equal(spaceParsed.organizer, 'org_456');
+  assert.equal(spaceParsed.limit, 10);
+  assert.equal(spaceParsed.project, 'space-proj');
+  assert.equal(spaceParsed.firecrawlUrl, 'http://127.0.0.1:3002');
 
   const envParsed = parseCliArgs([], { FIREBASE_USE_ADC: '1', FIREBASE_PROJECT_ID: 'env-proj' });
   assert.equal(envParsed.useAdc, true);
@@ -759,4 +771,162 @@ test('Seam 6: runOrganizerEnricher uses firecrawlClient only as a JS/error fallb
       ['org_403_recovered', 'https://www.facebook.com/RecoveredClub']
     ]
   );
+});
+
+test('Seam 7: rejects email/credentialed URLs, gates Firecrawl on retryable errors, logs cause codes, and negative-caches dead URLs', async () => {
+  // 1. URL eligibility rejects emails and embedded credentials
+  assert.equal(normalizeEligibleWebsiteUrl('paul.hempsall@oss.wa.gov.au'), null);
+  assert.equal(normalizeEligibleWebsiteUrl('mailto:paul.hempsall@oss.wa.gov.au'), null);
+  assert.equal(normalizeEligibleWebsiteUrl('https://user:pass@example.org/'), null);
+  assert.equal(normalizeEligibleWebsiteUrl('http://user@example.org/'), null);
+  assert.equal(normalizeEligibleWebsiteUrl('http://www.amaf.com.au/'), 'http://www.amaf.com.au/');
+  assert.equal(normalizeEligibleWebsiteUrl('example.org.au'), 'https://example.org.au/');
+
+  // 2. Error classification and formatting
+  const dnsErr = new TypeError('fetch failed', { cause: Object.assign(new Error('getaddrinfo ENOTFOUND dead.example'), { code: 'ENOTFOUND' }) });
+  const timeoutErr = new TypeError('fetch failed', { cause: Object.assign(new Error('Connect Timeout Error'), { code: 'UND_ERR_CONNECT_TIMEOUT' }) });
+  const socketErr = new TypeError('fetch failed', { cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }) });
+  const goneErr = Object.assign(new Error('HTTP 410'), { httpStatus: 410 });
+  const wafErr = Object.assign(new Error('HTTP 403'), { httpStatus: 403 });
+
+  assert.equal(shouldFallbackToFirecrawl(null), true);
+  assert.equal(shouldFallbackToFirecrawl(wafErr), true);
+  assert.equal(shouldFallbackToFirecrawl(socketErr), true);
+  assert.equal(shouldFallbackToFirecrawl(dnsErr), false);
+  assert.equal(shouldFallbackToFirecrawl(timeoutErr), false);
+  assert.equal(shouldFallbackToFirecrawl(goneErr), false);
+  assert.equal(shouldFallbackToFirecrawl(Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' })), false);
+
+  assert.match(formatFetchError(dnsErr), /fetch failed \(ENOTFOUND/);
+  assert.match(formatFetchError(socketErr), /fetch failed \(UND_ERR_SOCKET: other side closed\)/);
+  assert.equal(formatFetchError(goneErr), 'HTTP 410');
+
+  // 3. End-to-end gating + negative cache behavior
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'myplaydex-org-gating-'));
+  const cacheStore = createFileCacheStore(path.join(tmpDir, 'cache.json'));
+  try {
+    const orgs = [
+      {
+        id: 'org_email_website',
+        name: 'Email Website Club',
+        website: 'paul.hempsall@oss.wa.gov.au',
+        contact: { email: null, phone: null, facebook: null }
+      },
+      {
+        id: 'org_dead_dns',
+        name: 'Dead DNS Club',
+        website: 'http://avacademy.com.au/',
+        contact: { email: null, phone: null, facebook: null }
+      },
+      {
+        id: 'org_gone_410',
+        name: 'Deleted WordPress Club',
+        website: 'https://allsaintsswimmingclub.com/',
+        contact: { email: null, phone: null, facebook: null }
+      },
+      {
+        id: 'org_waf_socket',
+        name: 'SiteGround WAF Club',
+        website: 'http://www.amaf.com.au/',
+        contact: { email: null, phone: null, facebook: null }
+      }
+    ];
+
+    const fetchCalls = [];
+    const firecrawlCalls = [];
+    const warnings = [];
+    let nowMs = Date.parse('2026-11-24T12:00:00.000Z');
+
+    const fetchFn = async (url) => {
+      fetchCalls.push(url);
+      if (url === 'http://avacademy.com.au/') {
+        throw new TypeError('fetch failed', {
+          cause: Object.assign(new Error('getaddrinfo ENOTFOUND avacademy.com.au'), { code: 'ENOTFOUND' })
+        });
+      }
+      if (url === 'https://allsaintsswimmingclub.com/') {
+        return { ok: false, status: 410, text: async () => 'Gone' };
+      }
+      if (url === 'http://www.amaf.com.au/') {
+        throw new TypeError('fetch failed', {
+          cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' })
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    const firecrawlClient = {
+      async scrape(url) {
+        firecrawlCalls.push(url);
+        if (url === 'http://www.amaf.com.au/') {
+          return {
+            html: '<a href="https://www.facebook.com/AdvancedMartialArts.Fitness">FB</a>',
+            links: ['https://www.facebook.com/AdvancedMartialArts.Fitness']
+          };
+        }
+        throw new Error(`Unexpected Firecrawl call: ${url}`);
+      },
+      async flushCache() {}
+    };
+
+    const adapter = { async scanOrganizers() { return orgs; } };
+    const logger = { log() {}, warn(msg) { warnings.push(msg); } };
+
+    // Run 1: email skipped at eligibility, dead DNS & 410 skip Firecrawl and negative-cache, socket drop recovers via Firecrawl
+    const run1 = await runOrganizerEnricher({
+      adapter,
+      fetchFn,
+      cacheStore,
+      firecrawlClient,
+      options: { dryRun: true, nowFn: () => nowMs },
+      logger
+    });
+
+    assert.equal(run1.eligible, 3);
+    assert.equal(run1.scanned, 3);
+    assert.equal(run1.firecrawlFallbacks, 1);
+    assert.equal(run1.firecrawlMatched, 1);
+    assert.equal(run1.failedTargets, 2);
+    assert.equal(run1.matched, 1);
+    assert.deepEqual(firecrawlCalls, ['http://www.amaf.com.au/']);
+    assert.match(warnings[0], /ENOTFOUND/);
+    assert.match(warnings[1], /HTTP 410/);
+
+    // Run 2 (1 hour later): dead DNS & 410 hit negative cache without network calls; WAF socket error was NOT negative-cached
+    fetchCalls.length = 0;
+    firecrawlCalls.length = 0;
+    warnings.length = 0;
+    nowMs += 60 * 60 * 1000;
+
+    const run2 = await runOrganizerEnricher({
+      adapter,
+      fetchFn,
+      cacheStore,
+      firecrawlClient,
+      options: { dryRun: true, nowFn: () => nowMs },
+      logger
+    });
+
+    assert.equal(run2.cacheHits, 2);
+    assert.equal(run2.failedTargets, 2);
+    assert.equal(run2.firecrawlFallbacks, 1);
+    assert.deepEqual(fetchCalls, ['http://www.amaf.com.au/']);
+    assert.match(warnings[0], /\[cached\]/);
+    assert.match(warnings[1], /\[cached\]/);
+
+    // Run 3 (with --refresh): bypasses negative cache and re-fetches dead URLs
+    fetchCalls.length = 0;
+    const run3 = await runOrganizerEnricher({
+      adapter,
+      fetchFn,
+      cacheStore,
+      firecrawlClient,
+      options: { dryRun: true, refresh: true, nowFn: () => nowMs },
+      logger
+    });
+    assert.equal(run3.cacheHits, 0);
+    assert.equal(fetchCalls.length, 3);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
 });

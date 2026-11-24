@@ -25,6 +25,51 @@ export const DEFAULT_ORGANIZER_ENRICH_CACHE_PATH = path.resolve(
   '.scratch/organizer-enrich-cache.json'
 );
 const DEFAULT_FETCH_TIMEOUT_MS = 15000;
+export const DEFAULT_NEGATIVE_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+const RETRYABLE_FIRECRAWL_HTTP_STATUSES = new Set([
+  401,
+  403,
+  406,
+  429,
+  503,
+  520,
+  521,
+  522,
+  523,
+  524,
+  525,
+  526
+]);
+
+const RETRYABLE_FIRECRAWL_ERROR_CODES = new Set([
+  'UND_ERR_SOCKET',
+  'ECONNRESET',
+  'EPIPE',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'CERT_HAS_EXPIRED',
+  'ERR_TLS_CERT_ALTNAME_INVALID'
+]);
+
+const NON_RETRYABLE_FIRECRAWL_ERROR_CODES = new Set([
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EAI_NONAME',
+  'EAI_FAIL',
+  'ESERVFAIL',
+  'EREFUSED',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+  'ETIMEDOUT',
+  'ECONNREFUSED',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ENETDOWN',
+  'EHOSTDOWN',
+  'ERR_INVALID_URL'
+]);
 
 const JSON_LD_SCRIPT_REGEX = /<script\b[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
 const ANCHOR_HREF_REGEX = /<a\b[^>]*?\s+href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi;
@@ -155,26 +200,135 @@ export function extractFacebookUrlFromFirecrawlResult(result) {
   return null;
 }
 
-function normalizeEligibleWebsiteUrl(rawWebsite) {
+export function normalizeEligibleWebsiteUrl(rawWebsite) {
   const trimmed = typeof rawWebsite === 'string' ? rawWebsite.trim() : '';
-  if (!trimmed) {
+  if (!trimmed || /^mailto:/i.test(trimmed)) {
     return null;
   }
 
   const normalizedCheck = parseNormalizedUrl(trimmed);
-  if (!normalizedCheck || isFacebookUrl(normalizedCheck) || isGenericDirectoryFallbackUrl(normalizedCheck)) {
+  if (
+    !normalizedCheck ||
+    normalizedCheck.username ||
+    normalizedCheck.password ||
+    isFacebookUrl(normalizedCheck) ||
+    isGenericDirectoryFallbackUrl(normalizedCheck)
+  ) {
     return null;
   }
 
   // Preserve explicit http:// scheme for HTTP-only sites instead of forcing https://
   if (/^http:\/\//i.test(trimmed)) {
     try {
-      return new URL(trimmed).href;
+      const parsedHttp = new URL(trimmed);
+      if (parsedHttp.username || parsedHttp.password) {
+        return null;
+      }
+      return parsedHttp.href;
     } catch {
       return null;
     }
   }
   return normalizedCheck.href;
+}
+
+function extractErrorCode(err) {
+  if (!err || typeof err !== 'object') return null;
+  if (typeof err.errorCode === 'string' && err.errorCode) return err.errorCode;
+  if (typeof err.cause?.code === 'string' && err.cause.code) return err.cause.code;
+  if (typeof err.code === 'string' && err.code) return err.code;
+  return null;
+}
+
+function extractHttpStatus(err) {
+  if (!err || typeof err !== 'object') return null;
+  if (Number.isInteger(err.httpStatus)) return err.httpStatus;
+  if (typeof err.message === 'string') {
+    const match = err.message.match(/^HTTP (\d{3})\b/);
+    if (match) return parseInt(match[1], 10);
+  }
+  return null;
+}
+
+/**
+ * Formats a fetch error with its underlying `cause.code` / `cause.message`
+ * so logs distinguish DNS failures, timeouts, and WAF socket resets.
+ *
+ * @param {Error} err
+ * @returns {string}
+ */
+export function formatFetchError(err) {
+  if (!err) return 'unknown error';
+  const baseMessage = typeof err.message === 'string' && err.message ? err.message : String(err);
+  const causeCode = extractErrorCode(err);
+  const causeMessage = typeof err.cause?.message === 'string' ? err.cause.message.trim() : '';
+
+  if (causeCode && !baseMessage.includes(causeCode)) {
+    if (causeMessage && causeMessage !== baseMessage && !causeMessage.includes(causeCode)) {
+      return `${baseMessage} (${causeCode}: ${causeMessage})`;
+    }
+    return `${baseMessage} (${causeCode})`;
+  }
+  if (causeMessage && causeMessage !== baseMessage && !baseMessage.includes(causeMessage)) {
+    return `${baseMessage} (${causeMessage})`;
+  }
+  return baseMessage;
+}
+
+/**
+ * Determines whether a raw `fetch` outcome warrants falling back to Firecrawl's
+ * headless browser (true for 200 OK SPAs without a Facebook link, WAF/bot HTTP
+ * blocks, and socket/TLS drops; false for dead DNS, timeouts, and 404/410s).
+ *
+ * @param {Error|null} rawFetchError
+ * @returns {boolean}
+ */
+export function shouldFallbackToFirecrawl(rawFetchError) {
+  if (!rawFetchError) {
+    return true;
+  }
+
+  const httpStatus = extractHttpStatus(rawFetchError);
+  if (httpStatus !== null) {
+    return RETRYABLE_FIRECRAWL_HTTP_STATUSES.has(httpStatus);
+  }
+
+  const errorName = typeof rawFetchError.name === 'string' ? rawFetchError.name : '';
+  if (errorName === 'TimeoutError' || errorName === 'AbortError') {
+    return false;
+  }
+
+  const errorCode = extractErrorCode(rawFetchError);
+  if (errorCode) {
+    if (NON_RETRYABLE_FIRECRAWL_ERROR_CODES.has(errorCode)) {
+      return false;
+    }
+    if (
+      RETRYABLE_FIRECRAWL_ERROR_CODES.has(errorCode) ||
+      errorCode.startsWith('ERR_SSL_') ||
+      errorCode.startsWith('HPE_')
+    ) {
+      return true;
+    }
+  }
+
+  const message = typeof rawFetchError.message === 'string' ? rawFetchError.message : '';
+  if (/credentials/i.test(message)) {
+    return false;
+  }
+
+  return false;
+}
+
+function isFreshNegativeCacheEntry(entry, nowMs, ttlMs) {
+  if (!entry || typeof entry !== 'object' || entry.status !== 'error') {
+    return false;
+  }
+  const fetchedAtMs = entry.fetchedAt ? Date.parse(entry.fetchedAt) : NaN;
+  if (!Number.isFinite(fetchedAtMs)) {
+    return false;
+  }
+  return (nowMs - fetchedAtMs) <= ttlMs;
 }
 
 function shouldPromoteSourceUrl(org) {
@@ -207,11 +361,31 @@ async function resolveEnrichmentTarget(org, { force = false, facebookCacheStore 
   return null;
 }
 
-async function fetchWebsiteHtml({ url, fetchFn, cacheStore, refresh, timeoutMs = DEFAULT_FETCH_TIMEOUT_MS, logger }) {
+async function fetchWebsiteHtml({
+  url,
+  fetchFn,
+  cacheStore,
+  refresh,
+  timeoutMs = DEFAULT_FETCH_TIMEOUT_MS,
+  negativeCacheTtlMs = DEFAULT_NEGATIVE_CACHE_TTL_MS,
+  nowFn = () => Date.now(),
+  logger
+}) {
   if (!refresh && cacheStore) {
     const cached = await cacheStore.read(url);
     if (cached && typeof cached.body === 'string') {
       return { body: cached.body, fromCache: true };
+    }
+    if (isFreshNegativeCacheEntry(cached, nowFn(), negativeCacheTtlMs)) {
+      const cachedErr = new Error(cached.error || 'cached fetch error');
+      cachedErr.fromCache = true;
+      if (Number.isInteger(cached.httpStatus)) {
+        cachedErr.httpStatus = cached.httpStatus;
+      }
+      if (typeof cached.errorCode === 'string' && cached.errorCode) {
+        cachedErr.errorCode = cached.errorCode;
+      }
+      throw cachedErr;
     }
   }
 
@@ -226,17 +400,39 @@ async function fetchWebsiteHtml({ url, fetchFn, cacheStore, refresh, timeoutMs =
     fetchOptions.signal = AbortSignal.timeout(timeoutMs);
   }
 
-  const response = await fetchFn(url, fetchOptions);
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
+  let response;
+  try {
+    response = await fetchFn(url, fetchOptions);
+    if (!response.ok) {
+      const httpErr = new Error(`HTTP ${response.status}`);
+      httpErr.httpStatus = response.status;
+      throw httpErr;
+    }
+  } catch (err) {
+    if (cacheStore && !shouldFallbackToFirecrawl(err)) {
+      try {
+        await cacheStore.write(url, {
+          url,
+          fetchedAt: new Date(nowFn()).toISOString(),
+          status: 'error',
+          httpStatus: extractHttpStatus(err),
+          errorCode: extractErrorCode(err),
+          error: formatFetchError(err)
+        });
+      } catch (cacheErr) {
+        logger?.warn?.(`[Organizer Enricher] Negative cache write failed for ${url}: ${cacheErr.message}`);
+      }
+    }
+    throw err;
   }
+
   const body = await response.text();
 
   if (cacheStore) {
     try {
       await cacheStore.write(url, {
         url,
-        fetchedAt: new Date().toISOString(),
+        fetchedAt: new Date(nowFn()).toISOString(),
         status: response.status,
         body
       });
@@ -270,6 +466,10 @@ export async function runOrganizerEnricher({
   const timeoutMs = typeof options.timeoutMs === 'number' && options.timeoutMs > 0
     ? options.timeoutMs
     : DEFAULT_FETCH_TIMEOUT_MS;
+  const negativeCacheTtlMs = typeof options.negativeCacheTtlMs === 'number' && options.negativeCacheTtlMs >= 0
+    ? options.negativeCacheTtlMs
+    : DEFAULT_NEGATIVE_CACHE_TTL_MS;
+  const nowFn = typeof options.nowFn === 'function' ? options.nowFn : () => Date.now();
 
   const organizers = adapter?.scanOrganizers ? await adapter.scanOrganizers() : [];
 
@@ -309,6 +509,8 @@ export async function runOrganizerEnricher({
           cacheStore,
           refresh,
           timeoutMs,
+          negativeCacheTtlMs,
+          nowFn,
           logger
         });
         if (fetched.fromCache) {
@@ -316,10 +518,13 @@ export async function runOrganizerEnricher({
         }
         discoveredFacebook = extractFacebookUrlFromHtml(fetched.body);
       } catch (err) {
+        if (err?.fromCache) {
+          cacheHits += 1;
+        }
         rawFetchError = err;
       }
 
-      if (!discoveredFacebook && firecrawlClient) {
+      if (!discoveredFacebook && firecrawlClient && shouldFallbackToFirecrawl(rawFetchError)) {
         firecrawlFallbacks += 1;
         try {
           const rendered = await firecrawlClient.scrape(websiteUrl, {
@@ -341,7 +546,9 @@ export async function runOrganizerEnricher({
 
       if (rawFetchError) {
         failedTargets += 1;
-        logger?.warn?.(`[Organizer Enricher] Failed to fetch ${websiteUrl} for organizer ${org.id}: ${rawFetchError.message}`);
+        const formattedError = formatFetchError(rawFetchError);
+        const cacheTag = rawFetchError.fromCache ? ' [cached]' : '';
+        logger?.warn?.(`[Organizer Enricher] Failed to fetch ${websiteUrl} for organizer ${org.id}: ${formattedError}${cacheTag}`);
         continue;
       }
 
@@ -408,8 +615,16 @@ export async function runOrganizerEnricher({
 
 function getArgValue(argv, flag) {
   const prefix = `--${flag}=`;
-  const match = argv.find(a => a.startsWith(prefix));
-  return match ? match.slice(prefix.length) : undefined;
+  const eqMatch = argv.find(a => a.startsWith(prefix));
+  if (eqMatch) {
+    return eqMatch.slice(prefix.length);
+  }
+  const exactFlag = `--${flag}`;
+  const idx = argv.indexOf(exactFlag);
+  if (idx !== -1 && idx + 1 < argv.length && !argv[idx + 1].startsWith('--')) {
+    return argv[idx + 1];
+  }
+  return undefined;
 }
 
 /**
