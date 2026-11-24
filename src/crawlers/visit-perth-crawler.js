@@ -7,7 +7,7 @@
 
 import { createOptimizelySsrCrawler } from './optimizely-ssr-adapter.js';
 
-export const VISIT_PERTH_ENDPOINT = 'https://www.visitperth.com/events';
+export const VISIT_PERTH_ENDPOINT = 'https://www.visitperth.com/events/';
 export const VISIT_PERTH_BASE_URL = 'https://www.visitperth.com';
 export const VISIT_PERTH_LGA_CENTROID = Object.freeze({ lat: -31.9505, lng: 115.8605 });
 

@@ -27,6 +27,20 @@ function resolveUrl(baseUrl, pageUrl) {
   return `${normalizedBase}${normalizedPath}`;
 }
 
+const DIAGNOSTIC_HEADERS = ['server', 'cf-ray', 'retry-after'];
+
+function formatDiagnosticHeaders(headers) {
+  if (!headers) return '';
+  const pairs = [];
+  for (const name of DIAGNOSTIC_HEADERS) {
+    const value = typeof headers.get === 'function' ? headers.get(name) : headers[name];
+    if (typeof value === 'string' && value.trim()) {
+      pairs.push(`${name}=${value.trim()}`);
+    }
+  }
+  return pairs.join(', ');
+}
+
 function buildPageUrl(endpoint, page) {
   const url = new URL(endpoint);
   url.searchParams.set('page', String(page));
@@ -236,7 +250,11 @@ export function createOptimizelySsrCrawler(config, options = {}) {
           });
 
           if (!response.ok) {
-            throw new Error(`${config.label || config.source} responded with HTTP ${response.status}: ${response.statusText}`);
+            const diagHeaders = formatDiagnosticHeaders(response.headers);
+            const detail = [pageUrl, diagHeaders].filter(Boolean).join(', ');
+            throw new Error(
+              `${config.label || config.source} responded with HTTP ${response.status}: ${response.statusText} (${detail})`
+            );
           }
 
           const html = await response.text();

@@ -338,12 +338,12 @@ export async function runCrawlerHarness({ crawlers = [], adapter, options = {} }
  *
  * @param {object} [options]
  * @param {boolean} [options.includeEventbrite=false]
+ * @param {boolean} [options.includeVisitPerth=false]
  * @returns {Array<object>}
  */
 export function getDefaultCrawlers(options = {}) {
   const crawlers = [
     createStirlingCrawler(),
-    createVisitPerthCrawler(),
     createVincentCrawler(),
     createWannerooCrawler(),
     createGosnellsCrawler(),
@@ -353,6 +353,9 @@ export function getDefaultCrawlers(options = {}) {
     createVolleyballWaCrawler(),
     createMeetupCrawler()
   ];
+  if (options.includeVisitPerth) {
+    crawlers.push(createVisitPerthCrawler());
+  }
   if (options.includeEventbrite) {
     crawlers.push(createEventbriteCrawler());
   }
@@ -407,7 +410,8 @@ export async function main(argv = process.argv.slice(2), env = process.env, opti
   }
 
   const includeEventbrite = targetCrawler.toLowerCase() === 'eventbrite' || args.includes('--include-eventbrite');
-  const crawlers = options.crawlers || getDefaultCrawlers({ includeEventbrite });
+  const includeVisitPerth = targetCrawler.toLowerCase() === 'visit_perth' || args.includes('--include-visit-perth');
+  const crawlers = options.crawlers || getDefaultCrawlers({ includeEventbrite, includeVisitPerth });
 
   const summary = await runCrawlerHarness({
     crawlers,

@@ -489,12 +489,12 @@ test('Seam 4C: CLI exits with status 1 on anomaly and writes GITHUB_STEP_SUMMARY
   }
 });
 
-test('Seam 7: getDefaultCrawlers registers the 10 scheduled crawlers and excludes eventbrite unless requested', () => {
+test('Seam 7: getDefaultCrawlers registers the 9 scheduled crawlers and excludes local-only crawlers unless requested', () => {
   const crawlers = getDefaultCrawlers();
   const names = crawlers.map(c => c.name);
 
   assert.ok(names.includes('stirling'), 'stirling should be in default crawlers');
-  assert.ok(names.includes('visit_perth'), 'visit_perth should be in default crawlers');
+  assert.ok(!names.includes('visit_perth'), 'visit_perth should be excluded from default scheduled crawlers');
   assert.ok(names.includes('vincent'), 'vincent should be in default crawlers');
   assert.ok(names.includes('wanneroo'), 'wanneroo should be in default crawlers');
   assert.ok(names.includes('gosnells'), 'gosnells should be in default crawlers');
@@ -504,7 +504,7 @@ test('Seam 7: getDefaultCrawlers registers the 10 scheduled crawlers and exclude
   assert.ok(names.includes('volleyball_wa'), 'volleyball_wa should be in default crawlers');
   assert.ok(names.includes('meetup'), 'meetup should be in default crawlers');
   assert.ok(!names.includes('eventbrite'), 'eventbrite should be excluded from default scheduled crawlers');
-  assert.equal(names.length, 10);
+  assert.equal(names.length, 9);
 
   const vincent = crawlers.find(c => c.name === 'vincent');
   assert.equal(vincent?.group, 'councils');
@@ -515,10 +515,18 @@ test('Seam 7: getDefaultCrawlers registers the 10 scheduled crawlers and exclude
     assert.equal(council?.group, 'councils', `${councilName} should be in councils group`);
   }
 
+  const withVisitPerth = getDefaultCrawlers({ includeVisitPerth: true });
+  const withVisitPerthNames = withVisitPerth.map(c => c.name);
+  assert.ok(withVisitPerthNames.includes('visit_perth'), 'visit_perth should be included when includeVisitPerth is true');
+  assert.equal(withVisitPerthNames.length, 10);
+
   const withEventbrite = getDefaultCrawlers({ includeEventbrite: true });
   const withEventbriteNames = withEventbrite.map(c => c.name);
   assert.ok(withEventbriteNames.includes('eventbrite'), 'eventbrite should be included when includeEventbrite is true');
-  assert.equal(withEventbriteNames.length, 11);
+  assert.equal(withEventbriteNames.length, 10);
+
+  const withAllOptIn = getDefaultCrawlers({ includeVisitPerth: true, includeEventbrite: true });
+  assert.equal(withAllOptIn.length, 11);
 });
 
 test('Seam 7: runCrawlerHarness targets dlgsc, volleyball_wa, eventbrite, and meetup individually', async () => {

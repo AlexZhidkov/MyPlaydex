@@ -197,15 +197,34 @@ test('Optimizely SSR Adapter throws descriptive errors on HTTP failure or missin
     {
       source: 'visit_perth',
       label: 'Visit Perth',
-      endpoint: 'https://www.visitperth.com/events',
+      endpoint: 'https://www.visitperth.com/events/',
       baseUrl: 'https://www.visitperth.com'
     },
     {
       pageDelayMs: 0,
-      fetchFn: async () => ({ ok: false, status: 503, statusText: 'Service Unavailable' })
+      fetchFn: async () => ({
+        ok: false,
+        status: 503,
+        statusText: 'Service Unavailable',
+        headers: new Headers({
+          server: 'cloudflare',
+          'cf-ray': 'abc123-PER',
+          'retry-after': '30'
+        })
+      })
     }
   );
-  await assert.rejects(() => httpFailCrawler.fetchListings(), /Visit Perth responded with HTTP 503/);
+  await assert.rejects(
+    () => httpFailCrawler.fetchListings(),
+    (err) => {
+      assert.match(err.message, /Visit Perth responded with HTTP 503: Service Unavailable/);
+      assert.match(err.message, /https:\/\/www\.visitperth\.com\/events\/\?page=1/);
+      assert.match(err.message, /server=cloudflare/);
+      assert.match(err.message, /cf-ray=abc123-PER/);
+      assert.match(err.message, /retry-after=30/);
+      return true;
+    }
+  );
 
   const missingScriptCrawler = createOptimizelySsrCrawler(
     {

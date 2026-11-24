@@ -173,10 +173,14 @@ test('Visit Perth Crawler in runCrawlerHarness suppresses /organizers when unatt
     }
   ]);
 
+  const requestedUrls = [];
   const crawler = createVisitPerthCrawler({
     now: TEST_NOW,
     pageDelayMs: 0,
-    fetchFn: async () => ({ ok: true, async text() { return html; } })
+    fetchFn: async (url) => {
+      requestedUrls.push(url);
+      return { ok: true, async text() { return html; } };
+    }
   });
 
   let writtenItems = [];
@@ -199,6 +203,7 @@ test('Visit Perth Crawler in runCrawlerHarness suppresses /organizers when unatt
   });
 
   assert.equal(summary.successfulCrawlers, 1);
+  assert.deepEqual(requestedUrls, ['https://www.visitperth.com/events/?page=1']);
   assert.equal(writtenItems.length, 2);
 
   const unattributed = writtenItems.find(i => i.id === 'visit_perth_unattributed-1');
@@ -214,9 +219,12 @@ test('Visit Perth Crawler in runCrawlerHarness suppresses /organizers when unatt
   assert.equal(attributed._canonicalEntities.organizer.name, 'Perth Wellness Collective');
 });
 
-test('getDefaultCrawlers registers visit_perth under councils group', () => {
+test('getDefaultCrawlers excludes visit_perth by default and registers it under councils group when opted in', () => {
   const defaults = getDefaultCrawlers();
-  const visitPerth = defaults.find(c => c.name === 'visit_perth');
-  assert.ok(visitPerth, 'visit_perth should be registered in getDefaultCrawlers()');
+  assert.equal(defaults.find(c => c.name === 'visit_perth'), undefined);
+
+  const optedIn = getDefaultCrawlers({ includeVisitPerth: true });
+  const visitPerth = optedIn.find(c => c.name === 'visit_perth');
+  assert.ok(visitPerth, 'visit_perth should be registered when includeVisitPerth is true');
   assert.equal(visitPerth.group, 'councils');
 });
