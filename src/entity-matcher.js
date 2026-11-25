@@ -5,7 +5,7 @@
  */
 
 import { slugify } from './sanitizer.js';
-import { calculateDistanceKm } from './discovery-engine.js';
+import { calculateDistanceKm } from '../public/shared/discovery-engine.js';
 
 const LEGAL_SUFFIX_TOKENS = new Set(['inc', 'incorporated', 'ltd', 'pty', 'llc', 'co', 'wa', 'au']);
 const ORGANIZER_STOP_TOKENS = new Set(['of', 'the', 'and', 'for']);

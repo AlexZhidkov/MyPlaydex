@@ -5,9 +5,9 @@
  * merges metadata using deterministic source precedence.
  */
 
-import { calculateDistanceKm } from './discovery-engine.js';
+import { calculateDistanceKm } from '../public/shared/discovery-engine.js';
 import { computeTokenSimilarity, tokenizeNormalized } from './entity-matcher.js';
-import { PERTH_SUBURB_CENTROIDS } from './perth-centroids.js';
+import { PERTH_SUBURB_CENTROIDS } from '../public/shared/perth-centroids.js';
 import { mergeActivityDocuments, slugify } from './sanitizer.js';
 
 const SOURCE_PRIORITY = {

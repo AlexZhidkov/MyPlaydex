@@ -6,7 +6,7 @@ import {
   isBrowserEnvironment,
   createNoopAnalyticsClient,
   createAnalyticsClient
-} from '../src/analytics.js';
+} from '../public/js/analytics.js';
 
 test('sanitizeAnalyticsParams strips nullish/nested values, joins arrays, and truncates strings to 100 chars', () => {
   const longString = 'a'.repeat(120);

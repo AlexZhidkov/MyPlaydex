@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const REPO_ROOT = path.resolve('.');
+const PUBLIC_DIR = path.join(REPO_ROOT, 'public');
 
 test('Seam 4: firebase.json exists and cleanly configures static hosting SPA rewrites', () => {
   const firebaseJsonPath = path.join(REPO_ROOT, 'firebase.json');
@@ -11,19 +12,18 @@ test('Seam 4: firebase.json exists and cleanly configures static hosting SPA rew
 
   const content = JSON.parse(fs.readFileSync(firebaseJsonPath, 'utf8'));
   assert.ok(content.hosting, 'firebase.json must contain hosting block');
-  assert.ok(content.hosting.public, 'hosting block must define public directory');
+  assert.equal(content.hosting.public, 'public', 'hosting block must set public directory to public');
   assert.ok(Array.isArray(content.hosting.rewrites), 'hosting block must define rewrites');
 
   const spaRewrite = content.hosting.rewrites.find(r => r.source === '**' && r.destination === '/index.html');
   assert.ok(spaRewrite, 'Must have wildcard rewrite to /index.html');
 
   assert.equal(content.firestore?.rules, 'firestore.rules', 'firebase.json must register firestore.rules');
-  assert.ok(content.hosting.ignore.includes('firestore.rules'), 'hosting ignore list must exclude firestore.rules');
   assert.ok(fs.existsSync(path.join(REPO_ROOT, 'firestore.rules')), 'firestore.rules must exist at repo root');
 });
 
 test('Seam 4: index.html exists, contains no Leaflet or map tile references, and defines mobile viewport', () => {
-  const indexHtmlPath = path.join(REPO_ROOT, 'index.html');
+  const indexHtmlPath = path.join(PUBLIC_DIR, 'index.html');
   assert.ok(fs.existsSync(indexHtmlPath), 'index.html must exist at web root');
 
   const html = fs.readFileSync(indexHtmlPath, 'utf8');
@@ -53,7 +53,7 @@ test('Seam 4: index.html exists, contains no Leaflet or map tile references, and
 });
 
 test('Seam 4: index.html embeds static Open Graph, Twitter Card metadata and header Suggest link', () => {
-  const indexHtmlPath = path.join(REPO_ROOT, 'index.html');
+  const indexHtmlPath = path.join(PUBLIC_DIR, 'index.html');
   const html = fs.readFileSync(indexHtmlPath, 'utf8');
 
   // Open Graph
@@ -88,8 +88,8 @@ test('Seam 4: index.html embeds static Open Graph, Twitter Card metadata and hea
 });
 
 test('Seam 4: Responsive header hides Suggest and Filter text labels on small screens', () => {
-  const indexHtmlPath = path.join(REPO_ROOT, 'index.html');
-  const stylesCssPath = path.join(REPO_ROOT, 'src', 'styles.css');
+  const indexHtmlPath = path.join(PUBLIC_DIR, 'index.html');
+  const stylesCssPath = path.join(PUBLIC_DIR, 'styles.css');
 
   const html = fs.readFileSync(indexHtmlPath, 'utf8');
   const css = fs.readFileSync(stylesCssPath, 'utf8');
@@ -138,9 +138,9 @@ test('Seam 4: firestore.rules grants public read and denies client write on acti
 });
 
 test('Seam 2 (Issue #13): index.html renders 3-tab switcher (Activities | Organizers | Venues) above discovery feed with accessible tab semantics', () => {
-  const indexHtmlPath = path.join(REPO_ROOT, 'index.html');
+  const indexHtmlPath = path.join(PUBLIC_DIR, 'index.html');
   const html = fs.readFileSync(indexHtmlPath, 'utf8');
-  const css = fs.readFileSync(path.join(REPO_ROOT, 'src', 'styles.css'), 'utf8');
+  const css = fs.readFileSync(path.join(PUBLIC_DIR, 'styles.css'), 'utf8');
 
   assert.ok(html.includes('role="tablist"'), 'index.html must include a tablist container');
   assert.ok(html.includes('data-tab="activities"') && html.includes('Activities'), 'Must include Activities tab');
@@ -158,7 +158,7 @@ test('Seam 2 (Issue #13): index.html renders 3-tab switcher (Activities | Organi
 });
 
 test('Seam 5: styles.css delivers responsive filter views and location gate for mobile screens', () => {
-  const css = fs.readFileSync(path.join(REPO_ROOT, 'src', 'styles.css'), 'utf8');
+  const css = fs.readFileSync(path.join(PUBLIC_DIR, 'styles.css'), 'utf8');
 
   // Verify body overflow-x guard and modal-open lock
   assert.match(css, /overflow-x:\s*hidden/, 'CSS must protect against horizontal overflow');
@@ -180,7 +180,7 @@ test('Seam 5: styles.css delivers responsive filter views and location gate for 
 });
 
 test('Seam 6: styles.css delivers responsive venue cards and feed container without horizontal blowout', () => {
-  const css = fs.readFileSync(path.join(REPO_ROOT, 'src', 'styles.css'), 'utf8');
+  const css = fs.readFileSync(path.join(PUBLIC_DIR, 'styles.css'), 'utf8');
 
   // Verify grid tracks use minmax(0, 1fr) to prevent blowout from unwrapped content
   assert.match(css, /grid-template-columns:\s*minmax\(0,\s*1fr\)/, 'feed-container must use minmax(0, 1fr) to prevent overflow');
@@ -197,8 +197,8 @@ test('Seam 6: styles.css delivers responsive venue cards and feed container with
 });
 
 test('SEO assets (og-card.png, robots.txt, sitemap.xml) exist and are deployable', () => {
-  const ogCardPath = path.join(REPO_ROOT, 'og-card.png');
-  assert.ok(fs.existsSync(ogCardPath), 'og-card.png must exist at repo root');
+  const ogCardPath = path.join(PUBLIC_DIR, 'og-card.png');
+  assert.ok(fs.existsSync(ogCardPath), 'og-card.png must exist at web root');
   const pngBuffer = fs.readFileSync(ogCardPath);
   assert.equal(pngBuffer.subarray(0, 8).toString('hex'), '89504e470d0a1a0a', 'og-card.png must be a valid PNG');
   const width = pngBuffer.readUInt32BE(16);
@@ -206,18 +206,18 @@ test('SEO assets (og-card.png, robots.txt, sitemap.xml) exist and are deployable
   assert.equal(width, 1200, 'og-card.png width must be 1200px');
   assert.equal(height, 630, 'og-card.png height must be 630px');
 
-  const html = fs.readFileSync(path.join(REPO_ROOT, 'index.html'), 'utf8');
+  const html = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
   assert.ok(html.includes('<meta property="og:image:width" content="1200" />'), 'index.html must declare og:image:width');
   assert.ok(html.includes('<meta property="og:image:height" content="630" />'), 'index.html must declare og:image:height');
 
-  const robotsPath = path.join(REPO_ROOT, 'robots.txt');
-  assert.ok(fs.existsSync(robotsPath), 'robots.txt must exist at repo root');
+  const robotsPath = path.join(PUBLIC_DIR, 'robots.txt');
+  assert.ok(fs.existsSync(robotsPath), 'robots.txt must exist at web root');
   const robots = fs.readFileSync(robotsPath, 'utf8');
   assert.match(robots, /^Allow:\s*\/$/m, 'robots.txt must allow crawling /');
   assert.match(robots, /^Sitemap:\s*https:\/\/myplaydex\.com\.au\/sitemap\.xml$/m, 'robots.txt must reference canonical sitemap.xml');
 
-  const sitemapPath = path.join(REPO_ROOT, 'sitemap.xml');
-  assert.ok(fs.existsSync(sitemapPath), 'sitemap.xml must exist at repo root');
+  const sitemapPath = path.join(PUBLIC_DIR, 'sitemap.xml');
+  assert.ok(fs.existsSync(sitemapPath), 'sitemap.xml must exist at web root');
   const sitemap = fs.readFileSync(sitemapPath, 'utf8');
   assert.ok(sitemap.includes('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'), 'sitemap.xml must use sitemaps.org schema');
   assert.ok(sitemap.includes('<loc>https://myplaydex.com.au/</loc>'), 'sitemap.xml must include canonical homepage URL');
@@ -284,13 +284,13 @@ test('firebase.json configures HTTP security headers globally while preserving a
 });
 
 test('Favicon and web manifest assets exist, match dimensions, and are linked in index.html', () => {
-  const svgPath = path.join(REPO_ROOT, 'favicon.svg');
-  assert.ok(fs.existsSync(svgPath), 'favicon.svg must exist at repo root');
+  const svgPath = path.join(PUBLIC_DIR, 'favicon.svg');
+  assert.ok(fs.existsSync(svgPath), 'favicon.svg must exist at web root');
   const svg = fs.readFileSync(svgPath, 'utf8');
   assert.ok(svg.includes('<svg') && svg.includes('#0284c7'), 'favicon.svg must be an SVG using brand color #0284c7');
 
-  const icoPath = path.join(REPO_ROOT, 'favicon.ico');
-  assert.ok(fs.existsSync(icoPath), 'favicon.ico must exist at repo root');
+  const icoPath = path.join(PUBLIC_DIR, 'favicon.ico');
+  assert.ok(fs.existsSync(icoPath), 'favicon.ico must exist at web root');
   const icoBuffer = fs.readFileSync(icoPath);
   assert.equal(icoBuffer.subarray(0, 4).toString('hex'), '00000100', 'favicon.ico must have valid ICO magic bytes');
 
@@ -300,23 +300,23 @@ test('Favicon and web manifest assets exist, match dimensions, and are linked in
     ['icon-512.png', 512, 512]
   ];
   for (const [filename, expectedWidth, expectedHeight] of pngSpecs) {
-    const filePath = path.join(REPO_ROOT, filename);
-    assert.ok(fs.existsSync(filePath), `${filename} must exist at repo root`);
+    const filePath = path.join(PUBLIC_DIR, filename);
+    assert.ok(fs.existsSync(filePath), `${filename} must exist at web root`);
     const buf = fs.readFileSync(filePath);
     assert.equal(buf.subarray(0, 8).toString('hex'), '89504e470d0a1a0a', `${filename} must be a valid PNG`);
     assert.equal(buf.readUInt32BE(16), expectedWidth, `${filename} width must be ${expectedWidth}px`);
     assert.equal(buf.readUInt32BE(20), expectedHeight, `${filename} height must be ${expectedHeight}px`);
   }
 
-  const manifestPath = path.join(REPO_ROOT, 'site.webmanifest');
-  assert.ok(fs.existsSync(manifestPath), 'site.webmanifest must exist at repo root');
+  const manifestPath = path.join(PUBLIC_DIR, 'site.webmanifest');
+  assert.ok(fs.existsSync(manifestPath), 'site.webmanifest must exist at web root');
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   assert.equal(manifest.theme_color, '#0284c7', 'site.webmanifest must set theme_color to #0284c7');
   const iconSrcs = (manifest.icons || []).map((icon) => icon.src);
   assert.ok(iconSrcs.includes('/icon-192.png'), 'site.webmanifest must include /icon-192.png');
   assert.ok(iconSrcs.includes('/icon-512.png'), 'site.webmanifest must include /icon-512.png');
 
-  const html = fs.readFileSync(path.join(REPO_ROOT, 'index.html'), 'utf8');
+  const html = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
   assert.ok(html.includes('<meta name="theme-color" content="#0284c7" />'), 'index.html must include theme-color meta');
   assert.ok(html.includes('<link rel="icon" href="/favicon.ico" sizes="48x48" />'), 'index.html must link favicon.ico');
   assert.ok(html.includes('<link rel="icon" href="/favicon.svg" type="image/svg+xml" />'), 'index.html must link favicon.svg');

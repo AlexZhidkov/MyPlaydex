@@ -8,7 +8,7 @@ import {
   DAY_NAMES,
   parseDateInput,
   resolveNextWeeklyOccurrence,
-} from "./discovery-engine.js";
+} from "../shared/discovery-engine.js";
 
 export const CATEGORY_ICONS = {
   sports: "🏅",

@@ -5,7 +5,7 @@
  */
 
 import { slugify, normalizeSport, determineIsFree } from '../sanitizer.js';
-import { PERTH_SUBURB_CENTROIDS, getSuburbByPostcodeOrName } from '../perth-centroids.js';
+import { PERTH_SUBURB_CENTROIDS, getSuburbByPostcodeOrName } from '../../public/shared/perth-centroids.js';
 
 export const MEETUP_PERTH_SPORTS_URL = 'https://www.meetup.com/find/?location=au--perth&categoryId=482';
 export const DEFAULT_PERTH_COORDINATES = { lat: -31.9505, lng: 115.8605 };

@@ -16,7 +16,7 @@ import {
   createSuggestActivityMailtoUrl,
   createSuggestEditMailtoUrl,
   sanitizeHttpUrl
-} from '../src/discovery-ui.js';
+} from '../public/js/discovery-ui.js';
 
 test('Seam 3: createOutboundDirectionsUrl generates valid Google Maps query URL per ADR 0002', () => {
   const venue = {
@@ -137,7 +137,7 @@ test('Seam 3: Cross-timezone runtimes (Sydney, London, New York, UTC) preserve A
   const timezones = ['Australia/Sydney', 'Europe/London', 'America/New_York', 'UTC'];
   const script = `
     import assert from 'node:assert/strict';
-    import { formatScheduleText, renderActivityCard } from './src/discovery-ui.js';
+    import { formatScheduleText, renderActivityCard } from './public/js/discovery-ui.js';
 
     const canonical = formatScheduleText({
       start_date: '2026-11-18',
@@ -408,7 +408,7 @@ test('Seam 2: renderActivityCard and createSuggestEditMailtoUrl handle Unverifie
   assert.ok(verifiedHtml.includes('tabindex="0"'), 'Verified card must have tabindex="0"');
 
   // 6. styles.css defines non-clickable styling for .activity-card-unverified
-  const css = fs.readFileSync(path.resolve('src/styles.css'), 'utf8');
+  const css = fs.readFileSync(path.resolve('public/styles.css'), 'utf8');
   assert.match(css, /\.activity-card-unverified\s*\{[^}]*cursor:\s*default/s, 'styles.css must set cursor: default on .activity-card-unverified');
   assert.match(css, /\.activity-card-unverified:hover\s*\{[^}]*transform:\s*none/s, 'styles.css must disable hover lift on .activity-card-unverified:hover');
 });
@@ -889,7 +889,7 @@ test('Seam 3: formatScheduleText rolls past-today weekly sessions to next week i
   const timezones = ['Australia/Sydney', 'Europe/London', 'America/New_York', 'UTC'];
   const script = `
     import assert from 'node:assert/strict';
-    import { formatScheduleText } from './src/discovery-ui.js';
+    import { formatScheduleText } from './public/js/discovery-ui.js';
     const sched = { recurrence: 'weekly', day_of_week: 3, start_time: '09:00', end_time: '11:00' };
     assert.equal(
       formatScheduleText(sched, new Date('2026-11-11T02:30:00.000Z')),

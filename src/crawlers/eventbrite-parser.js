@@ -11,8 +11,8 @@ import {
   determineIsFree,
   parseSchedule
 } from '../sanitizer.js';
-import { PERTH_SUBURB_CENTROIDS, getSuburbByPostcodeOrName } from '../perth-centroids.js';
-import { calculateDistanceKm, isActivityExpired } from '../discovery-engine.js';
+import { PERTH_SUBURB_CENTROIDS, getSuburbByPostcodeOrName } from '../../public/shared/perth-centroids.js';
+import { calculateDistanceKm, isActivityExpired } from '../../public/shared/discovery-engine.js';
 
 export const PERTH_CENTER = { lat: -31.9505, lng: 115.8605 };
 export const MAX_PERTH_RADIUS_KM = 85;

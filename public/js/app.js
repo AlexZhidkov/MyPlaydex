@@ -5,9 +5,9 @@
  * Outbound Google Maps Navigation, and 1-tap empty state recovery.
  */
 
-import { createDiscoveryStore, extractListingCoordinates, normalizeDiscoveryTab } from './discovery-engine.js';
+import { createDiscoveryStore, extractListingCoordinates, normalizeDiscoveryTab } from '../shared/discovery-engine.js';
 import { createAnalyticsClient, createNoopAnalyticsClient } from './analytics.js';
-import { searchSuburbs, getSuburbByPostcodeOrName, getSuburbBySlugOrName, suburbNameToSlug, findNearestSuburb } from './perth-centroids.js';
+import { searchSuburbs, getSuburbByPostcodeOrName, getSuburbBySlugOrName, suburbNameToSlug, findNearestSuburb } from '../shared/perth-centroids.js';
 import {
   renderActivityCard,
   renderOrganizerCard,

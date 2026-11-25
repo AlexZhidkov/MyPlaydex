@@ -20,7 +20,7 @@ import {
   fetchOrganizersFromFirestore,
   fetchVenuesFromFirestore,
   initApp
-} from '../src/app.js';
+} from '../public/js/app.js';
 
 test('App Storage: saveLocation and getSavedLocation persist and retrieve valid coordinates', () => {
   // Mock localStorage in Node
@@ -1359,8 +1359,8 @@ test('Firestore Client (Issue #16): fetchOrganizersFromFirestore and fetchVenues
   assert.equal(activities.length, 110, 'Activities must return all 110 documents across pages');
 });
 
-test('Firestore Client: src/app.js has no MOCK_PERTH_ACTIVITIES fallback and loads /activities asynchronously from Firestore', async () => {
-  const appJsSource = fs.readFileSync(path.resolve('src/app.js'), 'utf8');
+test('Firestore Client: public/js/app.js has no MOCK_PERTH_ACTIVITIES fallback and loads /activities asynchronously from Firestore', async () => {
+  const appJsSource = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
   assert.ok(!appJsSource.includes('MOCK_PERTH_ACTIVITIES'), 'src/app.js must not reference MOCK_PERTH_ACTIVITIES');
   assert.ok(!appJsSource.includes('mock-perth-activities.js'), 'src/app.js must not import mock-perth-activities.js');
 

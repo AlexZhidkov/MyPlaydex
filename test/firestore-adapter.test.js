@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Timestamp } from 'firebase-admin/firestore';
 import { createFirestoreAdapter } from '../src/firestore-adapter.js';
-import { parseFirestoreDocument } from '../src/app.js';
+import { parseFirestoreDocument } from '../public/js/app.js';
 
 test('Seam 2: batchUpsertActivities runs safely in dryRun mode without Firestore instance', async () => {
   const adapter = createFirestoreAdapter({ dryRun: true });

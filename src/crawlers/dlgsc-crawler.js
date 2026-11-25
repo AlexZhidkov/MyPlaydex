@@ -7,7 +7,7 @@
 import { slugify, normalizeSubcategories } from '../sanitizer.js';
 import { normalizeFacebookUrl } from '../url-utils.js';
 import { encodeGeohash } from '../geohash.js';
-import { calculateDistanceKm } from '../discovery-engine.js';
+import { calculateDistanceKm } from '../../public/shared/discovery-engine.js';
 
 export const DLGSC_ENDPOINT = 'https://kidsport.dlgsc.wa.gov.au/api/find-a-club-search/';
 export const PERTH_CENTROID = { lat: -31.9505, lng: 115.8605 };

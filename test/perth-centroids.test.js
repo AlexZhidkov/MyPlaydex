@@ -6,7 +6,7 @@ import {
   getSuburbByPostcodeOrName,
   suburbNameToSlug,
   getSuburbBySlugOrName
-} from '../src/perth-centroids.js';
+} from '../public/shared/perth-centroids.js';
 
 test('Seam 2: PERTH_SUBURB_CENTROIDS contains comprehensive Greater Perth suburbs with valid coordinates', () => {
   assert.ok(Array.isArray(PERTH_SUBURB_CENTROIDS));

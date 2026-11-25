@@ -17,7 +17,7 @@ import {
   isActivityExpired,
   isActivityUpcoming,
   resolveNextWeeklyOccurrence
-} from '../src/discovery-engine.js';
+} from '../public/shared/discovery-engine.js';
 
 const mockActivities = [
   {

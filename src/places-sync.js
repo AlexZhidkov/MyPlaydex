@@ -8,10 +8,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DEFAULT_LOG_DIR, resolveCliLogger } from './crawler-reporter.js';
-import { calculateDistanceKm } from './discovery-engine.js';
+import { calculateDistanceKm } from '../public/shared/discovery-engine.js';
 import { createFileCacheStore } from './file-cache.js';
 import { createFirestoreAdapter, initFirestoreFromEnv } from './firestore-adapter.js';
-import { PERTH_SUBURB_CENTROIDS } from './perth-centroids.js';
+import { PERTH_SUBURB_CENTROIDS } from '../public/shared/perth-centroids.js';
 import { normalizeSubcategories, sanitizeOrganizer, sanitizeVenue } from './sanitizer.js';
 
 export { createFileCacheStore };

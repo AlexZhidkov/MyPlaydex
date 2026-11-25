@@ -4,10 +4,10 @@
  * shared between Facebook local sync and the crawler harness.
  */
 
-import { calculateDistanceKm } from './discovery-engine.js';
+import { calculateDistanceKm } from '../public/shared/discovery-engine.js';
 import { matchOrganizerCandidate, matchVenueByNameOnly } from './entity-matcher.js';
 import { encodeGeohash } from './geohash.js';
-import { PERTH_SUBURB_CENTROIDS } from './perth-centroids.js';
+import { PERTH_SUBURB_CENTROIDS } from '../public/shared/perth-centroids.js';
 
 export const PERTH_CENTROID = { lat: -31.9505, lng: 115.8605 };
 export const MAX_PERTH_RADIUS_KM = 85;
