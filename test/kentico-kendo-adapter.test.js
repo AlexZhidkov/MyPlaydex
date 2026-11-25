@@ -263,3 +263,63 @@ test('Kentico/Kendo adapter derives deterministic source_id from canonical URL o
   assert.ok(!/^\d+$/.test(a1.source_id));
   assert.ok(!/^\d+$/.test(b1.source_id));
 });
+
+test('Kentico/Kendo adapter emits empty cost when upstream Cost is absent instead of defaulting to Free', async () => {
+  const now = new Date('2026-11-01T08:00:00+08:00');
+  const crawler = createKenticoKendoCrawler(BASE_CONFIG, {
+    now,
+    pageDelayMs: 0,
+    fetchFn: async () => ({
+      ok: true,
+      async json() {
+        return {
+          Total: 3,
+          Data: [
+            {
+              NodeGUID: 'guid-unknown-cost',
+              ArticleTitle: 'Community Tennis Social',
+              ArticleCategories: 'Sports',
+              ArticleAddressTitle: 'Civic Tennis Club',
+              EventDisplayDate: '2026-11-18T09:00:00+08:00',
+              PageUrl: '/events/tennis-social'
+            },
+            {
+              NodeGUID: 'guid-explicit-free',
+              ArticleTitle: 'Parkrun',
+              ArticleCategories: 'Sports',
+              ArticleAddressTitle: 'Civic Park',
+              Cost: 'Free',
+              EventDisplayDate: '2026-11-19T08:00:00+08:00',
+              PageUrl: '/events/parkrun'
+            },
+            {
+              NodeGUID: 'guid-explicit-paid',
+              ArticleTitle: 'Pottery Workshop',
+              ArticleCategories: 'Craft & Hobbies',
+              ArticleAddressTitle: 'Arts Hub',
+              Cost: '$25',
+              EventDisplayDate: '2026-11-20T10:00:00+08:00',
+              PageUrl: '/events/pottery-workshop'
+            }
+          ]
+        };
+      }
+    })
+  });
+
+  const listings = await crawler.fetchListings();
+  assert.equal(listings.length, 3);
+
+  const unknown = listings.find(l => l.source_id === 'guid-unknown-cost');
+  assert.equal(unknown.display_price, '');
+  assert.equal(unknown.cost_description, '');
+  assert.equal(unknown.is_free, false);
+
+  const free = listings.find(l => l.source_id === 'guid-explicit-free');
+  assert.equal(free.display_price, 'Free');
+  assert.equal(free.is_free, true);
+
+  const paid = listings.find(l => l.source_id === 'guid-explicit-paid');
+  assert.equal(paid.display_price, '$25');
+  assert.equal(paid.is_free, false);
+});

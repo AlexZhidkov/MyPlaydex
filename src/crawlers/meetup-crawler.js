@@ -204,7 +204,7 @@ export function parseMeetupCost(event) {
   const isFreeFromText = determineIsFree(event.description || '', event.isFree);
   return {
     isFree: isFreeFromText,
-    displayPrice: isFreeFromText ? 'Free' : (event.costDescription || 'Free')
+    displayPrice: isFreeFromText ? 'Free' : (event.costDescription || '')
   };
 }
 

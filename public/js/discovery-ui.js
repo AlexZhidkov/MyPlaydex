@@ -498,9 +498,16 @@ function renderSuggestEditTier(editMailtoUrl, titleText) {
 export function renderActivityCard(activity = {}, referenceDate = new Date()) {
   const sportBadges = renderSportBadges(activity);
   const isFree = activity.cost
-    ? activity.cost.is_free
+    ? Boolean(activity.cost.is_free)
     : Boolean(activity.is_free);
-  const costLabel = activity.cost?.display_price || (isFree ? "Free" : "$");
+  const rawDisplayPrice =
+    typeof activity.cost?.display_price === "string"
+      ? activity.cost.display_price.trim()
+      : "";
+  const costLabel = rawDisplayPrice || (isFree ? "Free" : "");
+  const costBadge = costLabel
+    ? `<span class="badge badge-cost ${isFree ? "badge-free" : ""}">${escapeHtml(costLabel)}</span>`
+    : "";
   const distanceBadge = renderDistanceBadge(activity);
 
   const scheduleText = formatScheduleText(activity.schedule, referenceDate);
@@ -525,7 +532,7 @@ export function renderActivityCard(activity = {}, referenceDate = new Date()) {
       <!-- Tier 1: Metadata line -->
       <div class="card-tier card-tier-1">
         ${sportBadges}
-        <span class="badge badge-cost ${isFree ? "badge-free" : ""}">${escapeHtml(costLabel)}</span>
+        ${costBadge}
         ${unverifiedBadge}
         ${distanceBadge}
       </div>

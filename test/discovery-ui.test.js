@@ -1002,4 +1002,40 @@ test('URL Scheme Allowlist: sanitizeHttpUrl and card renderers reject non-http(s
   assert.ok(!/javascript:/i.test(jsVenueHtml), 'Rendered venue HTML must not contain javascript: scheme');
 });
 
+test('renderActivityCard omits cost badge when cost is unknown, and preserves Free and priced badges', () => {
+  const baseActivity = {
+    id: 'act_cost_test',
+    title: 'Social Badminton',
+    subcategory: 'badminton',
+    venue: { name: 'Kingsway Stadium' },
+    schedule: { start_date: '2026-11-20', start_time: '19:00' },
+    source_url: 'https://example.com/badminton'
+  };
+
+  const unknownEmptyHtml = renderActivityCard({
+    ...baseActivity,
+    cost: { is_free: false, display_price: '' }
+  });
+  assert.ok(!unknownEmptyHtml.includes('badge-cost'), 'Unknown cost (empty display_price, is_free: false) must omit badge-cost');
+  assert.ok(!unknownEmptyHtml.includes('>$<'), 'Unknown cost must not render $ fallback');
+
+  const unknownMissingCostHtml = renderActivityCard({ ...baseActivity });
+  assert.ok(!unknownMissingCostHtml.includes('badge-cost'), 'Missing cost object must omit badge-cost');
+
+  const freeHtml = renderActivityCard({
+    ...baseActivity,
+    cost: { is_free: true, display_price: 'Free' }
+  });
+  assert.ok(freeHtml.includes('badge-cost badge-free'), 'Explicit Free activity must render badge-free');
+  assert.ok(freeHtml.includes('>Free<'), 'Explicit Free activity must render Free label');
+
+  const paidHtml = renderActivityCard({
+    ...baseActivity,
+    cost: { is_free: false, display_price: '$15' }
+  });
+  assert.ok(paidHtml.includes('badge-cost'), 'Priced activity must render badge-cost');
+  assert.ok(!paidHtml.includes('badge-free'), 'Priced activity must not render badge-free');
+  assert.ok(paidHtml.includes('>$15<'), 'Priced activity must render price label');
+});
+
 

@@ -109,7 +109,7 @@ function mapKenticoRecord(item, index, config) {
   const venueName = extractKenticoVenueName(item);
   const address = (item.ArticleAddress || item.Address || venueName || '').trim();
   const url = resolveUrl(config.baseUrl, item.PageUrl);
-  const costStr = item.Cost || 'Free';
+  const costStr = typeof item.Cost === 'string' ? item.Cost.trim() : '';
   const rawStart = extractKenticoStartDate(item);
   const rawEnd = item.EventEndDate || item.EndDate || null;
   const organizer = resolveOrganizer(item, config.defaultOrganizer);

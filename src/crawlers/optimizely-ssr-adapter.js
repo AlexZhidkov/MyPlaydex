@@ -99,7 +99,7 @@ function resolveCostString(props, categoryNames) {
   if (hasFreeTag) return 'Free';
   const hasTicketedTag = categoryNames.some(tag => /^ticketed$/i.test(tag));
   if (hasTicketedTag) return 'Ticketed';
-  return 'Free';
+  return '';
 }
 
 /**

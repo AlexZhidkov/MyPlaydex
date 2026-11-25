@@ -385,3 +385,84 @@ test('Optimizely SSR Adapter derives deterministic source_id from canonical URL 
   assert.ok(!/^\d+$/.test(a1.source_id));
   assert.ok(!/^\d+$/.test(b1.source_id));
 });
+
+test('Optimizely SSR Adapter emits empty cost when Cost and Free/Ticketed tags are absent', async () => {
+  const payload = {
+    schemaVersion: 1,
+    results: {
+      totalRecords: 3,
+      page: 1,
+      pageSize: 24,
+      results: [
+        {
+          contentGuid: 'guid-unknown-cost',
+          properties: {
+            Name: 'Evening Basketball Scrimmage',
+            Url: '/events/basketball-scrimmage',
+            Categories: [{ name: 'Sports' }],
+            Location: 'Perth Arena',
+            EventListing: { dateParts: [{ isoDateTime: '2026-11-22' }] },
+            Latitude: -31.95,
+            Longitude: 115.85
+          }
+        },
+        {
+          contentGuid: 'guid-free-tag',
+          properties: {
+            Name: 'Free Tai Chi',
+            Url: '/events/free-tai-chi',
+            Categories: [{ name: 'Health' }, { name: 'Free' }],
+            Location: 'Supreme Court Gardens',
+            EventListing: { dateParts: [{ isoDateTime: '2026-11-23' }] },
+            Latitude: -31.956,
+            Longitude: 115.861
+          }
+        },
+        {
+          contentGuid: 'guid-explicit-cost',
+          properties: {
+            Name: 'Pottery Class',
+            Url: '/events/pottery-class',
+            Cost: '$30',
+            Categories: [{ name: 'Arts' }],
+            Location: 'Northbridge Studio',
+            EventListing: { dateParts: [{ isoDateTime: '2026-11-24' }] },
+            Latitude: -31.948,
+            Longitude: 115.858
+          }
+        }
+      ]
+    }
+  };
+
+  const html = wrapAppStateHtml(payload);
+  const crawler = createOptimizelySsrCrawler(
+    {
+      source: 'visit_perth',
+      label: 'Visit Perth',
+      endpoint: 'https://www.visitperth.com/events',
+      baseUrl: 'https://www.visitperth.com'
+    },
+    {
+      now: TEST_NOW,
+      pageDelayMs: 0,
+      fetchFn: async () => ({ ok: true, async text() { return html; } })
+    }
+  );
+
+  const items = await crawler.fetchListings();
+  assert.equal(items.length, 3);
+
+  const unknown = items.find(i => i.source_id === 'guid-unknown-cost');
+  assert.equal(unknown.display_price, '');
+  assert.equal(unknown.cost_description, '');
+  assert.equal(unknown.is_free, false);
+
+  const free = items.find(i => i.source_id === 'guid-free-tag');
+  assert.equal(free.display_price, 'Free');
+  assert.equal(free.is_free, true);
+
+  const paid = items.find(i => i.source_id === 'guid-explicit-cost');
+  assert.equal(paid.display_price, '$30');
+  assert.equal(paid.is_free, false);
+});

@@ -514,3 +514,50 @@ test('Seam 9 Regression: Meetup Crawler targets categoryId=482, resolves venues 
   assert.equal(resolveMeetupVenueCoordinates({ name: 'Online event', city: 'Perth' }), null);
   assert.equal(resolveMeetupVenueCoordinates({ name: 'Bierhalle', city: 'hobart' }), null);
 });
+
+test('Meetup crawler emits empty cost when fee, isFree, and free-text are absent instead of defaulting to Free', async () => {
+  const html = `
+    <html>
+      <head>
+        <script id="__NEXT_DATA__" type="application/json">
+        {
+          "props": {
+            "pageProps": {
+              "events": [
+                {
+                  "id": "meetup-unknown-cost",
+                  "title": "Perth Social Basketball",
+                  "description": "Casual half-court games every Thursday.",
+                  "dateTime": "2026-11-26T18:30:00+08:00",
+                  "eventUrl": "https://www.meetup.com/perth-hoops/events/meetup-unknown-cost/",
+                  "venue": {
+                    "name": "Loftus Recreation Centre",
+                    "address": "99 Loftus St, Leederville",
+                    "lat": -31.936,
+                    "lng": 115.844
+                  },
+                  "group": {
+                    "name": "Perth Hoops",
+                    "urlname": "perth-hoops"
+                  }
+                }
+              ]
+            }
+          }
+        }
+        </script>
+      </head>
+      <body></body>
+    </html>
+  `;
+
+  const crawler = createMeetupCrawler({
+    fetchFn: async () => ({ ok: true, status: 200, async text() { return html; } })
+  });
+
+  const listings = await crawler.fetchListings();
+  assert.equal(listings.length, 1);
+  assert.equal(listings[0].display_price, '');
+  assert.equal(listings[0].cost_description, '');
+  assert.equal(listings[0].is_free, false);
+});

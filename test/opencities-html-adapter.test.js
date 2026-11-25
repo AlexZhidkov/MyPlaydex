@@ -108,7 +108,8 @@ test('Slice 1: parses semantic OpenCities and Granicus HTML cards without detail
   assert.equal(listings[1].category, 'family');
   assert.equal(listings[1].organizer.name, 'Test Council');
   assert.equal(listings[1].coordinates, undefined);
-  assert.equal(listings[1].is_free, true);
+  assert.equal(listings[1].display_price, '');
+  assert.equal(listings[1].is_free, false);
 
   const sanitized = sanitizeActivity(listings[0]);
   assert.equal(sanitized.id, 'test_opencities_oc-101');
@@ -682,6 +683,62 @@ test('Regression: preserves .event-time with date-only <time> and selects enclos
   assert.equal(second.schedule.start_date, '2026-11-21');
   assert.equal(second.schedule.start_time, '18:00');
   assert.equal(second.schedule.end_time, '20:30');
+});
+
+test('OpenCities HTML adapter emits empty cost when upstream cost and Free/Ticketed tags are absent', async () => {
+  const html = `<!DOCTYPE html><html><body>
+    <section class="oc-events-listing">
+      <article data-event-id="oc-unknown">
+        <h2 class="list-item-title"><a href="/events/unknown-cost">Community Yoga Session</a></h2>
+        <div class="event-dates"><time datetime="2026-11-20T09:00:00+08:00">20 Nov 2026</time></div>
+        <div class="location-info">Civic Park</div>
+        <div class="event-categories">Health</div>
+      </article>
+      <article data-event-id="oc-free">
+        <h2 class="list-item-title"><a href="/events/free-tag">Free Walking Group</a></h2>
+        <div class="event-dates"><time datetime="2026-11-21T09:00:00+08:00">21 Nov 2026</time></div>
+        <div class="location-info">Civic Park</div>
+        <div class="event-categories">Free</div>
+      </article>
+      <article data-event-id="oc-paid">
+        <h2 class="list-item-title"><a href="/events/paid-cost">Pottery Class</a></h2>
+        <div class="event-dates"><time datetime="2026-11-22T09:00:00+08:00">22 Nov 2026</time></div>
+        <div class="location-info">Arts Hub</div>
+        <div class="event-cost">$15</div>
+      </article>
+    </section>
+  </body></html>`;
+
+  const crawler = createOpenCitiesHtmlCrawler(
+    {
+      source: 'test_opencities_cost',
+      label: 'Test OpenCities Cost',
+      endpoint: 'https://example.wa.gov.au/Events-Directory',
+      baseUrl: 'https://example.wa.gov.au',
+      hydrateDetail: 'never'
+    },
+    {
+      now: TEST_NOW,
+      pageDelayMs: 0,
+      fetchFn: async () => ({ ok: true, async text() { return html; } })
+    }
+  );
+
+  const items = await crawler.fetchListings();
+  assert.equal(items.length, 3);
+
+  const unknown = items.find(i => i.source_id === 'oc-unknown');
+  assert.equal(unknown.display_price, '');
+  assert.equal(unknown.cost_description, '');
+  assert.equal(unknown.is_free, false);
+
+  const free = items.find(i => i.source_id === 'oc-free');
+  assert.equal(free.display_price, 'Free');
+  assert.equal(free.is_free, true);
+
+  const paid = items.find(i => i.source_id === 'oc-paid');
+  assert.equal(paid.display_price, '$15');
+  assert.equal(paid.is_free, false);
 });
 
 

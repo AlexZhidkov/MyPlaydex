@@ -752,7 +752,7 @@ function resolveCardOrganizer(card, defaultOrganizer) {
   return undefined;
 }
 
-function resolveCostString(explicitCost, tags, defaultCost = 'Free') {
+function resolveCostString(explicitCost, tags, defaultCost = '') {
   if (typeof explicitCost === 'string' && explicitCost.trim()) {
     return explicitCost.trim();
   }
@@ -798,7 +798,7 @@ function mapCardToRawActivity(card, config, scheduleTimes = null) {
   const { category, subcategory } = resolveCouncilCategoryAndSubcategory(tags, card.title);
   const { startTime, endTime } = scheduleTimes || buildScheduleStrings(card);
   const organizer = resolveCardOrganizer(card, config.defaultOrganizer);
-  const costStr = resolveCostString(card.cost, tags, config.defaultCost ?? 'Free');
+  const costStr = resolveCostString(card.cost, tags, config.defaultCost ?? '');
   const url = card.url || config.endpoint;
 
   return {
