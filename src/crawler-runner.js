@@ -25,6 +25,7 @@ import { createBassendeanCrawler } from './crawlers/bassendean-crawler.js';
 import { createNedlandsCrawler } from './crawlers/nedlands-crawler.js';
 import { createFremantleCrawler } from './crawlers/fremantle-crawler.js';
 import { createJoondalupCrawler } from './crawlers/joondalup-crawler.js';
+import { createSwanCrawler } from './crawlers/swan-crawler.js';
 import { createDlgscCrawler } from './crawlers/dlgsc-crawler.js';
 import { createVolleyballWaCrawler } from './crawlers/volleyball-wa-crawler.js';
 import { createEventbriteCrawler } from './crawlers/eventbrite-crawler.js';
@@ -353,6 +354,7 @@ const DEFAULT_CRAWLER_FACTORIES = [
   createNedlandsCrawler,
   createFremantleCrawler,
   createJoondalupCrawler,
+  createSwanCrawler,
   createDlgscCrawler,
   createVolleyballWaCrawler,
   createMeetupCrawler,

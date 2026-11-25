@@ -348,3 +348,80 @@ test('Slice 4: Filters civic/admin notices, online-only items, Expired Activity 
   });
   await assert.rejects(() => errorCrawler.fetchListings(), /HTTP 503/);
 });
+
+test('Slice 5: Extracts data-docid, description paragraphs, feature Free badges, and shorthand recurring schedules', async () => {
+  const mockFetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        htmlResult: `
+          <div class="hotboxes-wrapper">
+            <article class="card" data-docid="swan-doc-101">
+              <a href="/explore-and-do/events/youth-drop-in" class="hotbox">
+                <div class="card-body">
+                  <div class="tags"><span>Youth</span></div>
+                  <h4 class="card-title">Midland Youth Drop-In</h4>
+                  <p class="card-text">Weekly hangout with games, snacks, and sports activities.</p>
+                  <span class="feature">Free</span>
+                  <ul class="fa-ul">
+                    <li><span class="fa-li"><i class="fa-regular fa-calendar"></i></span>Monday, weekly. 3 - 5pm</li>
+                    <li><span class="fa-li"><i class="fa-regular fa-location-smile"></i></span>Midland Youth Centre</li>
+                  </ul>
+                </div>
+              </a>
+            </article>
+            <article class="card">
+              <a href="/explore-and-do/events/pottery-workshop" class="hotbox" data-docid="swan-doc-202">
+                <div class="card-body">
+                  <div class="tags"><span>Arts</span></div>
+                  <h4 class="card-title">Pottery Workshop</h4>
+                  <p>Hands-on clay workshop for beginners.</p>
+                  <span class="feature">Bookings required</span>
+                  <ul class="fa-ul">
+                    <li><span class="fa-li"><i class="fa-regular fa-calendar"></i></span>Saturday, 12 Dec 2026</li>
+                    <li><span class="fa-li"><i class="fa-regular fa-location-smile"></i></span>Guildford Town Hall</li>
+                  </ul>
+                </div>
+              </a>
+            </article>
+          </div>
+          <input id="recordCountValue" value="2" type="hidden"/>
+          <input id="hasnextpage" value="false" type="hidden"/>
+        `
+      };
+    }
+  });
+
+  const crawler = createKenticoAwPageTypeListingCrawler(BASE_CONFIG, {
+    fetchFn: mockFetch,
+    pageDelayMs: 0,
+    now: TEST_NOW
+  });
+
+  const listings = await crawler.fetchListings();
+  assert.equal(listings.length, 2);
+
+  const [dropIn, pottery] = listings;
+  assert.equal(dropIn.source_id, 'swan-doc-101');
+  assert.equal(dropIn.description, 'Weekly hangout with games, snacks, and sports activities.');
+  assert.equal(dropIn.is_free, true);
+  assert.equal(dropIn.display_price, 'Free');
+  assert.equal(dropIn.cost_description, 'Free');
+
+  const sanitizedDropIn = sanitizeActivity({
+    ...dropIn,
+    venue: { ...dropIn.venue, coordinates: TEST_COORDS }
+  }, TEST_NOW.toISOString());
+  assert.equal(sanitizedDropIn.schedule.recurrence, 'weekly');
+  assert.equal(sanitizedDropIn.schedule.day_of_week, 1);
+  assert.equal(sanitizedDropIn.schedule.start_time, '15:00');
+  assert.equal(sanitizedDropIn.schedule.end_time, '17:00');
+  assert.equal(sanitizedDropIn.schedule.end_date, null);
+  assert.deepEqual(sanitizedDropIn.cost, { is_free: true, display_price: 'Free' });
+
+  assert.equal(pottery.source_id, 'swan-doc-202');
+  assert.equal(pottery.description, 'Hands-on clay workshop for beginners.');
+  assert.equal(pottery.is_free, false);
+  assert.equal(pottery.display_price, '');
+  assert.equal(pottery.cost_description, '');
+});

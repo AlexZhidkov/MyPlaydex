@@ -489,7 +489,7 @@ test('Seam 4C: CLI exits with status 1 on anomaly and writes GITHUB_STEP_SUMMARY
   }
 });
 
-test('Seam 7: getDefaultCrawlers registers the 14 scheduled crawlers and excludes local-only crawlers unless requested', () => {
+test('Seam 7: getDefaultCrawlers registers the 15 scheduled crawlers and excludes local-only crawlers unless requested', () => {
   const crawlers = getDefaultCrawlers();
   const names = crawlers.map(c => c.name);
 
@@ -506,17 +506,18 @@ test('Seam 7: getDefaultCrawlers registers the 14 scheduled crawlers and exclude
   assert.ok(names.includes('nedlands'), 'nedlands should be in default crawlers');
   assert.ok(names.includes('fremantle'), 'fremantle should be in default crawlers');
   assert.ok(names.includes('joondalup'), 'joondalup should be in default crawlers');
+  assert.ok(names.includes('swan'), 'swan should be in default crawlers');
   assert.ok(names.includes('dlgsc'), 'dlgsc should be in default crawlers');
   assert.ok(names.includes('volleyball_wa'), 'volleyball_wa should be in default crawlers');
   assert.ok(names.includes('meetup'), 'meetup should be in default crawlers');
   assert.ok(!names.includes('eventbrite'), 'eventbrite should be excluded from default scheduled crawlers');
-  assert.equal(names.length, 14);
+  assert.equal(names.length, 15);
 
   const vincent = crawlers.find(c => c.name === 'vincent');
   assert.equal(vincent?.group, 'councils');
   assert.equal(vincent?.minExpectedListings, 0);
 
-  for (const councilName of ['wanneroo', 'gosnells', 'cambridge', 'victoria_park', 'rockingham', 'bassendean', 'nedlands', 'fremantle', 'joondalup']) {
+  for (const councilName of ['wanneroo', 'gosnells', 'cambridge', 'victoria_park', 'rockingham', 'bassendean', 'nedlands', 'fremantle', 'joondalup', 'swan']) {
     const council = crawlers.find(c => c.name === councilName);
     assert.equal(council?.group, 'councils', `${councilName} should be in councils group`);
   }
@@ -524,21 +525,21 @@ test('Seam 7: getDefaultCrawlers registers the 14 scheduled crawlers and exclude
   const withVisitPerth = getDefaultCrawlers({ includeVisitPerth: true });
   const withVisitPerthNames = withVisitPerth.map(c => c.name);
   assert.ok(withVisitPerthNames.includes('visit_perth'), 'visit_perth should be included when includeVisitPerth is true');
-  assert.equal(withVisitPerthNames.length, 15);
+  assert.equal(withVisitPerthNames.length, 16);
 
   const withEventbrite = getDefaultCrawlers({ includeEventbrite: true });
   const withEventbriteNames = withEventbrite.map(c => c.name);
   assert.ok(withEventbriteNames.includes('eventbrite'), 'eventbrite should be included when includeEventbrite is true');
-  assert.equal(withEventbriteNames.length, 15);
+  assert.equal(withEventbriteNames.length, 16);
 
   const withAllOptIn = getDefaultCrawlers({ includeVisitPerth: true, includeCockburn: true, includeEventbrite: true });
-  assert.equal(withAllOptIn.length, 17);
+  assert.equal(withAllOptIn.length, 18);
   for (const localName of ['visit_perth', 'cockburn', 'eventbrite']) {
     assert.equal(withAllOptIn.find(c => c.name === localName)?.localOnly, true, `${localName} should have localOnly=true`);
   }
 
   const withIncludeLocal = getDefaultCrawlers({ includeLocal: true });
-  assert.equal(withIncludeLocal.length, 17);
+  assert.equal(withIncludeLocal.length, 18);
   assert.ok(withIncludeLocal.some(c => c.name === 'cockburn'));
 });
 

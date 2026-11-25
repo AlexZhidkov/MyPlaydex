@@ -21,6 +21,7 @@ import {
   extractFirstElementByClass,
   extractTextByClassOrder,
   findBalancedTagEnd,
+  hasClassToken,
   normalizeTimeRangeText,
   resolveUrl,
   stripHtmlTags,
@@ -100,6 +101,13 @@ function parseAriaLabelMetadata(ariaLabel = '') {
   };
 }
 
+function extractNativeId(attrs = '') {
+  return extractAttr(attrs, 'data-id')
+    || extractAttr(attrs, 'data-event-id')
+    || extractAttr(attrs, 'data-docid')
+    || '';
+}
+
 function extractArticleCards(html = '', baseUrl = '') {
   const cleanHtml = stripNonContentHtml(html);
   const cards = [];
@@ -113,13 +121,14 @@ function extractArticleCards(html = '', baseUrl = '') {
     const innerHtml = cleanHtml.slice(contentStart, innerEnd);
     openArticleRegex.lastIndex = outerEnd;
 
-    const nativeId = extractAttr(attrs, 'data-id')
-      || extractAttr(attrs, 'data-event-id')
-      || '';
+    let nativeId = extractNativeId(attrs);
 
     let url = '';
     let ariaLabel = extractAttr(attrs, 'aria-label') || '';
     for (const anchorMatch of innerHtml.matchAll(/<a\b([^>]*)>/gi)) {
+      if (!nativeId) {
+        nativeId = extractNativeId(anchorMatch[1]);
+      }
       if (!ariaLabel) {
         ariaLabel = extractAttr(anchorMatch[1], 'aria-label') || '';
       }
@@ -173,13 +182,41 @@ function extractArticleCards(html = '', baseUrl = '') {
       rawTags = ariaMeta.categories;
     }
 
+    const description = extractTextByClassOrder(innerHtml, [
+      'card-text',
+      'card-description',
+      'event-description',
+      'description',
+      'summary'
+    ]) || (() => {
+      const p = innerHtml.match(/<p\b[^>]*>([\s\S]*?)<\/p>/i);
+      return p ? stripHtmlTags(p[1]) : '';
+    })();
+
+    let isFree = false;
+    const featureOpenRegex = /<([a-z0-9]+)\b([^>]*\bclass\s*=[^>]*)>/gi;
+    let featureMatch;
+    while ((featureMatch = featureOpenRegex.exec(innerHtml)) !== null) {
+      const cls = extractAttr(featureMatch[2], 'class');
+      if (!hasClassToken(cls, 'feature')) continue;
+      const contentStart = featureMatch.index + featureMatch[0].length;
+      const { innerEnd } = findBalancedTagEnd(innerHtml, featureMatch[1], contentStart);
+      const featureText = stripHtmlTags(innerHtml.slice(contentStart, innerEnd));
+      if (/^free$/i.test(featureText)) {
+        isFree = true;
+        break;
+      }
+    }
+
     cards.push({
       nativeId,
       url,
       title,
+      description,
       dateText,
       venueName,
-      rawTags
+      rawTags,
+      isFree
     });
   }
 
@@ -239,7 +276,7 @@ function mapCardToRawActivity(card, config) {
     external_url: card.url,
     region_id: config.regionId || 'perth',
     title: card.title,
-    description: '',
+    description: card.description || '',
     category,
     subcategory,
     ...(organizer ? { organizer } : {}),
@@ -250,9 +287,9 @@ function mapCardToRawActivity(card, config) {
     ...(schedule.scheduleText ? { start_time: schedule.scheduleText } : {}),
     ...(schedule.recurrence === 'weekly' ? { recurrence: 'weekly', end_date: null } : {}),
     ...(schedule.dayOfWeek !== null ? { day_of_week: schedule.dayOfWeek } : {}),
-    cost_description: '',
-    display_price: '',
-    is_free: false,
+    cost_description: card.isFree ? 'Free' : '',
+    display_price: card.isFree ? 'Free' : '',
+    is_free: Boolean(card.isFree),
     demographics: {
       gender: 'all',
       age: 'all'

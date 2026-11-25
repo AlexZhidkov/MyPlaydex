@@ -25,6 +25,7 @@ on:
           - nedlands
           - fremantle
           - joondalup
+          - swan
           - dlgsc
           - volleyball_wa
           - meetup
