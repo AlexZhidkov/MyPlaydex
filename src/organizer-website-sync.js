@@ -17,6 +17,12 @@ import {
   parseActivityCost,
   resolvePerthCoordinates
 } from './crawlers/eventbrite-parser.js';
+import {
+  collectKnownOrganizerHosts,
+  DEFAULT_DIRECTORY_SOURCES,
+  harvestDirectoryDomains,
+  normalizeDomainHost
+} from './directory-harvester.js';
 import { reconcileListingWithCatalog } from './entity-matcher.js';
 import { createFileCacheStore } from './file-cache.js';
 import { createFirecrawlClientFromEnv } from './firecrawl-client.js';
@@ -108,6 +114,7 @@ export function parseCliArgs(argv = process.argv.slice(2), env = process.env) {
     dryRun: !apply,
     refresh: argv.includes('--refresh'),
     force: argv.includes('--force'),
+    harvestDirectories: !argv.includes('--no-directories') && !getArgValue(argv, 'organizer'),
     organizer: getArgValue(argv, 'organizer'),
     maxDomains,
     maxUrlsPerDomain,
@@ -252,10 +259,36 @@ function checkpointKeyForWebsite(websiteUrl) {
   return `drip_checkpoint|${websiteUrl}`;
 }
 
+async function readDripTargetBackoffState({
+  cacheStore,
+  websiteUrl,
+  nowMs,
+  force,
+  refresh,
+  productiveCooldownMs,
+  zeroYieldBackoffMs
+}) {
+  const checkpoint = cacheStore ? await cacheStore.read(checkpointKeyForWebsite(websiteUrl)) : null;
+  const lastCrawledAtMs = checkpoint?.lastCrawledAt ? Date.parse(checkpoint.lastCrawledAt) : -Infinity;
+  const lastYieldCount = Number.isFinite(checkpoint?.lastYieldCount) ? checkpoint.lastYieldCount : null;
+
+  if (!force && !refresh && Number.isFinite(lastCrawledAtMs)) {
+    const cooldownMs = (lastYieldCount !== null && lastYieldCount > 0)
+      ? productiveCooldownMs
+      : zeroYieldBackoffMs;
+    if ((nowMs - lastCrawledAtMs) < cooldownMs) {
+      return { skip: true, lastCrawledAtMs, lastYieldCount };
+    }
+  }
+
+  return { skip: false, lastCrawledAtMs, lastYieldCount };
+}
+
 /**
  * Selects and prioritizes eligible Organizer website targets for the drip run,
  * putting Tier-1 Organizers (0 active Activities, no Eventbrite/Meetup/Facebook Source Reference)
- * first and enforcing 7-day productive / 30-day zero-yield backoff.
+ * first, followed by Tier-2 harvested directory domains and existing Tier-2 Organizers,
+ * and enforcing 7-day productive / 30-day zero-yield backoff.
  *
  * @param {object} [params={}]
  * @returns {Promise<Array<object>>}
@@ -263,6 +296,7 @@ function checkpointKeyForWebsite(websiteUrl) {
 export async function selectDripOrganizerTargets({
   organizersCatalog = [],
   activitiesCatalog = [],
+  harvestedDomains = [],
   cacheStore = null,
   now = new Date(),
   force = false,
@@ -284,6 +318,9 @@ export async function selectDripOrganizerTargets({
   }
 
   const eligible = [];
+  const seenHosts = new Set();
+  const knownOrganizerHosts = collectKnownOrganizerHosts(organizersCatalog);
+
   for (const org of organizersCatalog) {
     if (!org || typeof org !== 'object') continue;
     if (organizerId && org.id !== organizerId) continue;
@@ -291,18 +328,19 @@ export async function selectDripOrganizerTargets({
     const websiteUrl = normalizeWebsiteUrl(org.website);
     if (!websiteUrl) continue;
 
-    const checkpoint = cacheStore ? await cacheStore.read(checkpointKeyForWebsite(websiteUrl)) : null;
-    const lastCrawledAtMs = checkpoint?.lastCrawledAt ? Date.parse(checkpoint.lastCrawledAt) : -Infinity;
-    const lastYieldCount = Number.isFinite(checkpoint?.lastYieldCount) ? checkpoint.lastYieldCount : null;
+    const backoff = await readDripTargetBackoffState({
+      cacheStore,
+      websiteUrl,
+      nowMs,
+      force,
+      refresh,
+      productiveCooldownMs,
+      zeroYieldBackoffMs
+    });
+    if (backoff.skip) continue;
 
-    if (!force && !refresh && Number.isFinite(lastCrawledAtMs)) {
-      const cooldownMs = (lastYieldCount !== null && lastYieldCount > 0)
-        ? productiveCooldownMs
-        : zeroYieldBackoffMs;
-      if ((nowMs - lastCrawledAtMs) < cooldownMs) {
-        continue;
-      }
-    }
+    const host = normalizeDomainHost(websiteUrl);
+    if (host) seenHosts.add(host);
 
     const orgActivities = org.id ? (activitiesByOrgId.get(org.id) || []) : [];
     const activeActivityCount = orgActivities.filter(a => isActivityActive(a, nowMs)).length;
@@ -313,17 +351,56 @@ export async function selectDripOrganizerTargets({
       organizer: org,
       websiteUrl,
       tier,
+      isHarvestedDomain: false,
       activeActivityCount,
       hasExternalSource: hasExternal,
-      lastCrawledAtMs,
-      lastYieldCount
+      lastCrawledAtMs: backoff.lastCrawledAtMs,
+      lastYieldCount: backoff.lastYieldCount
     });
+  }
+
+  if (!organizerId) {
+    for (const harvested of Array.isArray(harvestedDomains) ? harvestedDomains : []) {
+      const websiteUrl = normalizeWebsiteUrl(harvested?.websiteUrl);
+      const host = normalizeDomainHost(websiteUrl);
+      if (!websiteUrl || !host) continue;
+      if (knownOrganizerHosts.has(host) || seenHosts.has(host)) continue;
+
+      const backoff = await readDripTargetBackoffState({
+        cacheStore,
+        websiteUrl,
+        nowMs,
+        force,
+        refresh,
+        productiveCooldownMs,
+        zeroYieldBackoffMs
+      });
+      if (backoff.skip) continue;
+
+      seenHosts.add(host);
+      eligible.push({
+        organizer: {
+          id: null,
+          name: harvested.organizerName || host,
+          website: websiteUrl
+        },
+        websiteUrl,
+        tier: 2,
+        isHarvestedDomain: true,
+        sourceDirectoryUrl: harvested.sourceDirectoryUrl || null,
+        activeActivityCount: 0,
+        hasExternalSource: false,
+        lastCrawledAtMs: backoff.lastCrawledAtMs,
+        lastYieldCount: backoff.lastYieldCount
+      });
+    }
   }
 
   eligible.sort((a, b) => {
     if (a.tier !== b.tier) return a.tier - b.tier;
     if (a.lastCrawledAtMs !== b.lastCrawledAtMs) return a.lastCrawledAtMs - b.lastCrawledAtMs;
-    return String(a.organizer.id || '').localeCompare(String(b.organizer.id || ''));
+    const idCmp = String(a.organizer.id || '').localeCompare(String(b.organizer.id || ''));
+    return idCmp !== 0 ? idCmp : a.websiteUrl.localeCompare(b.websiteUrl);
   });
 
   const cap = Number.isFinite(maxDomains) && maxDomains > 0 ? Math.floor(maxDomains) : DEFAULT_MAX_DOMAINS;
@@ -552,9 +629,30 @@ export async function runOrganizerWebsiteSync({
 
   let activitiesCatalog = initialActivities.map(a => ({ ...a }));
 
+  const directorySources = Array.isArray(options.directorySources)
+    ? options.directorySources
+    : (options.harvestDirectories && !options.organizer ? DEFAULT_DIRECTORY_SOURCES : []);
+
+  let harvestedDomains = [];
+  if (directorySources.length > 0) {
+    const harvestResult = await harvestDirectoryDomains({
+      directorySources,
+      firecrawlClient,
+      cacheStore,
+      organizersCatalog,
+      now,
+      dryRun,
+      refresh,
+      force,
+      logger
+    });
+    harvestedDomains = harvestResult.harvestedDomains;
+  }
+
   const targets = await selectDripOrganizerTargets({
     organizersCatalog,
     activitiesCatalog,
+    harvestedDomains,
     cacheStore,
     now,
     force,
@@ -641,6 +739,8 @@ export async function runOrganizerWebsiteSync({
       } else if (!dryRun && cacheStore) {
         await cacheStore.write(checkpointKeyForWebsite(target.websiteUrl), {
           organizerId: target.organizer.id,
+          organizerName: target.organizer.name,
+          isHarvestedDomain: Boolean(target.isHarvestedDomain),
           websiteUrl: target.websiteUrl,
           lastCrawledAt: now.toISOString(),
           lastYieldCount: domainYield,
@@ -671,6 +771,7 @@ export async function runOrganizerWebsiteSync({
     firecrawlAvailable: true,
     skippedReason: null,
     dryRun,
+    harvestedDomainsCount: harvestedDomains.length,
     eligibleDomains: targets.length,
     processedDomains,
     mappedUrls,
