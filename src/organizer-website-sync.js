@@ -8,7 +8,11 @@
 
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { deduplicateActivities } from './activity-deduplicator.js';
+import {
+  deduplicateActivities,
+  reconcileStaleWeeklyActivities
+} from './activity-deduplicator.js';
+export { reconcileStaleWeeklyActivities };
 import { resolveCliLogger } from './crawler-reporter.js';
 import {
   anchorAwstTimestamp,
@@ -646,6 +650,7 @@ function ingestWebsiteActivity(rawActivity, {
 
   const sourceRef = buildOrganizerWebsiteSourceRef(reconciled.source_id, rawActivity.source_url);
   reconciled.source = sourceRef.source;
+  reconciled.source_key = sourceRef.source_key;
   reconciled.source_url = sourceRef.source_url;
   reconciled.raw_source_url = sourceRef.raw_source_url;
   reconciled.verified = true;
@@ -689,7 +694,11 @@ export async function runOrganizerWebsiteSync({
       llmFallbackCalls: 0,
       extractedCount: 0,
       validCount: 0,
-      upsertedCount: 0
+      upsertedCount: 0,
+      deletedCount: 0,
+      prunedCount: 0,
+      wouldDeleteIds: [],
+      wouldPruneIds: []
     };
   }
 
@@ -747,6 +756,7 @@ export async function runOrganizerWebsiteSync({
   let llmFallbackCalls = 0;
   let extractedCount = 0;
   const validActivities = [];
+  const cleanUrlSourceKeys = new Map();
 
   try {
     for (const target of targets) {
@@ -789,6 +799,7 @@ export async function runOrganizerWebsiteSync({
           scrapedUrls += 1;
           domainHadScrapeSuccess = true;
 
+          let llmFailed = false;
           let rawActivities = extractOrganizerWebsiteActivities(scraped?.html || '', {
             scrapedUrl: candidateUrl,
             organizer: target.organizer,
@@ -796,17 +807,24 @@ export async function runOrganizerWebsiteSync({
           });
           if (rawActivities.length === 0 && geminiClient && typeof scraped?.markdown === 'string' && scraped.markdown.trim()) {
             llmFallbackCalls += 1;
-            rawActivities = await extractMarkdownActivities({
-              markdown: scraped.markdown,
-              scrapedUrl: candidateUrl,
-              organizer: target.organizer,
-              geminiClient,
-              now,
-              logger
-            });
+            try {
+              rawActivities = await extractMarkdownActivities({
+                markdown: scraped.markdown,
+                scrapedUrl: candidateUrl,
+                organizer: target.organizer,
+                geminiClient,
+                now,
+                logger,
+                throwOnError: true
+              });
+            } catch {
+              llmFailed = true;
+              rawActivities = [];
+            }
           }
           extractedCount += rawActivities.length;
 
+          const urlSourceKeys = new Set();
           for (const rawActivity of rawActivities) {
             const ingested = ingestWebsiteActivity(rawActivity, {
               venuesCatalog,
@@ -816,7 +834,19 @@ export async function runOrganizerWebsiteSync({
             if (ingested) {
               validActivities.push(ingested);
               domainYield += 1;
+              const sourceKey = ingested.source_key || ingested.sources?.[0]?.source_key || rawActivity.source_key;
+              if (sourceKey) {
+                urlSourceKeys.add(sourceKey);
+              }
             }
+          }
+
+          if (!llmFailed && urlSourceKeys.size > 0) {
+            const existingKeys = cleanUrlSourceKeys.get(candidateUrl) || new Set();
+            for (const key of urlSourceKeys) {
+              existingKeys.add(key);
+            }
+            cleanUrlSourceKeys.set(candidateUrl, existingKeys);
           }
         } catch (err) {
           logger?.warn?.(`[Organizer Website Sync] Scrape failed for ${candidateUrl}: ${err.message}`);
@@ -845,15 +875,46 @@ export async function runOrganizerWebsiteSync({
   const dedupedActivities = validActivities.length > 0
     ? deduplicateActivities(validActivities, activitiesCatalog).activitiesToUpsert
     : [];
+  const dedupedIds = new Set(dedupedActivities.filter(a => a?.id).map(a => a.id));
+
+  const staleReconciliation = reconcileStaleWeeklyActivities({
+    existingActivities: activitiesCatalog,
+    cleanUrlSourceKeys
+  });
+  const prunedToApply = staleReconciliation.prunedActivities.filter(a => a?.id && !dedupedIds.has(a.id));
+  const deleteIds = staleReconciliation.deleteIds.filter(id => id && !dedupedIds.has(id));
+  const allUpdates = [...dedupedActivities, ...prunedToApply];
 
   let upsertedCount = 0;
-  if (!dryRun && dedupedActivities.length > 0 && adapter?.batchUpsertActivities) {
-    const writeRes = await adapter.batchUpsertActivities(dedupedActivities);
-    upsertedCount = writeRes?.upserted ?? dedupedActivities.length;
+  let deletedCount = 0;
+  let prunedCount = 0;
+
+  if (!dryRun) {
+    if (deleteIds.length > 0 && adapter?.batchApplyActivityDeduplication) {
+      const writeRes = await adapter.batchApplyActivityDeduplication({
+        updates: allUpdates,
+        deleteIds
+      });
+      upsertedCount = writeRes?.updated ?? allUpdates.length;
+      deletedCount = writeRes?.deleted ?? deleteIds.length;
+      prunedCount = prunedToApply.length;
+    } else {
+      if (deleteIds.length > 0) {
+        logger?.warn?.(`[Organizer Website Sync] Adapter lacks batchApplyActivityDeduplication; skipping ${deleteIds.length} stale weekly deletion(s).`);
+      }
+      if (allUpdates.length > 0 && adapter?.batchUpsertActivities) {
+        const writeRes = await adapter.batchUpsertActivities(allUpdates);
+        upsertedCount = writeRes?.upserted ?? allUpdates.length;
+        prunedCount = prunedToApply.length;
+      }
+    }
   }
 
+  const staleLogSummary = dryRun
+    ? `WouldDelete: ${deleteIds.length}, WouldPrune: ${prunedToApply.length}`
+    : `Deleted: ${deletedCount}, Pruned: ${prunedCount}`;
   logger?.log?.(
-    `[Organizer Website Sync] Domains: ${processedDomains}/${targets.length}, Mapped: ${mappedUrls}, Scraped: ${scrapedUrls}, Extracted: ${extractedCount}, Valid: ${validActivities.length}, Upserted: ${upsertedCount} (dryRun=${dryRun})`
+    `[Organizer Website Sync] Domains: ${processedDomains}/${targets.length}, Mapped: ${mappedUrls}, Scraped: ${scrapedUrls}, Extracted: ${extractedCount}, Valid: ${validActivities.length}, Upserted: ${upsertedCount}, ${staleLogSummary} (dryRun=${dryRun})`
   );
 
   return {
@@ -869,7 +930,11 @@ export async function runOrganizerWebsiteSync({
     llmFallbackCalls,
     extractedCount,
     validCount: validActivities.length,
-    upsertedCount
+    upsertedCount,
+    deletedCount,
+    prunedCount,
+    wouldDeleteIds: dryRun ? deleteIds : [],
+    wouldPruneIds: dryRun ? prunedToApply.map(a => a.id) : []
   };
 }
 

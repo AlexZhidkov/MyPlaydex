@@ -221,7 +221,8 @@ export async function extractMarkdownActivities({
   organizer = null,
   geminiClient = null,
   now = new Date(),
-  logger = console
+  logger = console,
+  throwOnError = false
 } = {}) {
   if (!geminiClient || typeof markdown !== 'string' || !markdown.trim() || !scrapedUrl) {
     return [];
@@ -244,6 +245,9 @@ export async function extractMarkdownActivities({
     });
   } catch (err) {
     logger?.warn?.(`[Markdown Extractor] Gemini Flash fallback failed for ${scrapedUrl}: ${err.message}`);
+    if (throwOnError) {
+      throw err;
+    }
     return [];
   }
 }

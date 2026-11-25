@@ -129,6 +129,97 @@ export function selectPrimarySourceReference(sources = []) {
   return ranked[0];
 }
 
+function normalizeSourceComparisonUrl(rawUrl) {
+  if (typeof rawUrl !== 'string') return '';
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return '';
+  try {
+    const parsed = new URL(trimmed);
+    parsed.hash = '';
+    const pathname = parsed.pathname.replace(/\/+$/, '') || '/';
+    return `${parsed.protocol}//${parsed.host.toLowerCase()}${pathname}${parsed.search}`;
+  } catch {
+    return trimmed.replace(/\/+$/, '');
+  }
+}
+
+/**
+ * Reconciles existing `recurrence: 'weekly'` Activity records against cleanly
+ * re-scraped `organizer_website` and PDF `Source Reference` URLs.
+ *
+ * @param {object} [params={}]
+ * @param {Array<object>} [params.existingActivities=[]]
+ * @param {Map<string, Set<string>>} [params.cleanUrlSourceKeys=new Map()]
+ * @returns {{ deleteIds: Array<string>, prunedActivities: Array<object> }}
+ */
+export function reconcileStaleWeeklyActivities({
+  existingActivities = [],
+  cleanUrlSourceKeys = new Map()
+} = {}) {
+  if (!Array.isArray(existingActivities) || !(cleanUrlSourceKeys instanceof Map) || cleanUrlSourceKeys.size === 0) {
+    return { deleteIds: [], prunedActivities: [] };
+  }
+
+  const normalizedCleanMap = new Map();
+  for (const [url, keys] of cleanUrlSourceKeys.entries()) {
+    const normUrl = normalizeSourceComparisonUrl(url);
+    if (!normUrl) continue;
+    const existingSet = normalizedCleanMap.get(normUrl) || new Set();
+    for (const k of keys || []) {
+      existingSet.add(k);
+    }
+    normalizedCleanMap.set(normUrl, existingSet);
+  }
+
+  const deleteIds = [];
+  const prunedActivities = [];
+
+  for (const activity of existingActivities) {
+    if (!activity?.id) continue;
+    if (activity.schedule?.recurrence !== 'weekly') continue;
+
+    const refs = extractSourceReferences(activity);
+    if (refs.length === 0) continue;
+
+    const staleRefs = [];
+    const keptRefs = [];
+
+    for (const ref of refs) {
+      const refNormUrl = normalizeSourceComparisonUrl(ref.raw_source_url || ref.source_url || '');
+      const cleanKeysForUrl = ref.source === 'organizer_website' && refNormUrl
+        ? normalizedCleanMap.get(refNormUrl)
+        : null;
+
+      if (cleanKeysForUrl && !cleanKeysForUrl.has(ref.source_key)) {
+        staleRefs.push(ref);
+      } else {
+        keptRefs.push(ref);
+      }
+    }
+
+    if (staleRefs.length === 0) continue;
+
+    if (keptRefs.length === 0) {
+      deleteIds.push(activity.id);
+    } else {
+      const primaryRef = selectPrimarySourceReference(keptRefs);
+      prunedActivities.push({
+        ...activity,
+        source: primaryRef.source,
+        source_id: primaryRef.source_id,
+        source_key: primaryRef.source_key,
+        source_url: primaryRef.source_url,
+        raw_source_url: primaryRef.raw_source_url,
+        verified: primaryRef.verified,
+        sources: keptRefs,
+        source_keys: keptRefs.map(r => r.source_key)
+      });
+    }
+  }
+
+  return { deleteIds, prunedActivities };
+}
+
 function hasValidCoordinates(coords) {
   return Boolean(
     coords &&
