@@ -332,7 +332,19 @@ export function resolveOrganizerFacebookUrl(rawUrlOrParsed) {
     if (firstLower === 'pages' && segments[1].toLowerCase() === 'category') {
       return null;
     }
-    return `https://www.facebook.com/${firstLower}/${segments[1]}/${segments[2]}`;
+    let pageId = null;
+    if (/^\d+$/.test(segments[2])) {
+      pageId = segments[2];
+    } else {
+      const trailingGarbageMatch = segments[2].match(/^(\d{6,})(?:[^a-zA-Z0-9].*)$/);
+      if (trailingGarbageMatch) {
+        pageId = trailingGarbageMatch[1];
+      }
+    }
+    if (!pageId) {
+      return null;
+    }
+    return `https://www.facebook.com/${firstLower}/${segments[1]}/${pageId}`;
   }
 
   if (firstLower === 'p') {

@@ -43,9 +43,15 @@ export { extractFacebookEvents };
 export const DEFAULT_FACEBOOK_CACHE_PATH = path.resolve(process.cwd(), '.scratch/facebook-sync-cache.json');
 export const DEFAULT_FETCH_DELAY_MS = 3500;
 
+const NEGATIVE_HTTP_STATUSES = new Set([404, 410]);
+
+function isNegativeCachedEntry(cached) {
+  return Boolean(cached && (cached.notFound === true || NEGATIVE_HTTP_STATUSES.has(cached.httpStatus)));
+}
+
 /**
  * Checks whether a Facebook URL is recorded in the local Facebook sync cache
- * as a Comet error or home non-entity route.
+ * as a Comet error/home non-entity route or a negative-cached HTTP 404/410 response.
  *
  * @param {string} rawUrl
  * @param {{ read: (key: string) => Promise<object|null> } | null | undefined} cacheStore
@@ -59,7 +65,11 @@ export async function isCachedFacebookNonEntity(rawUrl, cacheStore) {
   const keys = Array.from(new Set([canonicalUrl, rawUrl.trim()].filter(Boolean)));
   for (const key of keys) {
     const cached = await cacheStore.read(key);
-    if (cached && typeof cached.body === 'string' && !isFacebookRateLimited(cached.body) && isCometNonEntityRoute(cached.body)) {
+    if (
+      cached &&
+      (isNegativeCachedEntry(cached) ||
+        (typeof cached.body === 'string' && !isFacebookRateLimited(cached.body) && isCometNonEntityRoute(cached.body)))
+    ) {
       return true;
     }
   }
@@ -164,8 +174,8 @@ const ORGANIZER_CACHE_TTL_MS = 48 * 60 * 60 * 1000;
 const EVENT_DETAIL_CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const NON_ENTITY_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-function resolveFacebookCacheTtlMs(canonicalUrl, body) {
-  if (typeof body === 'string' && isCometNonEntityRoute(body)) {
+function resolveFacebookCacheTtlMs(canonicalUrl, cached) {
+  if (isNegativeCachedEntry(cached) || (typeof cached?.body === 'string' && isCometNonEntityRoute(cached.body))) {
     return NON_ENTITY_CACHE_TTL_MS;
   }
   if (extractFacebookEventIdFromUrl(canonicalUrl)) {
@@ -180,7 +190,7 @@ function isFacebookCacheExpired(cached, canonicalUrl, now) {
   if (!Number.isFinite(fetchedAtMs) || !Number.isFinite(nowMs)) {
     return true;
   }
-  const ttlMs = resolveFacebookCacheTtlMs(canonicalUrl, cached.body);
+  const ttlMs = resolveFacebookCacheTtlMs(canonicalUrl, cached);
   return (nowMs - fetchedAtMs) > ttlMs;
 }
 
@@ -222,9 +232,21 @@ async function fetchTargetPayload({ url, fetchFn, cacheStore, refresh, facebookC
   }
   if (!refresh && cacheStore) {
     const cached = await cacheStore.read(canonicalUrl);
-    if (cached && cached.body && !isFacebookRateLimited(cached.body) && !isFacebookCacheExpired(cached, canonicalUrl, runNow)) {
-      if (runState) runState.cacheHits += 1;
-      return { body: cached.body, fromCache: true, sourceUrl: canonicalUrl };
+    if (cached && !isFacebookCacheExpired(cached, canonicalUrl, runNow)) {
+      if (isNegativeCachedEntry(cached)) {
+        if (runState) runState.cacheHits += 1;
+        return {
+          body: '',
+          fromCache: true,
+          sourceUrl: canonicalUrl,
+          notFound: true,
+          httpStatus: cached.httpStatus
+        };
+      }
+      if (cached.body && !isFacebookRateLimited(cached.body)) {
+        if (runState) runState.cacheHits += 1;
+        return { body: cached.body, fromCache: true, sourceUrl: canonicalUrl };
+      }
     }
   }
 
@@ -261,6 +283,18 @@ async function fetchTargetPayload({ url, fetchFn, cacheStore, refresh, facebookC
     }
     if (!response.ok) {
       if (runState) runState.consecutiveRateLimits = 0;
+      if (NEGATIVE_HTTP_STATUSES.has(response.status) && cacheStore) {
+        try {
+          await cacheStore.write(canonicalUrl, {
+            url: canonicalUrl,
+            fetchedAt: runNow.toISOString(),
+            httpStatus: response.status,
+            notFound: true
+          });
+        } catch (cacheErr) {
+          logger?.warn?.(`[Facebook Sync] Cache write failed for ${canonicalUrl}: ${cacheErr.message}`);
+        }
+      }
       throw new Error(`Failed to fetch Facebook URL ${canonicalUrl}: HTTP ${response.status}`);
     }
     body = await response.text();
@@ -311,10 +345,13 @@ async function fetchTargetWithEventsTabFallback({ url, ...transport }) {
   if (eventsTabUrl !== baseUrl) {
     try {
       const tabResult = await fetchTargetPayload({ url: eventsTabUrl, ...transport });
-      if (!isCometNonEntityRoute(tabResult.body)) {
+      if (tabResult.notFound) {
+        // Negative-cached 404/410 on /events tab: fall back silently to baseUrl
+      } else if (!isCometNonEntityRoute(tabResult.body)) {
         return tabResult;
+      } else {
+        transport.logger?.warn?.(`[Facebook Sync] Events tab returned Comet error/home route for ${eventsTabUrl}; falling back to ${baseUrl}`);
       }
-      transport.logger?.warn?.(`[Facebook Sync] Events tab returned Comet error/home route for ${eventsTabUrl}; falling back to ${baseUrl}`);
     } catch (err) {
       if (err instanceof RateLimitedError || err instanceof FetchBudgetExhaustedError || err instanceof CircuitBreakerTrippedError) {
         throw err;
@@ -692,7 +729,7 @@ export async function runFacebookSync({
             failedFetchesByUrl,
             runState
           });
-          target = { body: fetched.body, sourceUrl: fetched.sourceUrl, organizer: spec.organizer };
+          target = { body: fetched.body, sourceUrl: fetched.sourceUrl, organizer: spec.organizer, notFound: fetched.notFound };
         } catch (err) {
           if (err instanceof FetchBudgetExhaustedError || err instanceof CircuitBreakerTrippedError) {
             break;
@@ -706,6 +743,9 @@ export async function runFacebookSync({
       targetsCount += 1;
       if (targetsCount % 50 === 0) {
         logger.log?.(`[Facebook Sync] Progress: ${targetsCount}/${targetSpecs.length} targets, liveFetches=${runState.liveFetches}, cacheHits=${runState.cacheHits}, valid=${activities.length}, upserted=${upserted}, rateLimited=${runState.rateLimitedResponses}`);
+      }
+      if (target.notFound) {
+        continue;
       }
 
       let rawEvents = extractFacebookEvents(target.body, {

@@ -55,6 +55,16 @@ test('Seam 1: resolveOrganizerFacebookUrl normalizes Page and Group URLs, resolv
     'https://www.facebook.com/pages/Perth-Hockey-Club/123456789012345'
   );
   assert.equal(
+    resolveOrganizerFacebookUrl('https://www.facebook.com/pages/Lakeside/118328268226014+%C3%B3%C3%94%C3%A9%C2%BC+%C2%A2'),
+    'https://www.facebook.com/pages/Lakeside/118328268226014'
+  );
+  assert.equal(
+    resolveOrganizerFacebookUrl('https://www.facebook.com/people/Perth-Club/100063712345678/posts/123'),
+    'https://www.facebook.com/people/Perth-Club/100063712345678'
+  );
+  assert.equal(resolveOrganizerFacebookUrl('https://www.facebook.com/pages/Perth-Australia/Liberty-Netball-Club'), null);
+  assert.equal(resolveOrganizerFacebookUrl('https://www.facebook.com/people/Perth-Club/NotAnId'), null);
+  assert.equal(
     resolveOrganizerFacebookUrl('https://www.facebook.com/p/Perth-Hockey-Club-100063712345678/?mibextid=ZbWKwL'),
     'https://www.facebook.com/p/Perth-Hockey-Club-100063712345678'
   );

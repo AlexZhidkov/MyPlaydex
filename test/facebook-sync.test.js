@@ -1492,7 +1492,7 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
     assert.ok(cacheMap.has('https://www.facebook.com/profile.php?id=998877'));
 
     // Second run without --refresh reuses cached payloads for the 3 succeeded targets
-    // (groups/hoops/events was 404 so not cached, broken was 500 so not cached)
+    // and honors the 404 negative cache on groups/hoops/events (0 live fetches; broken was 500 so not cached)
     fetchCalls.length = 0;
     const cachedRes = await runFacebookSync({
       adapter: {
@@ -1506,9 +1506,7 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
       options: { dryRun: true },
       logger: { log: () => {}, warn: () => {} }
     });
-    assert.deepEqual(fetchCalls, [
-      'https://www.facebook.com/groups/hoops/events'
-    ]);
+    assert.deepEqual(fetchCalls, []);
     assert.equal(cachedRes.valid, 4);
 
     // Explicit --url with --refresh bypasses cache
@@ -2719,5 +2717,162 @@ describe('Facebook Public Events Sync CLI (Issue #20)', () => {
       now
     });
     assert.deepEqual(undatedActivities.map(e => e.source_id), ['2468013579_20270620']);
+  });
+
+  it('Seam 4: negative-caches HTTP 404/410 targets for 7 days, rotates them in drip queue, and integrates with isCachedFacebookNonEntity', async () => {
+    const t0 = new Date('2026-11-20T09:00:00+08:00');
+    const cacheMap = new Map();
+    const cacheStore = {
+      async read(key) { return cacheMap.get(key) || null; },
+      async readMeta(key) {
+        const entry = cacheMap.get(key);
+        if (!entry) return null;
+        return { url: entry.url, fetchedAt: entry.fetchedAt, httpStatus: entry.httpStatus, notFound: entry.notFound };
+      },
+      async write(key, val) { cacheMap.set(key, val); },
+      async flush() {}
+    };
+
+    const validEventHtml = `
+      <script type="application/ld+json">${JSON.stringify({
+        '@context': 'https://schema.org',
+        '@type': 'SportsEvent',
+        name: 'Perth Social Run',
+        url: 'https://www.facebook.com/events/999000112/',
+        startDate: '2026-12-01T08:00:00+08:00',
+        location: { '@type': 'Place', name: 'Langley Park', geo: { '@type': 'GeoCoordinates', latitude: -31.961, longitude: 115.869 } }
+      })}</script>
+    `;
+
+    const fetchCalls = [];
+    const warningsRun1 = [];
+    const adapter = {
+      async scanVenues() { return []; },
+      async scanOrganizers() {
+        return [
+          { id: 'org_404', name: 'Dead 404 Org', subcategory: 'running', contact: { facebook: 'https://www.facebook.com/dead404' } },
+          { id: 'org_410', name: 'Gone 410 Org', subcategory: 'running', contact: { facebook: 'https://www.facebook.com/gone410' } },
+          { id: 'org_500', name: 'Server 500 Org', subcategory: 'running', contact: { facebook: 'https://www.facebook.com/server500' } },
+          { id: 'org_503', name: 'Unavailable 503 Org', subcategory: 'running', contact: { facebook: 'https://www.facebook.com/unavail503' } }
+        ];
+      }
+    };
+
+    const fetchFn = async (url) => {
+      fetchCalls.push(url);
+      if (url.includes('dead404')) return { ok: false, status: 404, text: async () => '' };
+      if (url.includes('gone410')) return { ok: false, status: 410, text: async () => '' };
+      if (url.includes('server500')) return { ok: false, status: 500, text: async () => '' };
+      if (url.includes('unavail503')) return { ok: false, status: 503, text: async () => '' };
+      return { ok: true, status: 200, text: async () => validEventHtml };
+    };
+
+    // Run 1: 404 and 410 fail once, write negative-cache entries; 500/503 are NOT cached
+    const run1 = await runFacebookSync({
+      adapter,
+      cacheStore,
+      fetchFn,
+      options: { dryRun: true, now: t0 },
+      logger: { log: () => {}, warn: (msg) => warningsRun1.push(msg) }
+    });
+
+    assert.equal(run1.failedTargets, 4);
+    assert.equal(run1.liveFetches, 8);
+    assert.ok(warningsRun1.some(w => w.includes('dead404') && w.includes('HTTP 404')));
+    assert.ok(warningsRun1.some(w => w.includes('gone410') && w.includes('HTTP 410')));
+
+    assert.equal(cacheMap.get('https://www.facebook.com/dead404')?.notFound, true);
+    assert.equal(cacheMap.get('https://www.facebook.com/dead404')?.httpStatus, 404);
+    assert.equal(cacheMap.get('https://www.facebook.com/gone410')?.notFound, true);
+    assert.equal(cacheMap.get('https://www.facebook.com/gone410')?.httpStatus, 410);
+    assert.equal(cacheMap.has('https://www.facebook.com/server500'), false);
+    assert.equal(cacheMap.has('https://www.facebook.com/server500/events'), false);
+    assert.equal(cacheMap.has('https://www.facebook.com/unavail503'), false);
+    assert.equal(cacheMap.has('https://www.facebook.com/unavail503/events'), false);
+
+    // isCachedFacebookNonEntity returns true for negative-cached 404/410 URLs
+    assert.equal(await isCachedFacebookNonEntity('https://www.facebook.com/dead404', cacheStore), true);
+    assert.equal(await isCachedFacebookNonEntity('https://www.facebook.com/gone410', cacheStore), true);
+
+    // Run 2 (1 hour later, 404/410 only): 0 live fetches, 0 failedTargets, 0 warnings, cache hits recorded
+    fetchCalls.length = 0;
+    const warningsRun2 = [];
+    const deadOnlyAdapter = {
+      async scanVenues() { return []; },
+      async scanOrganizers() {
+        return [
+          { id: 'org_404', name: 'Dead 404 Org', subcategory: 'running', contact: { facebook: 'https://www.facebook.com/dead404' } },
+          { id: 'org_410', name: 'Gone 410 Org', subcategory: 'running', contact: { facebook: 'https://www.facebook.com/gone410' } }
+        ];
+      }
+    };
+    const tWithinTtl = new Date(t0.getTime() + 60 * 60 * 1000);
+    const run2 = await runFacebookSync({
+      adapter: deadOnlyAdapter,
+      cacheStore,
+      fetchFn,
+      options: { dryRun: true, now: tWithinTtl },
+      logger: { log: () => {}, warn: (msg) => warningsRun2.push(msg) }
+    });
+
+    assert.deepEqual(fetchCalls, []);
+    assert.equal(run2.liveFetches, 0);
+    assert.equal(run2.failedTargets, 0);
+    assert.equal(run2.cacheHits, 4);
+    assert.deepEqual(warningsRun2, []);
+
+    // Drip queue sorting: negative-cached dead404 has fetchedAt=t0, so an uncached/older org comes first under maxFetches=1
+    fetchCalls.length = 0;
+    const dripAdapter = {
+      async scanVenues() { return []; },
+      async scanOrganizers() {
+        return [
+          { id: 'org_404', name: 'Dead 404 Org', subcategory: 'running', contact: { facebook: 'https://www.facebook.com/dead404' } },
+          { id: 'org_fresh_uncached', name: 'Uncached Healthy Org', subcategory: 'running', contact: { facebook: 'https://www.facebook.com/healthynew' } }
+        ];
+      }
+    };
+    await runFacebookSync({
+      adapter: dripAdapter,
+      cacheStore,
+      fetchFn,
+      options: { dryRun: true, now: tWithinTtl, maxFetches: 1 },
+      logger: { log: () => {}, warn: () => {} }
+    });
+    assert.deepEqual(fetchCalls, ['https://www.facebook.com/healthynew/events']);
+
+    // Run 3 (after 7-day NON_ENTITY_CACHE_TTL_MS): negative cache expires and retries live fetch
+    fetchCalls.length = 0;
+    const tExpired = new Date(t0.getTime() + 7 * 24 * 60 * 60 * 1000 + 1000);
+    const run3 = await runFacebookSync({
+      adapter: deadOnlyAdapter,
+      cacheStore,
+      fetchFn,
+      options: { dryRun: true, now: tExpired },
+      logger: { log: () => {}, warn: () => {} }
+    });
+    assert.deepEqual(fetchCalls, [
+      'https://www.facebook.com/dead404/events',
+      'https://www.facebook.com/dead404',
+      'https://www.facebook.com/gone410/events',
+      'https://www.facebook.com/gone410'
+    ]);
+    assert.equal(run3.failedTargets, 2);
+
+    // Run 4 (--refresh): bypasses active negative cache
+    fetchCalls.length = 0;
+    await runFacebookSync({
+      adapter: deadOnlyAdapter,
+      cacheStore,
+      fetchFn,
+      options: { dryRun: true, now: tExpired, refresh: true },
+      logger: { log: () => {}, warn: () => {} }
+    });
+    assert.deepEqual(fetchCalls, [
+      'https://www.facebook.com/dead404/events',
+      'https://www.facebook.com/dead404',
+      'https://www.facebook.com/gone410/events',
+      'https://www.facebook.com/gone410'
+    ]);
   });
 });
