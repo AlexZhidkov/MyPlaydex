@@ -240,13 +240,16 @@ export function createFirecrawlClient({
       });
     },
 
-    async map(url, { refresh = false, timeoutMs: perCallTimeoutMs } = {}) {
+    async map(url, { refresh = false, timeoutMs: perCallTimeoutMs, cacheTtlMs: perCallCacheTtlMs } = {}) {
       const cacheKey = `map|${url}`;
+      const effectiveTtlMs = Number.isFinite(perCallCacheTtlMs) && perCallCacheTtlMs >= 0
+        ? perCallCacheTtlMs
+        : cacheTtlMs;
 
       return enqueueSerial(async () => {
         if (cacheStore) {
           const cached = await cacheStore.read(cacheKey);
-          if (isFreshCacheEntry(cached, nowFn(), cacheTtlMs, refresh)) {
+          if (isFreshCacheEntry(cached, nowFn(), effectiveTtlMs, refresh)) {
             return {
               url,
               links: Array.isArray(cached.links) ? cached.links : [],

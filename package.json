@@ -16,6 +16,7 @@
     "sync:cockburn": "node src/crawler-runner.js --crawler=cockburn",
     "sync:local-councils": "node src/crawler-runner.js --crawler=local-councils",
     "enrich:organizers": "node src/organizer-enricher.js",
+    "sync:organizer-websites": "node src/organizer-website-sync.js",
     "deploy:hosting": "npx -y firebase-tools@latest deploy --only hosting",
     "deploy:rules": "npx -y firebase-tools@latest deploy --only firestore:rules",
     "serve:hosting": "npx -y firebase-tools@latest emulators:start --only hosting"
