@@ -14,7 +14,8 @@ import {
   createOutboundDirectionsUrl,
   formatScheduleText,
   createSuggestActivityMailtoUrl,
-  createSuggestEditMailtoUrl
+  createSuggestEditMailtoUrl,
+  sanitizeHttpUrl
 } from '../src/discovery-ui.js';
 
 test('Seam 3: createOutboundDirectionsUrl generates valid Google Maps query URL per ADR 0002', () => {
@@ -185,6 +186,7 @@ test('Seam 3: Cross-timezone runtimes (Sydney, London, New York, UTC) preserve A
     });
   }
 });
+
 
 test('Seam 3: renderActivityCard outputs 4-tier semantic card structure with all required badges and outbound links', () => {
   const activity = {
@@ -905,4 +907,99 @@ test('Seam 3: formatScheduleText rolls past-today weekly sessions to next week i
     });
   }
 });
+
+test('URL Scheme Allowlist: sanitizeHttpUrl and card renderers reject non-http(s) URLs', () => {
+  // Valid http/https URLs
+  assert.equal(sanitizeHttpUrl('https://example.com/path?a=1#frag'), 'https://example.com/path?a=1#frag');
+  assert.equal(sanitizeHttpUrl('http://example.com'), 'http://example.com');
+  assert.equal(sanitizeHttpUrl('  HTTPS://Example.COM/club  '), 'HTTPS://Example.COM/club');
+
+  // Disallowed / malformed URLs
+  const disallowedUrls = [
+    'javascript:alert(1)',
+    'JAVASCRIPT:alert(1)',
+    'java\tscript:alert(1)',
+    'java\nscript:alert(1)',
+    'data:text/html,<script>alert(1)</script>',
+    'vbscript:msgbox(1)',
+    'file:///etc/passwd',
+    'mailto:user@example.com',
+    '#',
+    '/relative/path',
+    '//protocol-relative.example.com',
+    '',
+    '   ',
+    null,
+    undefined,
+    123
+  ];
+  for (const bad of disallowedUrls) {
+    assert.equal(sanitizeHttpUrl(bad), '', `Expected sanitizeHttpUrl(${JSON.stringify(bad)}) to return ""`);
+  }
+
+  // Activity card with javascript: source_url degrades to unverified and omits data-url / tabindex
+  const jsActivityHtml = renderActivityCard({
+    id: 'act_xss_1',
+    title: 'Suspicious Activity',
+    subcategory: 'soccer',
+    source_url: 'javascript:alert(document.domain)',
+    verified: true,
+    venue: { name: 'Test Park' },
+    sources: [
+      { source: 'meetup', source_url: 'https://www.meetup.com/legit/events/1', verified: true }
+    ]
+  });
+  assert.ok(jsActivityHtml.includes('activity-card-unverified'), 'Activity with javascript: URL must degrade to unverified');
+  assert.ok(jsActivityHtml.includes('badge-unverified'), 'Activity with javascript: URL must display Unverified badge');
+  assert.ok(!jsActivityHtml.includes('data-url='), 'Activity with javascript: URL must omit data-url');
+  assert.ok(!jsActivityHtml.includes('tabindex="0"'), 'Activity with javascript: URL must omit tabindex="0"');
+  assert.ok(!/javascript:/i.test(jsActivityHtml), 'Rendered activity HTML must not contain javascript: scheme');
+
+  // Activity card with valid primary URL filters out javascript:/data: secondary sources while keeping valid https: ones
+  const mixedSourcesHtml = renderActivityCard({
+    id: 'act_xss_2',
+    title: 'Mixed Sources Activity',
+    subcategory: 'tennis',
+    source_url: 'https://example.com/primary',
+    verified: true,
+    venue: { name: 'Test Courts' },
+    sources: [
+      { source: 'facebook', source_url: 'javascript:alert(1)', verified: true },
+      { source: 'eventbrite', source_url: 'data:text/html,<script>alert(1)</script>', verified: true },
+      { source: 'meetup', source_url: 'https://www.meetup.com/perth-tennis/events/42', verified: true }
+    ]
+  });
+  assert.ok(mixedSourcesHtml.includes('href="https://www.meetup.com/perth-tennis/events/42"'), 'Valid secondary https: URL must render');
+  assert.ok(!/javascript:/i.test(mixedSourcesHtml), 'Secondary sources must strip javascript: URLs');
+  assert.ok(!/data:text\/html/i.test(mixedSourcesHtml), 'Secondary sources must strip data: URLs');
+
+  // Organizer card with data: source_url degrades to unverified and omits data-url
+  const dataOrganizerHtml = renderOrganizerCard({
+    id: 'org_xss_1',
+    name: 'Test Club',
+    subcategory: 'volleyball',
+    source_url: 'data:text/html,<script>alert(1)</script>',
+    verified: true
+  });
+  assert.ok(dataOrganizerHtml.includes('badge-unverified'), 'Organizer with data: URL must show Unverified badge');
+  assert.ok(!dataOrganizerHtml.includes('data-url='), 'Organizer with data: URL must omit data-url');
+  assert.ok(!/data:text\/html/i.test(dataOrganizerHtml), 'Rendered organizer HTML must not contain data: scheme');
+
+  // Venue card with javascript: source_url shows Unverified badge and falls back data-url to Google Maps
+  const jsVenueHtml = renderVenueCard({
+    id: 'venue_xss_1',
+    name: 'Test Venue',
+    address: '100 St Georges Tce, Perth',
+    subcategory: 'basketball',
+    source_url: 'javascript:alert(1)',
+    verified: true
+  });
+  assert.ok(jsVenueHtml.includes('badge-unverified'), 'Venue with javascript: URL must show Unverified badge');
+  assert.ok(
+    jsVenueHtml.includes('data-url="https://www.google.com/maps/search/?api=1'),
+    'Venue with javascript: URL must fall back data-url to Google Maps'
+  );
+  assert.ok(!/javascript:/i.test(jsVenueHtml), 'Rendered venue HTML must not contain javascript: scheme');
+});
+
 

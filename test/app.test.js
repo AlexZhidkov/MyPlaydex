@@ -1041,6 +1041,50 @@ test('Seam 3: Activity card click delegates to source_url in new tab, and card-v
   feedContainer.dispatchEvent({ type: 'click', target: unverifiedEditTarget });
   assert.equal(openedWindows.length, 0, 'Clicking Suggest an edit on an Unverified Listing card must not trigger window.open');
 
+  // Case 7: Non-http(s) URLs in data-url or data-directions-url never call window.open
+  for (const unsafeUrl of ['javascript:alert(1)', 'data:text/html,<script>alert(1)</script>']) {
+    const unsafeCardEl = createMockEl('card-unsafe', 'article', ['activity-card']);
+    unsafeCardEl.setAttribute('data-id', 'act_unsafe');
+    unsafeCardEl.setAttribute('data-url', unsafeUrl);
+
+    openedWindows.length = 0;
+    feedContainer.dispatchEvent({
+      type: 'click',
+      target: {
+        closest: (sel) => {
+          if (sel.includes('card-venue-row')) return null;
+          if (sel.includes('a, button')) return null;
+          if (sel.includes('activity-card')) return unsafeCardEl;
+          return null;
+        }
+      }
+    });
+    assert.equal(openedWindows.length, 0, `Clicking card with ${unsafeUrl} must not call window.open`);
+
+    unsafeCardEl.closest = (sel) => (sel.includes('activity-card') ? unsafeCardEl : null);
+    feedContainer.dispatchEvent({
+      type: 'keydown',
+      key: 'Enter',
+      target: unsafeCardEl
+    });
+    assert.equal(openedWindows.length, 0, `Pressing Enter on card with ${unsafeUrl} must not call window.open`);
+
+    const unsafeVenueRowEl = createMockEl('unsafe-venue-row', 'div', ['card-venue-row']);
+    unsafeVenueRowEl.setAttribute('data-directions-url', unsafeUrl);
+    feedContainer.dispatchEvent({
+      type: 'click',
+      target: {
+        closest: (sel) => {
+          if (sel.includes('card-venue-row')) return unsafeVenueRowEl;
+          if (sel === 'a') return null;
+          if (sel.includes('activity-card')) return unsafeCardEl;
+          return null;
+        }
+      }
+    });
+    assert.equal(openedWindows.length, 0, `Clicking venue row with ${unsafeUrl} must not call window.open`);
+  }
+
   storage.clear();
 });
 

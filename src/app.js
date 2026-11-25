@@ -14,7 +14,8 @@ import {
   renderVenueCard,
   renderEmptyState,
   renderFilterView,
-  createSuggestActivityMailtoUrl
+  createSuggestActivityMailtoUrl,
+  sanitizeHttpUrl
 } from './discovery-ui.js';
 
 const STORAGE_KEY_LOCATION = 'myplaydex_location';
@@ -1223,8 +1224,9 @@ export function initApp(options = {}) {
     if (!card || card.classList?.contains('activity-card-unverified')) {
       return;
     }
-    const url = card.dataset?.url || (card.getAttribute && card.getAttribute('data-url'));
-    if (url && url !== '#' && typeof window !== 'undefined' && typeof window.open === 'function') {
+    const rawUrl = card.dataset?.url || (card.getAttribute && card.getAttribute('data-url'));
+    const url = sanitizeHttpUrl(rawUrl);
+    if (url && typeof window !== 'undefined' && typeof window.open === 'function') {
       const { listing_type, listing_id } = extractCardMeta(card, true);
       const destination = url.startsWith('https://www.google.com/maps/') ? 'directions' : 'referral';
       analytics.track('listing_outbound_click', { listing_type, listing_id, destination });
@@ -1264,9 +1266,10 @@ export function initApp(options = {}) {
         const isAnchor = Boolean(e.target.closest && e.target.closest('a'));
         if (!isAnchor) {
           const venueLink = venueRow.querySelector ? venueRow.querySelector('a.venue-name') : null;
-          const directionsUrl = venueRow.dataset?.directionsUrl
+          const rawDirectionsUrl = venueRow.dataset?.directionsUrl
             || (venueRow.getAttribute && venueRow.getAttribute('data-directions-url'))
             || (venueLink && (venueLink.getAttribute ? venueLink.getAttribute('href') : venueLink.href));
+          const directionsUrl = sanitizeHttpUrl(rawDirectionsUrl);
           if (directionsUrl && typeof window !== 'undefined' && typeof window.open === 'function') {
             window.open(directionsUrl, '_blank', 'noopener,noreferrer');
           }

@@ -229,3 +229,104 @@ test('SEO assets (og-card.png, robots.txt, sitemap.xml) exist and are deployable
   }
 });
 
+test('firebase.json configures HTTP security headers globally while preserving asset caching', () => {
+  const firebaseJsonPath = path.join(REPO_ROOT, 'firebase.json');
+  const content = JSON.parse(fs.readFileSync(firebaseJsonPath, 'utf8'));
+  const headerRules = content.hosting?.headers;
+  assert.ok(Array.isArray(headerRules), 'hosting.headers must be an array');
+
+  const globalRule = headerRules.find((rule) => rule.source === '**');
+  assert.ok(globalRule && Array.isArray(globalRule.headers), 'Must define global "**" header rule');
+
+  const headersByKey = new Map(globalRule.headers.map((h) => [h.key, h.value]));
+  assert.equal(headersByKey.get('X-Content-Type-Options'), 'nosniff');
+  assert.equal(headersByKey.get('X-Frame-Options'), 'DENY');
+  assert.equal(headersByKey.get('Referrer-Policy'), 'strict-origin-when-cross-origin');
+
+  const permissionsPolicy = headersByKey.get('Permissions-Policy');
+  assert.ok(permissionsPolicy, 'Permissions-Policy must be set');
+  assert.ok(permissionsPolicy.includes('geolocation=(self)'), 'Permissions-Policy must keep geolocation=(self)');
+  assert.ok(permissionsPolicy.includes('camera=()'), 'Permissions-Policy must restrict camera');
+  assert.ok(permissionsPolicy.includes('microphone=()'), 'Permissions-Policy must restrict microphone');
+
+  const csp = headersByKey.get('Content-Security-Policy');
+  assert.ok(csp, 'Content-Security-Policy must be set');
+  const directives = new Map(
+    csp.split(';').map((part) => part.trim()).filter(Boolean).map((part) => {
+      const [name, ...rest] = part.split(/\s+/);
+      return [name, rest.join(' ')];
+    })
+  );
+
+  assert.equal(directives.get('default-src'), "'self'");
+  assert.equal(directives.get('frame-ancestors'), "'none'");
+
+  const scriptSrc = directives.get('script-src') || '';
+  assert.ok(scriptSrc.includes("'self'") && scriptSrc.includes('https://www.gstatic.com'), 'script-src must allow self and gstatic Firebase SDK');
+  assert.ok(!scriptSrc.includes("'unsafe-inline'") && !scriptSrc.includes("'unsafe-eval'"), 'script-src must not allow unsafe-inline or unsafe-eval');
+
+  const connectSrc = directives.get('connect-src') || '';
+  for (const origin of [
+    "'self'",
+    'https://firestore.googleapis.com',
+    'https://firebaseinstallations.googleapis.com',
+    'https://www.google-analytics.com'
+  ]) {
+    assert.ok(connectSrc.includes(origin), `connect-src must include ${origin}`);
+  }
+
+  const assetCacheRule = headerRules.find((rule) => rule.source === '**/*.@(js|css)');
+  assert.ok(assetCacheRule, 'Must preserve existing **/*.@(js|css) Cache-Control rule');
+  assert.ok(
+    assetCacheRule.headers?.some((h) => h.key === 'Cache-Control' && h.value === 'max-age=3600'),
+    'Asset cache rule must keep Cache-Control: max-age=3600'
+  );
+});
+
+test('Favicon and web manifest assets exist, match dimensions, and are linked in index.html', () => {
+  const svgPath = path.join(REPO_ROOT, 'favicon.svg');
+  assert.ok(fs.existsSync(svgPath), 'favicon.svg must exist at repo root');
+  const svg = fs.readFileSync(svgPath, 'utf8');
+  assert.ok(svg.includes('<svg') && svg.includes('#0284c7'), 'favicon.svg must be an SVG using brand color #0284c7');
+
+  const icoPath = path.join(REPO_ROOT, 'favicon.ico');
+  assert.ok(fs.existsSync(icoPath), 'favicon.ico must exist at repo root');
+  const icoBuffer = fs.readFileSync(icoPath);
+  assert.equal(icoBuffer.subarray(0, 4).toString('hex'), '00000100', 'favicon.ico must have valid ICO magic bytes');
+
+  const pngSpecs = [
+    ['apple-touch-icon.png', 180, 180],
+    ['icon-192.png', 192, 192],
+    ['icon-512.png', 512, 512]
+  ];
+  for (const [filename, expectedWidth, expectedHeight] of pngSpecs) {
+    const filePath = path.join(REPO_ROOT, filename);
+    assert.ok(fs.existsSync(filePath), `${filename} must exist at repo root`);
+    const buf = fs.readFileSync(filePath);
+    assert.equal(buf.subarray(0, 8).toString('hex'), '89504e470d0a1a0a', `${filename} must be a valid PNG`);
+    assert.equal(buf.readUInt32BE(16), expectedWidth, `${filename} width must be ${expectedWidth}px`);
+    assert.equal(buf.readUInt32BE(20), expectedHeight, `${filename} height must be ${expectedHeight}px`);
+  }
+
+  const manifestPath = path.join(REPO_ROOT, 'site.webmanifest');
+  assert.ok(fs.existsSync(manifestPath), 'site.webmanifest must exist at repo root');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  assert.equal(manifest.theme_color, '#0284c7', 'site.webmanifest must set theme_color to #0284c7');
+  const iconSrcs = (manifest.icons || []).map((icon) => icon.src);
+  assert.ok(iconSrcs.includes('/icon-192.png'), 'site.webmanifest must include /icon-192.png');
+  assert.ok(iconSrcs.includes('/icon-512.png'), 'site.webmanifest must include /icon-512.png');
+
+  const html = fs.readFileSync(path.join(REPO_ROOT, 'index.html'), 'utf8');
+  assert.ok(html.includes('<meta name="theme-color" content="#0284c7" />'), 'index.html must include theme-color meta');
+  assert.ok(html.includes('<link rel="icon" href="/favicon.ico" sizes="48x48" />'), 'index.html must link favicon.ico');
+  assert.ok(html.includes('<link rel="icon" href="/favicon.svg" type="image/svg+xml" />'), 'index.html must link favicon.svg');
+  assert.ok(html.includes('<link rel="apple-touch-icon" href="/apple-touch-icon.png" />'), 'index.html must link apple-touch-icon.png');
+  assert.ok(html.includes('<link rel="manifest" href="/site.webmanifest" />'), 'index.html must link site.webmanifest');
+
+  const firebaseJson = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'firebase.json'), 'utf8'));
+  const ignored = firebaseJson.hosting?.ignore || [];
+  for (const asset of ['favicon.ico', 'favicon.svg', 'apple-touch-icon.png', 'icon-192.png', 'icon-512.png', 'site.webmanifest']) {
+    assert.ok(!ignored.includes(asset), `firebase.json must not ignore ${asset}`);
+  }
+});
+

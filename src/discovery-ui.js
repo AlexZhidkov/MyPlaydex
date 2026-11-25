@@ -100,6 +100,29 @@ export function escapeHtml(str = "") {
 }
 
 /**
+ * Validates that a URL uses an explicit http: or https: scheme, rejecting
+ * javascript:, data:, vbscript:, relative paths, protocol-relative URLs,
+ * and strings containing ASCII control characters.
+ *
+ * @param {string} rawUrl
+ * @returns {string} Trimmed valid http:/https: URL or ""
+ */
+export function sanitizeHttpUrl(rawUrl) {
+  if (typeof rawUrl !== "string") return "";
+  const trimmed = rawUrl.trim();
+  if (!trimmed || /[\u0000-\u001F\u007F]/.test(trimmed)) return "";
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return "";
+    }
+    return trimmed;
+  } catch {
+    return "";
+  }
+}
+
+/**
  * Generates an outbound Google Maps directions search link per ADR 0002.
  * Combines venue name and coordinates for precise targeting.
  *
@@ -434,10 +457,18 @@ export function createSuggestEditMailtoUrl(listing = {}) {
  * @returns {string}
  */
 function renderMapsRow(directionsUrl, labelText) {
-  return `
-        <div class="card-venue-row" data-directions-url="${escapeHtml(directionsUrl)}" title="Open in Google Maps">
+  const safeDirectionsUrl = sanitizeHttpUrl(directionsUrl);
+  if (!safeDirectionsUrl) {
+    return `
+        <div class="card-venue-row" title="Venue location">
           <span class="venue-icon" aria-hidden="true">📍</span>
-          <a href="${escapeHtml(directionsUrl)}" class="venue-name" target="_blank" rel="noopener noreferrer" title="Open in Google Maps">${escapeHtml(labelText)}</a>
+          <span class="venue-name">${escapeHtml(labelText)}</span>
+        </div>`.trim();
+  }
+  return `
+        <div class="card-venue-row" data-directions-url="${escapeHtml(safeDirectionsUrl)}" title="Open in Google Maps">
+          <span class="venue-icon" aria-hidden="true">📍</span>
+          <a href="${escapeHtml(safeDirectionsUrl)}" class="venue-name" target="_blank" rel="noopener noreferrer" title="Open in Google Maps">${escapeHtml(labelText)}</a>
         </div>`.trim();
 }
 
@@ -476,12 +507,8 @@ export function renderActivityCard(activity = {}, referenceDate = new Date()) {
   const venue = activity.venue || {};
   const organizer = activity.organizer || activity.club || {};
   const directionsUrl = createOutboundDirectionsUrl(venue);
-  const trimmedSourceUrl =
-    typeof activity.source_url === "string" ? activity.source_url.trim() : "";
-  const isVerified =
-    activity.verified !== false &&
-    Boolean(trimmedSourceUrl) &&
-    trimmedSourceUrl !== "#";
+  const safeSourceUrl = sanitizeHttpUrl(activity.source_url);
+  const isVerified = activity.verified !== false && Boolean(safeSourceUrl);
   const unverifiedBadge = !isVerified
     ? `<span class="badge badge-unverified">Unverified</span>`
     : "";
@@ -489,7 +516,7 @@ export function renderActivityCard(activity = {}, referenceDate = new Date()) {
     ? "activity-card"
     : "activity-card activity-card-unverified";
   const cardInteractiveAttrs = isVerified
-    ? ` data-url="${escapeHtml(trimmedSourceUrl)}" tabindex="0"`
+    ? ` data-url="${escapeHtml(safeSourceUrl)}" tabindex="0"`
     : "";
   const editMailtoUrl = createSuggestEditMailtoUrl(activity);
 
@@ -514,7 +541,7 @@ export function renderActivityCard(activity = {}, referenceDate = new Date()) {
         ${renderMapsRow(directionsUrl, venue.name || "Venue location")}
         ${organizer.name ? `<div class="card-organizer-row"><span class="organizer-icon" aria-hidden="true">👥</span> <span class="organizer-name">${escapeHtml(organizer.name)}</span></div>` : ""}
       </div>
-      ${isVerified ? renderSecondarySourcesRow(activity.sources, trimmedSourceUrl) : ""}
+      ${isVerified ? renderSecondarySourcesRow(activity.sources, safeSourceUrl) : ""}
 
       <!-- Tier 4: Suggest edit link -->
       ${renderSuggestEditTier(editMailtoUrl, "Suggest an edit for this activity")}
@@ -570,15 +597,16 @@ function renderSecondarySourcesRow(sources = [], primarySourceUrl = "") {
   if (!Array.isArray(sources) || sources.length === 0) return "";
 
   const seenUrls = new Set();
-  if (primarySourceUrl) {
-    seenUrls.add(primarySourceUrl);
+  const safePrimaryUrl = sanitizeHttpUrl(primarySourceUrl);
+  if (safePrimaryUrl) {
+    seenUrls.add(safePrimaryUrl);
   }
 
   const secondaryLinks = [];
   for (const ref of sources) {
     if (!ref || ref.verified !== true) continue;
-    const url = trimmedString(ref.source_url);
-    if (!url || url === "#" || seenUrls.has(url)) continue;
+    const url = sanitizeHttpUrl(ref.source_url);
+    if (!url || seenUrls.has(url)) continue;
     seenUrls.add(url);
     secondaryLinks.push({
       url,
@@ -617,10 +645,9 @@ function trimmedString(value) {
  */
 function resolveCardNavigationState(listing, name, rawCandidateUrl) {
   const trimmedSourceUrl = trimmedString(rawCandidateUrl);
+  const safeSourceUrl = sanitizeHttpUrl(trimmedSourceUrl);
   const hasVerifiedExternalUrl =
-    listing.verified !== false &&
-    Boolean(trimmedSourceUrl) &&
-    trimmedSourceUrl !== "#";
+    listing.verified !== false && Boolean(safeSourceUrl);
   const isGooglePlaceOnly =
     Boolean(trimmedString(listing.google_place_id)) &&
     !trimmedSourceUrl &&
@@ -632,7 +659,7 @@ function resolveCardNavigationState(listing, name, rawCandidateUrl) {
     google_place_id: listing.google_place_id,
   });
   const wholeCardUrl = hasVerifiedExternalUrl
-    ? trimmedSourceUrl
+    ? safeSourceUrl
     : isGooglePlaceOnly
       ? directionsUrl
       : "";
@@ -757,7 +784,8 @@ export function renderVenueCard(venue = {}) {
   const hasFailedExternalUrl =
     !isGooglePlaceOnly &&
     (venue.verified === false ||
-      (Boolean(venue.raw_source_url) && !hasVerifiedExternalUrl));
+      (Boolean(trimmedString(venue.raw_source_url) || trimmedString(venue.source_url)) &&
+        !hasVerifiedExternalUrl));
   const unverifiedBadge = hasFailedExternalUrl
     ? `<span class="badge badge-unverified">Unverified</span>`
     : "";
