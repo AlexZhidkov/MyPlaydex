@@ -21,6 +21,10 @@ test('isCivicAdminNotice filters council meetings, consultations, roadworks, and
   assert.equal(isCivicAdminNotice({ title: 'Roadworks Notice: Karrinyup Road Closure' }), true);
   assert.equal(isCivicAdminNotice({ title: 'Verge Collection & Green Waste Bin Schedule' }), true);
   assert.equal(isCivicAdminNotice({ title: 'Community Workshop', category: 'Council Meeting' }), true);
+  assert.equal(isCivicAdminNotice({ title: 'Council and committee meetings - December 2026' }), true);
+  assert.equal(isCivicAdminNotice({ title: 'Monthly Briefing', category: 'Council and committee meetings' }), true);
+  assert.equal(isCivicAdminNotice({ title: 'Council & Committee Meetings' }), true);
+  assert.equal(isCivicAdminNotice({ title: 'Committee Meetings Schedule', category: 'Governance' }), true);
 
   // Legitimate community activities must pass through
   assert.equal(isCivicAdminNotice({ title: 'Scarborough Community Beach Volleyball', category: 'Sports' }), false);

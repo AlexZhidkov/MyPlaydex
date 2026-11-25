@@ -21,7 +21,7 @@ export const DEFAULT_PAGE_DELAY_MS = 1200;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
 const CIVIC_ADMIN_PATTERNS = [
-  /\b(?:ordinary|special|annual|committee|council|electors(?:'|’)?)\s+(?:council\s+)?meeting\b/i,
+  /\b(?:ordinary|special|annual|committee|council|electors(?:'|’)?)\s+(?:(?:and|&)\s+(?:committee|council)\s+)?(?:council\s+)?meetings?\b/i,
   /\bagenda\s+(?:and|&)\s+minutes\b/i,
   /\bpublic\s+consultation\b/i,
   /\bhave\s+your\s+say\b/i,
