@@ -1,29 +1,95 @@
 <!doctype html>
-<html lang="en">
+<html lang="en-AU">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>
-      MyPlaydex — Greater Perth Amateur &amp; Casual Sports Discovery
+      Perth Activities, Social Sports &amp; Things to Do | MyPlaydex
     </title>
     <meta
       name="description"
-      content="Discover casual sports games, weekly social kickabouts, and club sessions across Greater Perth without accounts or apps."
+      content="Find local activities, social sports, arts, music, wellness, family outings, organizers, and venues across Greater Perth, Western Australia."
     />
+    <link rel="canonical" href="https://myplaydex.com.au/" />
+    <meta name="robots" content="index, follow" />
 
     <!-- Open Graph / Facebook -->
     <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="MyPlaydex" />
+    <meta property="og:locale" content="en_AU" />
     <meta property="og:url" content="https://myplaydex.com.au/" />
-    <meta property="og:title" content="MyPlaydex — Greater Perth Amateur Sports Discovery" />
-    <meta property="og:description" content="Find social soccer, volleyball, basketball, AFL, tennis, pickleball, and run clubs near you in Greater Perth." />
+    <meta
+      property="og:title"
+      content="MyPlaydex — Perth Activities, Social Sports, Arts &amp; Venues"
+    />
+    <meta
+      property="og:description"
+      content="Explore upcoming local activities, social sports, arts, live music, wellness, family outings, community organizers, and venues near you across Greater Perth, Western Australia."
+    />
     <meta property="og:image" content="https://myplaydex.com.au/og-card.png" />
+    <meta
+      property="og:image:alt"
+      content="MyPlaydex — Local activities, social sports, organizers, and venues across Greater Perth, Western Australia
+
+      "
+    />
 
     <!-- Twitter -->
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="MyPlaydex — Greater Perth Amateur Sports Discovery" />
-    <meta name="twitter:description" content="Find social soccer, volleyball, basketball, AFL, tennis, pickleball, and run clubs near you in Greater Perth." />
-    <meta name="twitter:image" content="https://myplaydex.com.au/og-card.png" />
     <meta name="twitter:url" content="https://myplaydex.com.au/" />
+    <meta
+      name="twitter:title"
+      content="MyPlaydex — Perth Activities, Social Sports, Arts &amp; Venues"
+    />
+    <meta
+      name="twitter:description"
+      content="Explore upcoming local activities, social sports, arts, live music, wellness, family outings, community organizers, and venues near you across Greater Perth, WA — no account required."
+    />
+    <meta name="twitter:image" content="https://myplaydex.com.au/og-card.png" />
+    <meta
+      name="twitter:image:alt"
+      content="MyPlaydex — Local activities, social sports, organizers, and venues across Greater Perth, Western Australia"
+    />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "Organization",
+            "@id": "https://myplaydex.com.au/#organization",
+            "name": "MyPlaydex",
+            "url": "https://myplaydex.com.au/",
+            "areaServed": {
+              "@type": "AdministrativeArea",
+              "name": "Greater Perth, Western Australia"
+            }
+          },
+          {
+            "@type": "WebSite",
+            "@id": "https://myplaydex.com.au/#website",
+            "url": "https://myplaydex.com.au/",
+            "name": "MyPlaydex",
+            "inLanguage": "en-AU",
+            "description": "Find local activities, social sports, arts, music, wellness, family outings, organizers, and venues across Greater Perth, Western Australia.",
+            "publisher": {
+              "@id": "https://myplaydex.com.au/#organization"
+            },
+            "about": [
+              "Sports & Fitness",
+              "Health & Wellness",
+              "Arts & Culture",
+              "Music",
+              "Community",
+              "Family & Education",
+              "Food & Drink",
+              "Hobbies",
+              "Travel & Outdoor"
+            ]
+          }
+        ]
+      }
+    </script>
 
     <link rel="stylesheet" href="./src/styles.css" />
   </head>
@@ -42,7 +108,7 @@
             class="suggest-header-link"
             id="suggest-header-btn"
             aria-label="Suggest an Activity"
-            title="Suggest an activity or club"
+            title="Suggest an activity or organizer"
             target="_blank"
             rel="noopener noreferrer"
           >
@@ -82,6 +148,10 @@
 
     <!-- Main Feed & Controls -->
     <main class="main-layout">
+      <h1 class="visually-hidden">
+        MyPlaydex Perth — Local Activities, Social Sports, Organizers &amp;
+        Venues
+      </h1>
       <!-- Top-Level 3-Tab Discovery Switcher -->
       <section class="discovery-tabs-section" aria-label="Discovery lists">
         <div
@@ -210,10 +280,12 @@
         </button>
 
         <div class="gate-hero-icon" aria-hidden="true">📍</div>
-        <h2 id="gate-title" class="gate-title">Find Social Sports Near You</h2>
+        <h2 id="gate-title" class="gate-title">
+          Find Local Activities Near You
+        </h2>
         <p class="gate-subtitle">
-          Explore casual social sports, club training sessions, and weekend
-          kickabouts across Greater Perth.
+          Explore social sports, arts, live music, wellness, family outings,
+          organizers, and venues across Greater Perth, Western Australia.
         </p>
 
         <div class="gate-actions">
