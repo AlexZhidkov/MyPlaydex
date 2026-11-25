@@ -6,7 +6,6 @@
  * through sanitization, entity matching, and deduplication with 7d/30d backoff (ADR 0013).
  */
 
-import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { deduplicateActivities } from './activity-deduplicator.js';
@@ -22,6 +21,13 @@ import { reconcileListingWithCatalog } from './entity-matcher.js';
 import { createFileCacheStore } from './file-cache.js';
 import { createFirecrawlClientFromEnv } from './firecrawl-client.js';
 import { createFirestoreAdapter, initFirestoreFromEnv } from './firestore-adapter.js';
+import { createGeminiFlashClientFromEnv } from './gemini-flash-client.js';
+import {
+  MAX_HORIZON_MS,
+  buildDeterministicSourceId,
+  buildOrganizerWebsiteSourceRef,
+  extractMarkdownActivities
+} from './markdown-activity-extractor.js';
 import { loadDotEnv } from './places-sync.js';
 import {
   normalizeSport,
@@ -39,7 +45,6 @@ export const DEFAULT_MAX_URLS_PER_DOMAIN = 5;
 export const DEFAULT_MAP_CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVE_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
 export const DEFAULT_ZERO_YIELD_BACKOFF_MS = 30 * 24 * 60 * 60 * 1000;
-const MAX_HORIZON_MS = 183 * 24 * 60 * 60 * 1000;
 
 const HIGH_SIGNAL_KEYWORDS = [
   '/events',
@@ -347,28 +352,10 @@ function pickPhysicalLocation(rawLocation) {
   return null;
 }
 
-function buildDeterministicSourceId(scrapedUrl, title, startDate) {
-  return createHash('sha256')
-    .update(`${scrapedUrl}|${title}|${startDate}`)
-    .digest('hex')
-    .slice(0, 16);
-}
-
 function parseAwstTimestampMs(rawTimestamp) {
   if (!rawTimestamp) return NaN;
   const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(rawTimestamp);
   return Date.parse(isDateOnly ? `${rawTimestamp}T23:59:59+08:00` : rawTimestamp);
-}
-
-function buildOrganizerWebsiteSourceRef(sourceId, scrapedUrl) {
-  return {
-    source: 'organizer_website',
-    source_id: sourceId,
-    source_key: `organizer_website_${sourceId}`,
-    source_url: scrapedUrl,
-    raw_source_url: scrapedUrl,
-    verified: true
-  };
 }
 
 /**
@@ -439,9 +426,43 @@ export function extractOrganizerWebsiteActivities(html = '', { scrapedUrl, organ
   return results;
 }
 
+function resolveOrganizerHomeVenue(organizer) {
+  if (!organizer || typeof organizer !== 'object') return null;
+  const venue = organizer.venue && typeof organizer.venue === 'object' ? organizer.venue : null;
+  const id = (typeof venue?.id === 'string' && venue.id.trim())
+    || (typeof organizer.venue_id === 'string' && organizer.venue_id.trim())
+    || null;
+  const name = (typeof venue?.name === 'string' && venue.name.trim())
+    || (typeof organizer.venue_name === 'string' && organizer.venue_name.trim())
+    || '';
+  const coords = venue?.coordinates || organizer.coordinates || null;
+  if (!id || !name || !coords || typeof coords.lat !== 'number' || typeof coords.lng !== 'number') {
+    return null;
+  }
+  return {
+    id,
+    name,
+    coordinates: coords,
+    ...(venue?.geohash ? { geohash: venue.geohash } : {})
+  };
+}
+
 function ingestWebsiteActivity(rawActivity, { venuesCatalog, organizersCatalog, organizer }) {
-  const resolved = resolveActivityVenueAndCoordinates(rawActivity, {
-    venuesCatalog,
+  const homeVenue = resolveOrganizerHomeVenue(organizer);
+  const rawVenueName = typeof rawActivity.venue_name === 'string' ? rawActivity.venue_name.trim() : '';
+  const shouldUseHomeVenue = Boolean(
+    homeVenue && (!rawVenueName || rawVenueName.toLowerCase() === homeVenue.name.toLowerCase())
+  );
+
+  const effectiveVenuesCatalog = shouldUseHomeVenue && !venuesCatalog.some(v => v.id === homeVenue.id)
+    ? [...venuesCatalog, homeVenue]
+    : venuesCatalog;
+  const effectiveRawActivity = shouldUseHomeVenue && !rawVenueName
+    ? { ...rawActivity, venue_name: homeVenue.name }
+    : rawActivity;
+
+  const resolved = resolveActivityVenueAndCoordinates(effectiveRawActivity, {
+    venuesCatalog: effectiveVenuesCatalog,
     organizersCatalog,
     parentOrganizer: organizer
   });
@@ -450,16 +471,16 @@ function ingestWebsiteActivity(rawActivity, { venuesCatalog, organizersCatalog, 
   }
 
   const sanitized = sanitizeActivity({
-    ...rawActivity,
+    ...effectiveRawActivity,
     coordinates: resolved.coordinates,
     geohash: resolved.geohash,
-    venue_name: resolved.venueOverride?.name || rawActivity.venue_name || rawActivity.title,
-    organizer: organizer ? { id: organizer.id, name: organizer.name } : rawActivity.organizer
+    venue_name: resolved.venueOverride?.name || effectiveRawActivity.venue_name || effectiveRawActivity.title,
+    organizer: organizer ? { id: organizer.id, name: organizer.name } : effectiveRawActivity.organizer
   });
 
   const reconciled = reconcileListingWithCatalog(
     sanitized,
-    { venuesCatalog, organizersCatalog },
+    { venuesCatalog: effectiveVenuesCatalog, organizersCatalog },
     'activity'
   );
   applyVenueResolution(reconciled, resolved, sanitized.venue);
@@ -467,6 +488,9 @@ function ingestWebsiteActivity(rawActivity, { venuesCatalog, organizersCatalog, 
   if (rawActivity._missingStartTime && !reconciled.needs_review) {
     reconciled.needs_review = true;
     reconciled.review_reason = 'missing_start_time';
+  } else if (rawActivity._lowConfidence && !reconciled.needs_review) {
+    reconciled.needs_review = true;
+    reconciled.review_reason = 'low_confidence';
   }
 
   const sourceRef = buildOrganizerWebsiteSourceRef(reconciled.source_id, rawActivity.source_url);
@@ -488,6 +512,7 @@ function ingestWebsiteActivity(rawActivity, { venuesCatalog, organizersCatalog, 
 export async function runOrganizerWebsiteSync({
   adapter,
   firecrawlClient = null,
+  geminiClient = null,
   cacheStore = null,
   options = {},
   logger = console
@@ -510,6 +535,7 @@ export async function runOrganizerWebsiteSync({
       mappedUrls: 0,
       scrapedUrls: 0,
       failedDomains: 0,
+      llmFallbackCalls: 0,
       extractedCount: 0,
       validCount: 0,
       upsertedCount: 0
@@ -541,6 +567,7 @@ export async function runOrganizerWebsiteSync({
   let mappedUrls = 0;
   let scrapedUrls = 0;
   let failedDomains = 0;
+  let llmFallbackCalls = 0;
   let extractedCount = 0;
   const validActivities = [];
 
@@ -568,18 +595,29 @@ export async function runOrganizerWebsiteSync({
       for (const candidateUrl of candidateUrls) {
         try {
           const scraped = await firecrawlClient.scrape(candidateUrl, {
-            formats: ['html'],
+            formats: ['html', 'markdown'],
             onlyMainContent: false,
             refresh
           });
           scrapedUrls += 1;
           domainHadScrapeSuccess = true;
 
-          const rawActivities = extractOrganizerWebsiteActivities(scraped?.html || '', {
+          let rawActivities = extractOrganizerWebsiteActivities(scraped?.html || '', {
             scrapedUrl: candidateUrl,
             organizer: target.organizer,
             now
           });
+          if (rawActivities.length === 0 && geminiClient && typeof scraped?.markdown === 'string' && scraped.markdown.trim()) {
+            llmFallbackCalls += 1;
+            rawActivities = await extractMarkdownActivities({
+              markdown: scraped.markdown,
+              scrapedUrl: candidateUrl,
+              organizer: target.organizer,
+              geminiClient,
+              now,
+              logger
+            });
+          }
           extractedCount += rawActivities.length;
 
           for (const rawActivity of rawActivities) {
@@ -638,6 +676,7 @@ export async function runOrganizerWebsiteSync({
     mappedUrls,
     scrapedUrls,
     failedDomains,
+    llmFallbackCalls,
     extractedCount,
     validCount: validActivities.length,
     upsertedCount
@@ -696,10 +735,17 @@ export async function main(argv = process.argv.slice(2), env = process.env, opti
   }
 
   const cacheStore = options.cacheStore || createFileCacheStore(DEFAULT_ORGANIZER_WEBSITE_CACHE_PATH, { flushEvery: 10 });
+  const geminiClient = options.geminiClient !== undefined
+    ? options.geminiClient
+    : createGeminiFlashClientFromEnv(env, {
+        fetchFn: options.fetchFn,
+        logger
+      });
 
   return runOrganizerWebsiteSync({
     adapter,
     firecrawlClient,
+    geminiClient,
     cacheStore,
     options: {
       ...parsedArgs,

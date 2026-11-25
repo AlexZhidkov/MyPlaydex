@@ -389,4 +389,197 @@ describe('Organizer Website Drip Sync (Issue #53)', () => {
     const brochureCp = await cacheStore.read('drip_checkpoint|https://brochure.org.au/');
     assert.equal(brochureCp.lastYieldCount, 0);
   });
+
+  it('Seam 6: invokes Gemini Flash Markdown fallback only when JSON-LD yields 0, skips when GEMINI_API_KEY is unset, and enforces weekly/dated + Unreviewed Listing guardrails', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'myplaydex-org-gemini-'));
+    const cacheStore = createFileCacheStore(path.join(tmpDir, 'cache.json'));
+    const now = new Date('2026-11-25T10:00:00+08:00');
+
+    const geminiCalls = [];
+    const firecrawlClient = {
+      async map(url) {
+        return {
+          url,
+          links: [new URL('/events', url).href, new URL('/timetable', url).href],
+          fromCache: false
+        };
+      },
+      async scrape(url) {
+        if (url.endsWith('/events')) {
+          return {
+            url,
+            html: `<script type="application/ld+json">${JSON.stringify({
+              '@type': 'Event',
+              name: 'JSON-LD Club Event',
+              startDate: '2026-12-05T08:00:00',
+              location: { '@type': 'Place', name: 'Kings Park', geo: { latitude: -31.9615, longitude: 115.8435 } }
+            })}</script>`,
+            markdown: '# JSON-LD Club Event\nDec 5 8am at Kings Park',
+            links: []
+          };
+        }
+        return {
+          url,
+          html: '<html><body><p>Tuesday Social Badminton 7pm-9pm</p></body></html>',
+          markdown: '# Timetable\n- Tuesday Social Badminton 7pm-9pm\n- Beginners Clinic 2026-12-10\n- AGM Notice',
+          links: []
+        };
+      },
+      async flushCache() {}
+    };
+
+    const geminiClient = {
+      async extractActivitiesFromMarkdown(payload) {
+        geminiCalls.push(payload);
+        return {
+          activities: [
+            {
+              title: 'Tuesday Social Badminton',
+              category: 'sports',
+              weekday: 'Tuesday',
+              start_date: null,
+              end_date: null,
+              start_time: '19:00',
+              end_time: '21:00',
+              venue_name: null,
+              is_noise: false,
+              confidence: 'high'
+            },
+            {
+              title: 'Friday Park Run',
+              category: 'sports',
+              weekday: 'Friday',
+              start_date: null,
+              end_date: null,
+              start_time: '07:00',
+              end_time: '08:00',
+              venue_name: 'Kings Park',
+              is_noise: false,
+              confidence: 'high'
+            },
+            {
+              title: 'Unmatched Venue Class',
+              category: 'sports',
+              weekday: null,
+              start_date: '2026-12-10',
+              end_date: null,
+              start_time: '18:00',
+              end_time: null,
+              venue_name: 'Mystery Unlisted Hall',
+              is_noise: false,
+              confidence: 'high'
+            },
+            {
+              title: 'Low Confidence Clinic',
+              category: 'sports',
+              weekday: null,
+              start_date: '2026-12-11',
+              end_date: null,
+              start_time: '18:00',
+              end_time: null,
+              venue_name: 'Kings Park',
+              is_noise: false,
+              confidence: 'low'
+            },
+            {
+              title: 'Missing Time Open Day',
+              category: 'sports',
+              weekday: null,
+              start_date: '2026-12-12',
+              end_date: null,
+              start_time: null,
+              end_time: null,
+              venue_name: 'Kings Park',
+              is_noise: false,
+              confidence: 'high'
+            },
+            {
+              title: 'Annual General Meeting',
+              category: 'community',
+              weekday: 'Wednesday',
+              start_time: '18:00',
+              is_noise: false,
+              confidence: 'high'
+            }
+          ]
+        };
+      }
+    };
+
+    const organizers = [
+      {
+        id: 'org_home',
+        name: 'Perth Badminton Club',
+        website: 'https://badminton.org.au',
+        venue: {
+          id: 'venue_home_hall',
+          name: 'Perth Badminton Hall',
+          coordinates: { lat: -31.9505, lng: 115.8605 }
+        }
+      }
+    ];
+    const venues = [
+      { id: 'venue_kings_park', name: 'Kings Park', coordinates: { lat: -31.9615, lng: 115.8435 } }
+    ];
+
+    const adapter = createMemoryAdapter({ organizers, venues });
+    const summary = await runOrganizerWebsiteSync({
+      adapter,
+      firecrawlClient,
+      geminiClient,
+      cacheStore,
+      options: { dryRun: false, maxDomains: 5, maxUrlsPerDomain: 3, now },
+      logger: { log() {}, warn() {}, error() {} }
+    });
+
+    // Only /timetable (0 JSON-LD) should invoke Gemini; /events (1 JSON-LD) must NOT invoke Gemini
+    assert.equal(geminiCalls.length, 1);
+    assert.equal(geminiCalls[0].sourceUrl, 'https://badminton.org.au/timetable');
+    assert.equal(summary.llmFallbackCalls, 1);
+    assert.equal(summary.upsertedCount, 6);
+
+    const saved = adapter.upsertedBatches[0];
+    const weekly = saved.find(a => a.title === 'Tuesday Social Badminton');
+    assert.ok(weekly);
+    assert.equal(weekly.schedule.recurrence, 'weekly');
+    assert.equal(weekly.expire_at, null);
+    assert.equal(weekly.venue.id, 'venue_home_hall');
+    assert.equal(weekly.needs_review, false);
+
+    const canonicalDirect = saved.find(a => a.title === 'Friday Park Run');
+    assert.ok(canonicalDirect);
+    assert.equal(canonicalDirect.venue.id, 'venue_kings_park');
+    assert.equal(canonicalDirect.needs_review, false);
+
+    const unmatchedVenue = saved.find(a => a.title === 'Unmatched Venue Class');
+    assert.ok(unmatchedVenue);
+    assert.equal(unmatchedVenue.schedule.recurrence, 'none');
+    assert.ok(unmatchedVenue.expire_at instanceof Date);
+    assert.equal(unmatchedVenue.needs_review, true);
+    assert.equal(unmatchedVenue.review_reason, 'unmatched_venue');
+
+    const lowConf = saved.find(a => a.title === 'Low Confidence Clinic');
+    assert.ok(lowConf);
+    assert.equal(lowConf.needs_review, true);
+    assert.equal(lowConf.review_reason, 'low_confidence');
+
+    const missingTime = saved.find(a => a.title === 'Missing Time Open Day');
+    assert.ok(missingTime);
+    assert.equal(missingTime.needs_review, true);
+    assert.equal(missingTime.review_reason, 'missing_start_time');
+
+    // When GEMINI_API_KEY is unset in main(), sync skips Gemini fallback cleanly
+    const unsetSummary = await main(
+      ['--apply', '--max-domains', '1'],
+      { FIRECRAWL_LOCAL_URL: 'http://127.0.0.1:3002' },
+      {
+        adapter: createMemoryAdapter({ organizers, venues }),
+        firecrawlClient,
+        cacheStore: createFileCacheStore(path.join(tmpDir, 'cache-unset.json')),
+        logger: { log() {}, warn() {}, error() {} }
+      }
+    );
+    assert.equal(unsetSummary.llmFallbackCalls, 0);
+    assert.equal(unsetSummary.upsertedCount, 1);
+  });
 });
