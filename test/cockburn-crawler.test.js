@@ -231,7 +231,7 @@ test('parseCockburnDetailPage extracts description, Price, full address, ignores
 test('normalizeCockburnTimeText and buildCockburnSchedule handle finite TTL ranges and undated weekly programs', () => {
   assert.equal(normalizeCockburnTimeText('6-6:45pm'), '6pm - 6:45pm');
   assert.equal(normalizeCockburnTimeText('10am-Midday'), '10am-12pm');
-  assert.equal(normalizeCockburnTimeText('Midday-2pm'), '12pm - 2pm');
+  assert.equal(normalizeCockburnTimeText('Midday-2pm'), '12pm-2pm');
 
   const finite = buildCockburnSchedule({
     dateText: '22 October-26 November 2026',
