@@ -1250,6 +1250,153 @@ test('Seam 2: batchUpsertRecords preserves needs_review: false and curated field
   assert.equal(store.venues.size, 0);
 });
 
+test('batchApplyActivityDeduplication respects dryRun, handles empty inputs, chunks sets before deletes within batchSize, and converts audit/expire timestamps', async () => {
+  const dryAdapter = createFirestoreAdapter({ dryRun: true });
+  const emptyRes = await dryAdapter.batchApplyActivityDeduplication({ updates: [], deleteIds: [] });
+  assert.deepEqual(emptyRes, { updated: 0, deleted: 0, failed: 0, batches: 0, errors: [], dryRun: true });
+
+  const dryRes = await dryAdapter.batchApplyActivityDeduplication({
+    updates: [{ id: 'act_1', title: 'Activity 1' }],
+    deleteIds: ['act_2', 'act_1']
+  });
+  assert.equal(dryRes.updated, 1);
+  assert.equal(dryRes.deleted, 1);
+  assert.equal(dryRes.dryRun, true);
+  assert.equal(dryRes.batches, 1);
+
+  const committedBatches = [];
+  const operationsLog = [];
+  const mockDb = {
+    collection(colName) {
+      assert.equal(colName, 'activities');
+      return {
+        doc(id) {
+          return { id, colName, path: `${colName}/${id}` };
+        }
+      };
+    },
+    batch() {
+      const ops = [];
+      return {
+        set(docRef, data, options) {
+          ops.push({ type: 'set', docRef, data, options });
+          operationsLog.push({ type: 'set', id: docRef.id, data, options });
+        },
+        delete(docRef) {
+          ops.push({ type: 'delete', docRef });
+          operationsLog.push({ type: 'delete', id: docRef.id });
+        },
+        async commit() {
+          if (ops.length > 4) {
+            throw new Error(`Batch limit exceeded: ${ops.length}`);
+          }
+          committedBatches.push([...ops]);
+        }
+      };
+    }
+  };
+
+  const liveAdapter = createFirestoreAdapter({ db: mockDb, dryRun: false, batchSize: 4 });
+  const expireDate = new Date('2026-12-10T16:00:00.000Z');
+  const res = await liveAdapter.batchApplyActivityDeduplication({
+    updates: [
+      { id: 'survivor_1', title: 'Survivor 1', expire_at: expireDate, _private: 'strip-me' },
+      { id: 'survivor_2', title: 'Survivor 2', expire_at: null },
+      { id: 'survivor_3', title: 'Survivor 3' }
+    ],
+    deleteIds: ['dup_1', 'dup_2', 'dup_2', 'survivor_1', 'dup_3']
+  });
+
+  assert.equal(res.dryRun, false);
+  assert.equal(res.failed, 0);
+  assert.equal(res.updated, 3);
+  assert.equal(res.deleted, 3);
+  assert.equal(res.batches, 2);
+  assert.equal(committedBatches.length, 2);
+  assert.equal(committedBatches[0].length, 4);
+  assert.equal(committedBatches[1].length, 2);
+
+  // Sets precede deletes and survivor_1 is never deleted
+  assert.deepEqual(
+    operationsLog.map(o => `${o.type}:${o.id}`),
+    ['set:survivor_1', 'set:survivor_2', 'set:survivor_3', 'delete:dup_1', 'delete:dup_2', 'delete:dup_3']
+  );
+
+  const firstSet = operationsLog[0];
+  assert.equal(firstSet.options.merge, true);
+  assert.equal('_private' in firstSet.data, false);
+  assert.ok(firstSet.data.created_at instanceof Timestamp);
+  assert.ok(firstSet.data.updated_at instanceof Timestamp);
+  assert.ok(firstSet.data.expire_at instanceof Timestamp);
+  assert.equal(firstSet.data.expire_at.toDate().toISOString(), '2026-12-10T16:00:00.000Z');
+});
+
+test('batchApplyActivityDeduplication coerces ISO expire_at and Timestamp-like created_at, and aborts delete chunks if a set chunk fails', async () => {
+  const committedDocs = [];
+  const committedDeletes = [];
+  let commitCount = 0;
+
+  const failingDb = {
+    collection() {
+      return { doc: id => ({ id }) };
+    },
+    batch() {
+      const ops = [];
+      return {
+        set(docRef, data) {
+          ops.push({ type: 'set', id: docRef.id, data });
+        },
+        delete(docRef) {
+          ops.push({ type: 'delete', id: docRef.id });
+        },
+        async commit() {
+          commitCount += 1;
+          if (commitCount === 1) {
+            for (const op of ops) {
+              if (op.type === 'set') committedDocs.push(op);
+            }
+            return;
+          }
+          if (commitCount === 2) {
+            throw new Error('Batch 2 write failed');
+          }
+          for (const op of ops) {
+            if (op.type === 'delete') committedDeletes.push(op.id);
+          }
+        }
+      };
+    }
+  };
+
+  const adapter = createFirestoreAdapter({ db: failingDb, dryRun: false, batchSize: 4 });
+  const createdMs = Date.parse('2026-10-01T00:00:00.000Z');
+  const res = await adapter.batchApplyActivityDeduplication({
+    updates: [
+      {
+        id: 's1',
+        title: 'S1',
+        created_at: { toMillis: () => createdMs },
+        expire_at: '2026-12-15T16:00:00.000Z'
+      },
+      { id: 's2', title: 'S2' },
+      { id: 's3', title: 'S3' },
+      { id: 's4', title: 'S4' },
+      { id: 's5', title: 'S5' }
+    ],
+    deleteIds: ['d1', 'd2', 'd3', 'd4']
+  });
+
+  assert.equal(committedDocs[0].data.created_at.toMillis(), createdMs);
+  assert.ok(committedDocs[0].data.expire_at instanceof Timestamp);
+  assert.equal(committedDocs[0].data.expire_at.toDate().toISOString(), '2026-12-15T16:00:00.000Z');
+  assert.equal(res.updated, 4);
+  assert.equal(res.deleted, 0);
+  assert.equal(res.failed, 5);
+  assert.equal(committedDeletes.length, 0);
+  assert.match(res.errors[0].message, /Batch 2 write failed/);
+});
+
+
 
 
 

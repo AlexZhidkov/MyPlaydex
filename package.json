@@ -8,6 +8,7 @@
     "crawl": "node src/crawler-runner.js",
     "crawl:dry-run": "node src/crawler-runner.js --dry-run",
     "verify-urls": "node src/verifier-cli.js",
+    "dedupe:activities": "node src/dedupe-activities-cli.js",
     "sync:places": "node src/places-sync.js",
     "sync:facebook": "node src/facebook-sync.js",
     "sync:eventbrite": "node src/eventbrite-sync.js",

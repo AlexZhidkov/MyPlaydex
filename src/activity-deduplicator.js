@@ -472,6 +472,59 @@ export function mergeMatchedActivities(existingDoc, incomingDoc) {
   return mergeActivityDocuments(existingDoc, nextForMerge);
 }
 
+function findBestCandidateMatch(incoming, catalog) {
+  let bestMergeIndex = -1;
+  let bestMergeMatch = null;
+  let bestBorderlineIndex = -1;
+  let bestBorderlineMatch = null;
+
+  for (let i = 0; i < catalog.length; i++) {
+    const candidate = catalog[i];
+    const evaluation = evaluateCandidateMatch(incoming, candidate);
+    if (evaluation.action === 'merge') {
+      if (!bestMergeMatch || evaluation.score > bestMergeMatch.score) {
+        bestMergeMatch = evaluation;
+        bestMergeIndex = i;
+      }
+    } else if (evaluation.action === 'flag_borderline') {
+      if (!bestBorderlineMatch || evaluation.score > bestBorderlineMatch.score) {
+        bestBorderlineMatch = evaluation;
+        bestBorderlineIndex = i;
+      }
+    }
+  }
+
+  return { bestMergeIndex, bestMergeMatch, bestBorderlineIndex, bestBorderlineMatch };
+}
+
+function toCreatedAtMillis(value) {
+  if (value === undefined || value === null) return Infinity;
+  if (typeof value?.toMillis === 'function') {
+    const ms = value.toMillis();
+    return Number.isFinite(ms) ? ms : Infinity;
+  }
+  if (typeof value?.toDate === 'function') {
+    const ms = value.toDate().getTime();
+    return Number.isFinite(ms) ? ms : Infinity;
+  }
+  if (value instanceof Date) {
+    const ms = value.getTime();
+    return Number.isFinite(ms) ? ms : Infinity;
+  }
+  if (typeof value === 'string') {
+    const ms = Date.parse(value);
+    return Number.isFinite(ms) ? ms : Infinity;
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : Infinity;
+  }
+  if (typeof value === 'object' && typeof value.seconds === 'number') {
+    const ms = value.seconds * 1000 + Math.floor((value.nanoseconds || 0) / 1e6);
+    return Number.isFinite(ms) ? ms : Infinity;
+  }
+  return Infinity;
+}
+
 /**
  * Deduplicates incoming Activity documents against an existing /activities catalog.
  *
@@ -491,26 +544,11 @@ export function deduplicateActivities(incomingActivities = [], existingActivitie
   };
 
   for (const incoming of incomingActivities) {
-    let bestMergeIndex = -1;
-    let bestMergeMatch = null;
-    let bestBorderlineIndex = -1;
-    let bestBorderlineMatch = null;
-
-    for (let i = 0; i < catalog.length; i++) {
-      const candidate = catalog[i];
-      const evaluation = evaluateCandidateMatch(incoming, candidate);
-      if (evaluation.action === 'merge') {
-        if (!bestMergeMatch || evaluation.score > bestMergeMatch.score) {
-          bestMergeMatch = evaluation;
-          bestMergeIndex = i;
-        }
-      } else if (evaluation.action === 'flag_borderline') {
-        if (!bestBorderlineMatch || evaluation.score > bestBorderlineMatch.score) {
-          bestBorderlineMatch = evaluation;
-          bestBorderlineIndex = i;
-        }
-      }
-    }
+    const {
+      bestMergeIndex,
+      bestMergeMatch,
+      bestBorderlineIndex
+    } = findBestCandidateMatch(incoming, catalog);
 
     if (bestMergeIndex !== -1) {
       const merged = mergeMatchedActivities(catalog[bestMergeIndex], incoming);
@@ -570,5 +608,170 @@ export function deduplicateActivities(incomingActivities = [], existingActivitie
     activitiesToUpsert: Array.from(upsertMap.values()),
     catalog,
     stats
+  };
+}
+
+function flagBorderlineDoc(doc, candidate, dirtyIds, borderlinePairs) {
+  const alreadyFlagged = doc.needs_review === true &&
+    doc.review_reason === 'possible_duplicate' &&
+    doc.duplicate_candidate_id === candidate.id;
+
+  const updatedDoc = alreadyFlagged
+    ? { ...doc }
+    : {
+        ...doc,
+        needs_review: true,
+        review_reason: 'possible_duplicate',
+        duplicate_candidate_id: candidate.id
+      };
+
+  if (!alreadyFlagged) {
+    dirtyIds.add(doc.id);
+  }
+
+  borderlinePairs.push({
+    activityId: doc.id,
+    title: doc.title || '',
+    candidateId: candidate.id,
+    candidateTitle: candidate.title || '',
+    alreadyFlagged
+  });
+
+  return updatedDoc;
+}
+
+function mergeClusterPair(survivor, doc) {
+  if (survivor.needs_review !== false && doc.needs_review === false) {
+    // Keep the first-seen survivor identity/created_at and both Source References while preserving approved curation
+    const combinedRefs = [
+      ...extractSourceReferences(survivor),
+      ...extractSourceReferences(doc)
+    ];
+    const curatedAnchor = {
+      ...doc,
+      id: survivor.id,
+      source: survivor.source,
+      source_id: survivor.source_id,
+      sources: combinedRefs,
+      source_keys: Array.from(new Set(combinedRefs.map(r => r.source_key))).sort(),
+      created_at: survivor.created_at
+    };
+    return mergeMatchedActivities(curatedAnchor, survivor);
+  }
+  return mergeMatchedActivities(survivor, doc);
+}
+
+/**
+ * Plans a deduplication pass across an existing /activities catalog, grouping
+ * high-confidence duplicate clusters into their first-seen canonical survivor
+ * and flagging borderline pairs as Unreviewed Listing without deleting them.
+ *
+ * @param {Array<object>} [existingActivities=[]]
+ * @returns {object} Deduplication plan with clusters, borderlinePairs, updates, deletes, and stats
+ */
+export function planActivityDeduplication(existingActivities = []) {
+  const count = Array.isArray(existingActivities) ? existingActivities.length : 0;
+  if (count <= 1) {
+    return {
+      scannedCount: count,
+      clusters: [],
+      borderlinePairs: [],
+      activitiesToUpdate: [],
+      activityIdsToDelete: [],
+      stats: {
+        scanned: count,
+        clusters: 0,
+        mergedDocuments: 0,
+        deletedDocuments: 0,
+        borderlineFlagged: 0,
+        borderlinePairs: 0,
+        unchanged: count
+      }
+    };
+  }
+
+  const sorted = [...existingActivities].sort((a, b) => {
+    const aMs = toCreatedAtMillis(a?.created_at);
+    const bMs = toCreatedAtMillis(b?.created_at);
+    if (aMs !== bMs) return aMs < bMs ? -1 : 1;
+
+    const curationDiff = Number(b?.needs_review === false) - Number(a?.needs_review === false);
+    if (curationDiff !== 0) return curationDiff;
+
+    return String(a?.id || '').localeCompare(String(b?.id || ''));
+  });
+
+  const catalog = [];
+  const clustersBySurvivorId = new Map();
+  const borderlinePairs = [];
+  const dirtyIds = new Set();
+  const deletedIds = [];
+
+  for (const doc of sorted) {
+    const { bestMergeIndex, bestBorderlineIndex } = findBestCandidateMatch(doc, catalog);
+
+    if (bestMergeIndex !== -1) {
+      const survivor = catalog[bestMergeIndex];
+      catalog[bestMergeIndex] = mergeClusterPair(survivor, doc);
+      dirtyIds.add(survivor.id);
+
+      if (doc.id && doc.id !== survivor.id) {
+        deletedIds.push(doc.id);
+        if (!clustersBySurvivorId.has(survivor.id)) {
+          clustersBySurvivorId.set(survivor.id, { mergedIds: [] });
+        }
+        clustersBySurvivorId.get(survivor.id).mergedIds.push(doc.id);
+      }
+      continue;
+    }
+
+    if (bestBorderlineIndex !== -1) {
+      const candidate = catalog[bestBorderlineIndex];
+      if (doc.needs_review !== false) {
+        catalog.push(flagBorderlineDoc(doc, candidate, dirtyIds, borderlinePairs));
+      } else {
+        catalog.push({ ...doc });
+        if (candidate.needs_review !== false) {
+          catalog[bestBorderlineIndex] = flagBorderlineDoc(candidate, doc, dirtyIds, borderlinePairs);
+        }
+      }
+      continue;
+    }
+
+    catalog.push({ ...doc });
+  }
+
+  const catalogById = new Map(catalog.map(doc => [doc.id, doc]));
+  const clusters = Array.from(clustersBySurvivorId.entries()).map(([survivorId, entry]) => {
+    const finalDoc = catalogById.get(survivorId) || {};
+    return {
+      survivorId,
+      title: finalDoc.title || '',
+      redundantIds: entry.mergedIds,
+      primarySourceUrl: finalDoc.source_url || null,
+      verified: Boolean(finalDoc.verified),
+      recurrence: finalDoc.schedule?.recurrence || 'none',
+      sources: finalDoc.sources || extractSourceReferences(finalDoc),
+      sourceKeys: finalDoc.source_keys || []
+    };
+  });
+
+  const activitiesToUpdate = catalog.filter(doc => dirtyIds.has(doc.id));
+
+  return {
+    scannedCount: count,
+    clusters,
+    borderlinePairs,
+    activitiesToUpdate,
+    activityIdsToDelete: deletedIds,
+    stats: {
+      scanned: count,
+      clusters: clusters.length,
+      mergedDocuments: deletedIds.length,
+      deletedDocuments: deletedIds.length,
+      borderlineFlagged: borderlinePairs.filter(p => !p.alreadyFlagged).length,
+      borderlinePairs: borderlinePairs.length,
+      unchanged: catalog.length - dirtyIds.size
+    }
   };
 }

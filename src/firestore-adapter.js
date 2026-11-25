@@ -55,6 +55,14 @@ function toFirestoreTimestamp(value, fallback = Timestamp.now()) {
   if (value instanceof Timestamp) {
     return value;
   }
+  if (typeof value?.toMillis === 'function') {
+    const ms = value.toMillis();
+    return Number.isFinite(ms) ? Timestamp.fromMillis(ms) : fallback;
+  }
+  if (typeof value?.toDate === 'function') {
+    const date = value.toDate();
+    return date instanceof Date && !Number.isNaN(date.getTime()) ? Timestamp.fromDate(date) : fallback;
+  }
   if (value instanceof Date) {
     return Number.isNaN(value.getTime()) ? fallback : Timestamp.fromDate(value);
   }
@@ -64,7 +72,18 @@ function toFirestoreTimestamp(value, fallback = Timestamp.now()) {
       return Timestamp.fromDate(new Date(ms));
     }
   }
+  if (value && typeof value === 'object' && typeof value.seconds === 'number') {
+    return new Timestamp(value.seconds, value.nanoseconds || 0);
+  }
   return fallback;
+}
+
+function chunkArray(items, chunkSize) {
+  const chunks = [];
+  for (let i = 0; i < items.length; i += chunkSize) {
+    chunks.push(items.slice(i, i + chunkSize));
+  }
+  return chunks;
 }
 
 /**
@@ -209,10 +228,7 @@ export function createFirestoreAdapter(options = {}) {
     }
 
     const updateBatchSize = Math.min(Math.max(1, batchSize), FIRESTORE_MAX_BATCH_SIZE);
-    const chunks = [];
-    for (let i = 0; i < total; i += updateBatchSize) {
-      chunks.push(updates.slice(i, i + updateBatchSize));
-    }
+    const chunks = chunkArray(updates, updateBatchSize);
 
     if (dryRun || !db) {
       return { total, updated: total, failed: 0, batches: chunks.length, errors: [], dryRun };
@@ -471,6 +487,92 @@ export function createFirestoreAdapter(options = {}) {
     return { total, upserted, failed, batches: batchCount, errors, dryRun };
   }
 
+  /**
+   * Applies /activities deduplication updates and redundant document deletions
+   * in atomic Firestore batches (<= 500 ops per batch), executing sets before deletes.
+   *
+   * @param {object} [params={}]
+   * @param {Array<object>} [params.updates=[]]
+   * @param {Array<string>} [params.deleteIds=[]]
+   * @returns {Promise<{ updated: number, deleted: number, failed: number, batches: number, errors: Array<Error>, dryRun: boolean }>}
+   */
+  async function batchApplyActivityDeduplication({ updates = [], deleteIds = [] } = {}) {
+    const updateIds = new Set(updates.filter(u => u?.id).map(u => u.id));
+    const safeDeleteIds = Array.from(new Set(deleteIds.filter(id => id && !updateIds.has(id))));
+
+    const now = Timestamp.now();
+    const operations = [];
+
+    for (const item of updates) {
+      if (!item?.id) continue;
+      const clean = withAuditTimestamps(getCleanDocument(item), now);
+      if (clean.expire_at !== null && clean.expire_at !== undefined) {
+        clean.expire_at = toFirestoreTimestamp(clean.expire_at, null);
+      }
+      operations.push({ type: 'set', id: clean.id, data: clean });
+    }
+
+    for (const id of safeDeleteIds) {
+      operations.push({ type: 'delete', id });
+    }
+
+    if (operations.length === 0) {
+      return { updated: 0, deleted: 0, failed: 0, batches: 0, errors: [], dryRun };
+    }
+
+    const opBatchSize = Math.min(Math.max(1, batchSize), FIRESTORE_MAX_BATCH_SIZE);
+    const chunks = chunkArray(operations, opBatchSize);
+
+    const setOpsCount = operations.filter(op => op.type === 'set').length;
+    const deleteOpsCount = operations.filter(op => op.type === 'delete').length;
+
+    if (dryRun || !db) {
+      return {
+        updated: setOpsCount,
+        deleted: deleteOpsCount,
+        failed: 0,
+        batches: chunks.length,
+        errors: [],
+        dryRun: Boolean(dryRun || !db)
+      };
+    }
+
+    let updated = 0;
+    let deleted = 0;
+    let failed = 0;
+    const errors = [];
+
+    for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
+      const chunk = chunks[chunkIdx];
+      try {
+        const batch = db.batch();
+        let chunkSets = 0;
+        let chunkDeletes = 0;
+        for (const op of chunk) {
+          const docRef = db.collection(collectionName).doc(op.id);
+          if (op.type === 'set') {
+            batch.set(docRef, op.data, { merge: true });
+            chunkSets += 1;
+          } else {
+            batch.delete(docRef);
+            chunkDeletes += 1;
+          }
+        }
+        await batch.commit();
+        updated += chunkSets;
+        deleted += chunkDeletes;
+      } catch (err) {
+        // Abort remaining chunks so redundant docs are never deleted after a failed write batch
+        const remainingOps = chunks.slice(chunkIdx).reduce((sum, c) => sum + c.length, 0);
+        failed += remainingOps;
+        errors.push(err);
+        break;
+      }
+    }
+
+    return { updated, deleted, failed, batches: chunks.length, errors, dryRun };
+  }
+
   return {
     isDryRun() {
       return dryRun;
@@ -543,6 +645,10 @@ export function createFirestoreAdapter(options = {}) {
 
     batchUpsertListings(listings = []) {
       return batchUpsertRecords(listings);
+    },
+
+    batchApplyActivityDeduplication(params = {}) {
+      return batchApplyActivityDeduplication(params);
     }
   };
 }
