@@ -20,6 +20,9 @@ export const FREMANTLE_CONFIG = {
   minExpectedListings: 1,
   pageSize: 50,
   postType: 'event',
+  searchIndex: 'event',
+  hydrateDetail: 'always',
+  detailDelayMs: 300,
   defaultCost: 'See website',
   venueAliases: {
     Library: 'Fremantle Library'

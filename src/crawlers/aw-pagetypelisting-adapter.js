@@ -17,6 +17,7 @@ import {
   sleepMs
 } from './council-utils.js';
 import {
+  decodeHtmlEntities,
   extractAttr,
   extractTextByClassOrder,
   findBalancedTagEnd,
@@ -28,7 +29,17 @@ import {
 
 const DEFAULT_USER_AGENT = 'Mozilla/5.0 (compatible; MyPlaydexCrawler/1.0; +https://myplaydex.com/bot)';
 const DEFAULT_PAGE_SIZE = 50;
+const DEFAULT_DETAIL_DELAY_MS = 300;
 const DEFAULT_TIMEOUT_MS = 20000;
+const DAY_NAME_TO_INT = {
+  sunday: 0, sundays: 0,
+  monday: 1, mondays: 1,
+  tuesday: 2, tuesdays: 2,
+  wednesday: 3, wednesdays: 3,
+  thursday: 4, thursdays: 4,
+  friday: 5, fridays: 5,
+  saturday: 6, saturdays: 6
+};
 
 function createTimeoutSignal(parentSignal, timeoutMs) {
   if (typeof AbortSignal === 'undefined' || typeof AbortSignal.timeout !== 'function') {
@@ -78,7 +89,10 @@ function extractArticleCards(html = '', baseUrl = '') {
     const innerHtml = cleanHtml.slice(contentStart, innerEnd);
     openArticleRegex.lastIndex = outerEnd;
 
-    const nativeId = extractAttr(attrs, 'data-id') || extractAttr(attrs, 'data-event-id') || '';
+    const nativeId = extractAttr(attrs, 'data-id')
+      || extractAttr(attrs, 'data-post-id')
+      || extractAttr(attrs, 'data-event-id')
+      || '';
     const anchorHrefs = [...innerHtml.matchAll(/<a\b([^>]*)>/gi)]
       .map(m => extractAttr(m[1], 'href'))
       .filter(Boolean);
@@ -91,12 +105,25 @@ function extractArticleCards(html = '', baseUrl = '') {
       })();
 
     const description = extractTextByClassOrder(innerHtml, ['aw-card-excerpt', 'card-excerpt', 'excerpt', 'summary', 'description']);
-    const venueName = extractTextByClassOrder(innerHtml, ['aw-card-venue', 'card-venue', 'venue', 'location']);
+    let venueName = extractTextByClassOrder(innerHtml, ['aw-card-venue', 'card-venue', 'venue', 'location']);
     const address = extractTextByClassOrder(innerHtml, ['aw-card-address', 'card-address', 'address']);
-    const dateText = extractTextByClassOrder(innerHtml, ['aw-card-date', 'card-date', 'event-date', 'date']);
+    let dateText = extractTextByClassOrder(innerHtml, ['aw-card-date', 'card-date', 'event-date', 'date']);
     const timeText = extractTextByClassOrder(innerHtml, ['aw-card-time', 'card-time', 'event-time', 'time']);
-    const costText = extractTextByClassOrder(innerHtml, ['aw-cost-badge', 'cost-badge', 'cost', 'price']);
-    const tagText = extractTextByClassOrder(innerHtml, ['aw-card-category', 'event-categories', 'categories', 'tags']);
+    const costText = extractTextByClassOrder(innerHtml, ['aw-cost-badge', 'cost-badge', 'cost', 'price', 'tags']);
+    const tagText = extractTextByClassOrder(innerHtml, ['aw-card-category', 'event-categories', 'categories']);
+
+    if (!dateText || !venueName) {
+      for (const liMatch of innerHtml.matchAll(/<li\b[^>]*>([\s\S]*?)<\/li>/gi)) {
+        const liHtml = liMatch[1];
+        const liText = stripHtmlTags(liHtml);
+        if (!liText) continue;
+        if (!dateText && /fa-calendar/i.test(liHtml)) {
+          dateText = liText;
+        } else if (!venueName && /fa-location/i.test(liHtml)) {
+          venueName = liText;
+        }
+      }
+    }
 
     const classAttr = extractAttr(attrs, 'class') || '';
     const classTags = [...classAttr.matchAll(/\bevent-type-([a-z0-9-]+)\b/gi)]
@@ -124,10 +151,29 @@ function extractArticleCards(html = '', baseUrl = '') {
 
 function getRecordId(record) {
   if (!record || typeof record !== 'object') return '';
-  const candidate = record.ID ?? record.id ?? record.post_id ?? record.event_id ?? record.nativeId;
+  const candidate = record.ID
+    ?? record.id
+    ?? record.post_id
+    ?? record.event_id
+    ?? record.nativeId
+    ?? record.post?.ID
+    ?? record.post?.id;
   return candidate !== undefined && candidate !== null && String(candidate).trim() !== ''
     ? String(candidate).trim()
     : '';
+}
+
+function to24HourClock(hourRaw, minRaw, meridiemRaw) {
+  let hour = Number.parseInt(hourRaw, 10);
+  const min = minRaw || '00';
+  const meridiem = meridiemRaw.toLowerCase();
+  if (meridiem === 'pm' && hour < 12) hour += 12;
+  if (meridiem === 'am' && hour === 12) hour = 0;
+  return `${String(hour).padStart(2, '0')}:${min}:00`;
+}
+
+function formatAwstIso(date, clock = '00:00:00') {
+  return `${date}T${clock}+08:00`;
 }
 
 function normalizeAwTimestamp(rawDate, timeText = '') {
@@ -146,14 +192,9 @@ function normalizeAwTimestamp(rawDate, timeText = '') {
     const normalizedTime = normalizeTimeRangeText(timeText);
     const startMatch = normalizedTime.match(/\b(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm)\b/i);
     if (startMatch) {
-      let hour = Number.parseInt(startMatch[1], 10);
-      const min = startMatch[2] || '00';
-      const meridiem = startMatch[3].toLowerCase();
-      if (meridiem === 'pm' && hour < 12) hour += 12;
-      if (meridiem === 'am' && hour === 12) hour = 0;
-      return `${trimmed}T${String(hour).padStart(2, '0')}:${min}:00+08:00`;
+      return formatAwstIso(trimmed, to24HourClock(startMatch[1], startMatch[2], startMatch[3]));
     }
-    return `${trimmed}T00:00:00+08:00`;
+    return formatAwstIso(trimmed);
   }
   return trimmed;
 }
@@ -243,7 +284,11 @@ function mergeSingleItem(dataItem, htmlCard, sortedItem, config) {
   ];
 
   const timeText = String(dataItem.time || htmlCard.timeText || '').trim();
-  const rawStartDate = sortedItem.next_date || dataItem.next_date || dataItem.start_date || dataItem.start_time || htmlCard.dateText || '';
+  const nextDateRaw = sortedItem.next_date || dataItem.next_date || '';
+  const nextDate = typeof nextDateRaw === 'string' && /^\d{4}-\d{2}-\d{2}/.test(nextDateRaw.trim())
+    ? nextDateRaw.trim().slice(0, 10)
+    : '';
+  const rawStartDate = nextDateRaw || dataItem.start_date || dataItem.start_time || htmlCard.dateText || '';
   const startTime = normalizeAwTimestamp(rawStartDate, timeText) || normalizeTimeRangeText([htmlCard.dateText, timeText].filter(Boolean).join(' '));
   const endTime = normalizeAwTimestamp(dataItem.end_date || dataItem.end_time || '', timeText);
 
@@ -271,8 +316,13 @@ function mergeSingleItem(dataItem, htmlCard, sortedItem, config) {
     address,
     coordinates,
     rawTags,
+    dateText: htmlCard.dateText || '',
+    timeText,
+    nextDate,
     startTime,
     endTime,
+    recurrence: 'none',
+    dayOfWeek: null,
     costFields,
     organizer
   };
@@ -311,6 +361,273 @@ function mergeResponseItems(payload, config) {
   return merged;
 }
 
+function parseGoogleCalendarTimestamp(raw) {
+  if (!raw || typeof raw !== 'string') return { date: '', time: '', iso: '' };
+  const trimmed = raw.trim();
+  const dtMatch = trimmed.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(Z)?$/);
+  if (dtMatch) {
+    if (dtMatch[7] === 'Z') {
+      const utcMs = Date.UTC(
+        Number.parseInt(dtMatch[1], 10),
+        Number.parseInt(dtMatch[2], 10) - 1,
+        Number.parseInt(dtMatch[3], 10),
+        Number.parseInt(dtMatch[4], 10),
+        Number.parseInt(dtMatch[5], 10),
+        Number.parseInt(dtMatch[6], 10)
+      );
+      const awst = new Date(utcMs + 8 * 60 * 60 * 1000);
+      const date = awst.toISOString().slice(0, 10);
+      const time = awst.toISOString().slice(11, 19);
+      return { date, time, iso: formatAwstIso(date, time) };
+    }
+    const date = `${dtMatch[1]}-${dtMatch[2]}-${dtMatch[3]}`;
+    const time = `${dtMatch[4]}:${dtMatch[5]}:${dtMatch[6]}`;
+    return { date, time, iso: formatAwstIso(date, time) };
+  }
+  const dMatch = trimmed.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (dMatch) {
+    const date = `${dMatch[1]}-${dMatch[2]}-${dMatch[3]}`;
+    return { date, time: '', iso: formatAwstIso(date) };
+  }
+  return { date: '', time: '', iso: '' };
+}
+
+function extractGoogleCalendarData(html) {
+  const modalIdx = html.search(/id\s*=\s*["']addToCalendarModal["']/i);
+  const scope = modalIdx >= 0 ? html.slice(modalIdx, modalIdx + 4000) : html;
+  const hrefMatch = scope.match(/href\s*=\s*["'](https:\/\/www\.google\.com\/calendar\/render\?[^"']+)["']/i);
+  if (!hrefMatch) {
+    return { calendarStart: null, calendarEnd: null, calendarLocation: '' };
+  }
+
+  try {
+    const decodedHref = decodeHtmlEntities(hrefMatch[1]);
+    const parsedUrl = new URL(decodedHref);
+    const datesParam = parsedUrl.searchParams.get('dates') || '';
+    const [rawStart = '', rawEnd = ''] = datesParam.split('/');
+    const calendarStart = parseGoogleCalendarTimestamp(rawStart);
+    const calendarEnd = parseGoogleCalendarTimestamp(rawEnd);
+    const calendarLocation = (parsedUrl.searchParams.get('location') || '').replace(/[\s\u00a0]+/g, ' ').trim();
+    return {
+      calendarStart: calendarStart.date ? calendarStart : null,
+      calendarEnd: calendarEnd.date ? calendarEnd : null,
+      calendarLocation
+    };
+  } catch {
+    return { calendarStart: null, calendarEnd: null, calendarLocation: '' };
+  }
+}
+
+export function parseAwDetailPage(html = '') {
+  const cleanHtml = stripNonContentHtml(html);
+
+  const categoryTagSet = new Set();
+  for (const m of cleanHtml.matchAll(/\bevent-type-([a-z0-9-]+)\b/gi)) {
+    const normalized = m[1].replace(/-/g, ' ').trim();
+    if (normalized) categoryTagSet.add(normalized);
+  }
+
+  let dateFrequencyText = '';
+  let timeText = '';
+  let locationText = '';
+  let costText = '';
+
+  const labelRegex = /<div\b[^>]*class\s*=\s*["'][^"']*\btext-label\b[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*<div\b[^>]*>([\s\S]*?)<\/div>/gi;
+  let match;
+  while ((match = labelRegex.exec(cleanHtml)) !== null) {
+    const label = stripHtmlTags(match[1]).toLowerCase();
+    const value = stripHtmlTags(match[2]);
+    if (!value) continue;
+
+    if (!dateFrequencyText && /date|frequency/i.test(label)) {
+      dateFrequencyText = value;
+    } else if (!timeText && /^time$/i.test(label)) {
+      timeText = value;
+    } else if (!locationText && /^location|venue|where$/i.test(label)) {
+      locationText = value;
+    } else if (!costText && /^cost|price|fee$/i.test(label)) {
+      costText = value;
+    }
+  }
+
+  const { calendarStart, calendarEnd, calendarLocation } = extractGoogleCalendarData(cleanHtml);
+
+  return {
+    categoryTags: [...categoryTagSet],
+    dateFrequencyText,
+    timeText,
+    locationText,
+    costText,
+    calendarStart,
+    calendarEnd,
+    calendarLocation
+  };
+}
+
+function isMissingRequiredField(item, field) {
+  if (field === 'address') return !item.address;
+  if (field === 'time') return !item.timeText && !/T(?!00:00:00)/.test(item.startTime || '');
+  if (field === 'tags') return !Array.isArray(item.rawTags) || item.rawTags.length === 0;
+  return !item[field];
+}
+
+function shouldHydrateDetail(item, hydrateDetail, requiredListingFields, baseUrl) {
+  if (!item.url || item.url === baseUrl || hydrateDetail === 'never') {
+    return false;
+  }
+  if (hydrateDetail === 'always') {
+    return true;
+  }
+  return requiredListingFields.some(field => isMissingRequiredField(item, field));
+}
+
+function mergeLocationDetails(item, detail, config) {
+  const rawLocation = (
+    (detail.locationText && detail.locationText.includes(',') ? detail.locationText : '')
+    || detail.calendarLocation
+    || detail.locationText
+    || ''
+  ).trim();
+  if (!rawLocation) {
+    return { venueName: item.venueName, address: item.address };
+  }
+
+  let venueName = item.venueName;
+  let address = item.address;
+
+  const commaIdx = rawLocation.indexOf(',');
+  if (commaIdx > 0) {
+    const firstPart = rawLocation.slice(0, commaIdx).trim();
+    const restPart = rawLocation.slice(commaIdx + 1).trim();
+    const startsWithStreetNumber = /^\d+[a-z]?\s+/i.test(firstPart);
+
+    if (startsWithStreetNumber) {
+      if (!address || rawLocation.length > address.length) {
+        address = rawLocation;
+      }
+    } else {
+      if (!venueName) {
+        venueName = normalizeVenueName(firstPart, config);
+      }
+      if (restPart && (!address || restPart.length > address.length)) {
+        address = restPart;
+      }
+    }
+  } else if (!address) {
+    address = rawLocation;
+  }
+
+  return { venueName, address };
+}
+
+function extractTimePair(timeText) {
+  if (!timeText) return { startTime: '', endTime: '' };
+  const normalized = normalizeTimeRangeText(timeText);
+  const matches = [...normalized.matchAll(/\b(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm)\b/gi)];
+  return {
+    startTime: matches[0] ? to24HourClock(matches[0][1], matches[0][2], matches[0][3]) : '',
+    endTime: matches[1] ? to24HourClock(matches[1][1], matches[1][2], matches[1][3]) : ''
+  };
+}
+
+function resolveHydratedSchedule(item, detail) {
+  const dateFreq = detail.dateFrequencyText || item.dateText || '';
+  const timeText = detail.timeText || item.timeText || '';
+  const parsedTimes = extractTimePair(timeText);
+
+  const isWeekly = /\b(every|weekly|sundays?|mondays?|tuesdays?|wednesdays?|thursdays?|fridays?|saturdays?)\b/i.test(dateFreq);
+  const dayMatch = dateFreq.match(/\b(sundays?|mondays?|tuesdays?|wednesdays?|thursdays?|fridays?|saturdays?)\b/i);
+  const dayOfWeek = dayMatch ? DAY_NAME_TO_INT[dayMatch[1].toLowerCase()] : null;
+
+  const nextDate = item.nextDate || '';
+  const calStart = detail.calendarStart;
+  const calEnd = detail.calendarEnd;
+
+  const startClock = calStart?.time || parsedTimes.startTime || '00:00:00';
+  const endClock = calEnd?.time || parsedTimes.endTime || '';
+
+  if (isWeekly) {
+    const baseDate = (calStart?.date && (!nextDate || calStart.date >= nextDate))
+      ? calStart.date
+      : (nextDate || calStart?.date || '');
+
+    const startTime = baseDate
+      ? formatAwstIso(baseDate, startClock)
+      : item.startTime;
+    const endTime = baseDate && endClock
+      ? formatAwstIso(baseDate, endClock)
+      : (endClock ? endClock.slice(0, 5) : item.endTime);
+
+    return {
+      startTime,
+      endTime,
+      recurrence: 'weekly',
+      dayOfWeek
+    };
+  }
+
+  if (calStart?.date) {
+    const clampedStartDate = (nextDate && calStart.date < nextDate) ? nextDate : calStart.date;
+    const startTime = formatAwstIso(clampedStartDate, startClock);
+    const endTime = calEnd?.iso || (endClock ? formatAwstIso(clampedStartDate, endClock) : '');
+    return {
+      startTime,
+      endTime,
+      recurrence: 'none',
+      dayOfWeek: null
+    };
+  }
+
+  if (nextDate) {
+    const startTime = formatAwstIso(nextDate, startClock);
+    const endTime = endClock ? formatAwstIso(nextDate, endClock) : '';
+    return {
+      startTime,
+      endTime,
+      recurrence: 'none',
+      dayOfWeek: null
+    };
+  }
+
+  return {
+    startTime: item.startTime,
+    endTime: item.endTime,
+    recurrence: item.recurrence || 'none',
+    dayOfWeek: item.dayOfWeek ?? null
+  };
+}
+
+function mergeDetailIntoItem(item, detail, config) {
+  const { venueName, address } = mergeLocationDetails(item, detail, config);
+  const schedule = resolveHydratedSchedule(item, detail);
+  const rawTags = [...new Set([...(item.rawTags || []), ...(detail.categoryTags || [])])];
+
+  const costFields = (!item.costFields || item.costFields.cost_description === (config.defaultCost ?? 'See website')) && detail.costText
+    ? resolveCostFields(detail.costText, undefined, config.defaultCost ?? 'See website')
+    : item.costFields;
+
+  return {
+    ...item,
+    venueName,
+    address,
+    rawTags,
+    ...schedule,
+    costFields
+  };
+}
+
+function buildFilterCandidate(item) {
+  return {
+    title: item.title,
+    category: item.rawTags.join(', '),
+    venueName: item.venueName,
+    address: item.address,
+    start_time: item.startTime,
+    ...(item.endTime ? { end_time: item.endTime } : {}),
+    ...(item.recurrence === 'weekly' ? { recurrence: 'weekly', end_date: null } : {})
+  };
+}
+
 function mapToRawActivity(item, config) {
   const { category, subcategory } = resolveCouncilCategoryAndSubcategory(item.rawTags, item.title);
   return {
@@ -334,6 +651,8 @@ function mapToRawActivity(item, config) {
     ...(item.coordinates ? { coordinates: item.coordinates } : {}),
     start_time: item.startTime,
     ...(item.endTime ? { end_time: item.endTime } : {}),
+    ...(item.recurrence === 'weekly' ? { recurrence: 'weekly', end_date: null } : {}),
+    ...(item.dayOfWeek !== undefined && item.dayOfWeek !== null ? { day_of_week: item.dayOfWeek } : {}),
     ...item.costFields,
     demographics: {
       gender: 'all',
@@ -356,6 +675,9 @@ export function createAwPageTypeListingCrawler(config, options = {}) {
   const maxPages = typeof options.maxPages === 'number' ? options.maxPages : (config.maxPages || DEFAULT_MAX_PAGES);
   const maxActivities = typeof options.maxActivities === 'number' ? options.maxActivities : (config.maxActivities || DEFAULT_MAX_ACTIVITIES);
   const pageDelayMs = typeof options.pageDelayMs === 'number' ? options.pageDelayMs : (config.pageDelayMs ?? DEFAULT_PAGE_DELAY_MS);
+  const detailDelayMs = typeof options.detailDelayMs === 'number' ? options.detailDelayMs : (config.detailDelayMs ?? DEFAULT_DETAIL_DELAY_MS);
+  const hydrateDetail = options.hydrateDetail ?? config.hydrateDetail ?? 'when_missing';
+  const requiredListingFields = config.requiredListingFields || ['address', 'time', 'tags'];
   const horizonDays = typeof options.horizonDays === 'number' ? options.horizonDays : (config.horizonDays || DEFAULT_HORIZON_DAYS);
   const timeoutMs = typeof options.timeoutMs === 'number' ? options.timeoutMs : DEFAULT_TIMEOUT_MS;
   const filterOptions = {
@@ -425,19 +747,40 @@ export function createAwPageTypeListingCrawler(config, options = {}) {
           }
 
           const mappedItems = [];
-          for (const item of unseenItems) {
+          for (const rawItem of unseenItems) {
             if (totalKept >= maxActivities) break;
 
-            const filterCandidate = {
-              title: item.title,
-              category: item.rawTags.join(', '),
-              venueName: item.venueName,
-              address: item.address,
-              start_time: item.startTime,
-              ...(item.endTime ? { end_time: item.endTime } : {})
-            };
+            if (!filterCouncilItem(buildFilterCandidate(rawItem), filterOptions)) {
+              continue;
+            }
 
-            if (!filterCouncilItem(filterCandidate, filterOptions)) {
+            let item = rawItem;
+            if (shouldHydrateDetail(item, hydrateDetail, requiredListingFields, config.baseUrl)) {
+              if (detailDelayMs > 0) {
+                await delayFn(detailDelayMs);
+              }
+              try {
+                const detailSignal = createTimeoutSignal(options.signal, timeoutMs);
+                const detailRes = await fetchFn(item.url, {
+                  method: 'GET',
+                  headers: {
+                    Accept: 'text/html,application/xhtml+xml',
+                    'User-Agent': DEFAULT_USER_AGENT,
+                    ...(config.headers || {})
+                  },
+                  ...(detailSignal ? { signal: detailSignal } : {})
+                });
+                if (detailRes.ok && typeof detailRes.text === 'function') {
+                  const detailHtml = await detailRes.text();
+                  const detail = parseAwDetailPage(detailHtml);
+                  item = mergeDetailIntoItem(item, detail, config);
+                }
+              } catch {
+                // Keep listing-card data if detail hydration fails
+              }
+            }
+
+            if (!filterCouncilItem(buildFilterCandidate(item), filterOptions)) {
               continue;
             }
 

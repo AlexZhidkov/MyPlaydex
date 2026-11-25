@@ -67,6 +67,7 @@ test('Slice 1: Fremantle crawler posts AgencyWeb payload and parses data + htmlR
   const crawler = createFremantleCrawler({
     fetchFn: mockFetch,
     pageDelayMs: 0,
+    hydrateDetail: 'never',
     now: TEST_NOW
   });
 
@@ -82,7 +83,7 @@ test('Slice 1: Fremantle crawler posts AgencyWeb payload and parses data + htmlR
   assert.equal(requests[0].method, 'POST');
   assert.deepEqual(requests[0].body, {
     post_type: 'event',
-    SI: '',
+    SI: 'event',
     OB: '',
     Q: '',
     PS: 50,
@@ -153,6 +154,7 @@ test('Slice 2: Adapter paginates PG/PS with injectable delay, deduplicates sourc
     delayFn: async (ms) => { delays.push(ms); },
     pageDelayMs: 750,
     pageSize: 2,
+    hydrateDetail: 'never',
     now: TEST_NOW
   });
 
@@ -187,6 +189,7 @@ test('Slice 2: Adapter paginates PG/PS with injectable delay, deduplicates sourc
     fetchFn: cappedFetch,
     delayFn: async () => {},
     pageSize: 15,
+    hydrateDetail: 'never',
     now: TEST_NOW
   });
   const cappedListings = await cappedCrawler.fetchListings();
@@ -219,6 +222,7 @@ test('Slice 3: Venue aliasing ("Library" -> "Fremantle Library") and placeholder
       ]
     }),
     pageDelayMs: 0,
+    hydrateDetail: 'never',
     now: TEST_NOW
   });
   const listings = await crawler.fetchListings();
@@ -300,7 +304,7 @@ test('Slice 4: Cost badges map Free/Paid/See website and canonical fremantle.wa.
     }
   });
 
-  const crawler = createFremantleCrawler({ fetchFn: mockFetch, pageDelayMs: 0, now: TEST_NOW });
+  const crawler = createFremantleCrawler({ fetchFn: mockFetch, pageDelayMs: 0, hydrateDetail: 'never', now: TEST_NOW });
   const listings = await crawler.fetchListings();
   assert.equal(listings.length, 3);
 
@@ -372,7 +376,7 @@ test('Slice 5: Pre-filters civic/admin notices, online-only items, Expired Activ
     }
   });
 
-  const crawler = createFremantleCrawler({ fetchFn: mockFetch, pageDelayMs: 0, now: TEST_NOW });
+  const crawler = createFremantleCrawler({ fetchFn: mockFetch, pageDelayMs: 0, hydrateDetail: 'never', now: TEST_NOW });
   const listings = await crawler.fetchListings();
   assert.equal(listings.length, 1);
   assert.equal(listings[0].source_id, '405');
@@ -387,4 +391,331 @@ test('Slice 6: getDefaultCrawlers registers fremantle under councils group', () 
   assert.equal(fremantle.group, 'councils');
   assert.equal(fremantle.minExpectedListings, 1);
   assert.deepEqual(fremantle.fallbackCentroid, FREMANTLE_LGA_CENTROID);
+});
+
+test('Slice 7: Adapter hydrates detail pages only after pre-filtering, respects hydrateDetail modes and detailDelayMs, and falls back on fetch failure', async () => {
+  const requestedUrls = [];
+  const delays = [];
+
+  const listingPayload = {
+    data: [
+      {
+        id: 501,
+        title: 'Ordinary Council Meeting',
+        permalink: 'https://www.fremantle.wa.gov.au/arts-and-culture/whats-on/ordinary-council-meeting/'
+      },
+      {
+        id: 502,
+        title: 'Online Sustainability Webinar',
+        permalink: 'https://www.fremantle.wa.gov.au/arts-and-culture/whats-on/online-webinar/'
+      },
+      {
+        id: 503,
+        title: 'Far Future Festival',
+        permalink: 'https://www.fremantle.wa.gov.au/arts-and-culture/whats-on/far-future-festival/'
+      },
+      {
+        id: 504,
+        title: 'South Beach Sunset Yoga',
+        permalink: 'https://www.fremantle.wa.gov.au/arts-and-culture/whats-on/south-beach-sunset-yoga/'
+      },
+      {
+        id: 505,
+        title: 'Freo Acoustic Night',
+        permalink: 'https://www.fremantle.wa.gov.au/arts-and-culture/whats-on/freo-acoustic-night/'
+      }
+    ],
+    sorted_events: [
+      { post: { ID: 501 }, next_date: '2026-12-01' },
+      { post: { ID: 502 }, next_date: '2026-12-02' },
+      { post: { ID: 503 }, next_date: '2027-06-01' },
+      { post: { ID: 504 }, next_date: '2026-12-05' },
+      { post: { ID: 505 }, next_date: '2026-12-06' }
+    ],
+    htmlResult: `
+      <article class="card" data-post-id="501"><h4 class="card-title">Ordinary Council Meeting</h4></article>
+      <article class="card" data-post-id="502"><h4 class="card-title">Online Sustainability Webinar</h4><ul class="fa-ul"><li><span class="fa-li"><i class="fa-regular fa-location-smile"></i></span>Zoom</li></ul></article>
+      <article class="card" data-post-id="503"><h4 class="card-title">Far Future Festival</h4></article>
+      <article class="card" data-post-id="504">
+        <div class="tags"><span>Free</span></div>
+        <h4 class="card-title">South Beach Sunset Yoga</h4>
+        <ul class="fa-ul">
+          <li><span class="fa-li"><i class="fa-regular fa-calendar-week"></i></span>5 Dec 2026</li>
+          <li><span class="fa-li"><i class="fa-regular fa-location-smile"></i></span>South Beach</li>
+        </ul>
+      </article>
+      <article class="card" data-post-id="505">
+        <div class="tags"><span>Paid</span></div>
+        <h4 class="card-title">Freo Acoustic Night</h4>
+        <ul class="fa-ul">
+          <li><span class="fa-li"><i class="fa-regular fa-calendar-week"></i></span>6 Dec 2026</li>
+          <li><span class="fa-li"><i class="fa-regular fa-location-smile"></i></span>Fremantle Arts Centre</li>
+        </ul>
+      </article>
+    `
+  };
+
+  const mockFetch = async (url, init = {}) => {
+    requestedUrls.push({ method: init.method || 'GET', url });
+    if (url === FREMANTLE_ENDPOINT) {
+      return { ok: true, async json() { return listingPayload; } };
+    }
+    if (url.includes('south-beach-sunset-yoga')) {
+      return {
+        ok: true,
+        async text() {
+          return `
+            <div class="post-504 event-type-health-and-wellbeing">
+              <div class="eventdetail-icontext-wrapper">
+                <div class="eventdetail-icontext"><div class="text"><div class="text-label">Date / Frequency</div><div>5 Dec 2026</div></div></div>
+                <div class="eventdetail-icontext"><div class="text"><div class="text-label">Time</div><div>6:00 pm - 7:00 pm</div></div></div>
+                <div class="eventdetail-icontext"><div class="text"><div class="text-label">Location</div><div>South Beach, Ocean Dr, South Fremantle WA 6162</div></div></div>
+              </div>
+              <div id="addToCalendarModal">
+                <a class="icon-google" href="https://www.google.com/calendar/render?action=TEMPLATE&dates=20261205T180000/20261205T190000&location=South%20Beach%2C%20Ocean%20Dr%2C%20South%20Fremantle%20WA%206162">Google Calendar</a>
+              </div>
+            </div>
+          `;
+        }
+      };
+    }
+    // Simulate HTTP 500 failure for 505
+    return { ok: false, status: 500, statusText: 'Server Error' };
+  };
+
+  const crawler = createFremantleCrawler({
+    fetchFn: mockFetch,
+    delayFn: async (ms) => { delays.push(ms); },
+    pageDelayMs: 0,
+    detailDelayMs: 250,
+    hydrateDetail: 'always',
+    now: TEST_NOW
+  });
+
+  const listings = await crawler.fetchListings();
+
+  // Only 504 and 505 survived pre-filtering; 501 (civic), 502 (online), 503 (horizon) were NOT hydrated
+  assert.deepEqual(requestedUrls, [
+    { method: 'POST', url: FREMANTLE_ENDPOINT },
+    { method: 'GET', url: 'https://www.fremantle.wa.gov.au/arts-and-culture/whats-on/south-beach-sunset-yoga/' },
+    { method: 'GET', url: 'https://www.fremantle.wa.gov.au/arts-and-culture/whats-on/freo-acoustic-night/' }
+  ]);
+  assert.deepEqual(delays, [250, 250]);
+  assert.equal(listings.length, 2);
+
+  const [yoga, acoustic] = listings;
+  assert.equal(yoga.category, 'health');
+  assert.equal(yoga.address, 'Ocean Dr, South Fremantle WA 6162');
+  assert.equal(yoga.venue_name, 'South Beach');
+  assert.equal(yoga.start_time, '2026-12-05T18:00:00+08:00');
+  assert.equal(yoga.end_time, '2026-12-05T19:00:00+08:00');
+  assert.equal(yoga.is_free, true);
+
+  // 505 gracefully fell back to listing-card data
+  assert.equal(acoustic.source_id, '505');
+  assert.equal(acoustic.venue_name, 'Fremantle Arts Centre');
+  assert.equal(acoustic.is_free, false);
+  assert.equal(acoustic.cost_description, 'Paid');
+
+  // hydrateDetail: 'never' skips all detail fetches
+  requestedUrls.length = 0;
+  const neverCrawler = createFremantleCrawler({
+    fetchFn: mockFetch,
+    pageDelayMs: 0,
+    detailDelayMs: 250,
+    hydrateDetail: 'never',
+    now: TEST_NOW
+  });
+  await neverCrawler.fetchListings();
+  assert.equal(requestedUrls.length, 1);
+});
+
+test('Slice 8: Schedule resolution handles single-day, compact multi-day, in-progress recurring series, open-ended weekly, and umbrella festival hub', async () => {
+  const listingPayload = {
+    data: [
+      { id: 601, title: 'Twilight Lantern Walk', permalink: 'https://www.fremantle.wa.gov.au/arts-and-culture/whats-on/lantern-walk/' },
+      { id: 602, title: 'Active Bystander Training', permalink: 'https://www.fremantle.wa.gov.au/arts-and-culture/whats-on/bystander-training/' },
+      { id: 603, title: 'Teen Sewing Club', permalink: 'https://www.fremantle.wa.gov.au/arts-and-culture/whats-on/teen-sewing-club/' },
+      { id: 604, title: 'Silent Writing Group', permalink: 'https://www.fremantle.wa.gov.au/arts-and-culture/whats-on/silent-writing-group/' },
+      { id: 605, title: 'Celebrate PrideFEST in Fremantle', permalink: 'https://www.fremantle.wa.gov.au/arts-and-culture/whats-on/pridefest-in-freo/' }
+    ],
+    sorted_events: [
+      { post: { ID: 601 }, next_date: '2026-12-05' },
+      { post: { ID: 602 }, next_date: '2026-11-25' },
+      { post: { ID: 603 }, next_date: '2026-11-25' },
+      { post: { ID: 604 }, next_date: '2026-11-27' },
+      { post: { ID: 605 }, next_date: '2026-11-25' }
+    ],
+    htmlResult: `
+      <article class="card" data-post-id="601"><h4 class="card-title">Twilight Lantern Walk</h4></article>
+      <article class="card" data-post-id="602"><h4 class="card-title">Active Bystander Training</h4></article>
+      <article class="card" data-post-id="603"><h4 class="card-title">Teen Sewing Club</h4></article>
+      <article class="card" data-post-id="604"><h4 class="card-title">Silent Writing Group</h4></article>
+      <article class="card" data-post-id="605"><h4 class="card-title">Celebrate PrideFEST in Fremantle</h4></article>
+    `
+  };
+
+  const detailPages = {
+    'lantern-walk': `
+      <div class="event-type-family">
+        <div class="eventdetail-icontext"><div class="text"><div class="text-label">Date / Frequency</div><div>5 Dec 2026</div></div></div>
+        <div class="eventdetail-icontext"><div class="text"><div class="text-label">Time</div><div>6:30 pm - 8:30 pm</div></div></div>
+        <div id="addToCalendarModal"><a class="icon-google" href="https://www.google.com/calendar/render?action=TEMPLATE&dates=20261205T183000/20261205T203000">Google Calendar</a></div>
+      </div>
+    `,
+    'bystander-training': `
+      <div class="event-type-access-and-inclusion">
+        <div class="eventdetail-icontext"><div class="text"><div class="text-label">Date / Frequency</div><div>25-30 Nov 2026</div></div></div>
+        <div class="eventdetail-icontext"><div class="text"><div class="text-label">Time</div><div>9:00 am - 5:00 pm</div></div></div>
+        <div id="addToCalendarModal"><a class="icon-google" href="https://www.google.com/calendar/render?action=TEMPLATE&dates=20261125T090000/20261130T170000">Google Calendar</a></div>
+      </div>
+    `,
+    'teen-sewing-club': `
+      <div class="event-type-arts-culture-and-languages event-type-young-people">
+        <div class="eventdetail-icontext"><div class="text"><div class="text-label">Date / Frequency</div><div>Wednesdays | 28 Oct-2 Dec</div></div></div>
+        <div class="eventdetail-icontext"><div class="text"><div class="text-label">Time</div><div>4:00 pm - 5:45 pm</div></div></div>
+        <div class="eventdetail-icontext"><div class="text"><div class="text-label">Location</div><div>Library, 151 High St, Fremantle WA 6160</div></div></div>
+        <div id="addToCalendarModal"><a class="icon-google" href="https://www.google.com/calendar/render?action=TEMPLATE&dates=20261028T160000/20261202T174500&location=Library%2C%20151%20High%20St%2C%20Fremantle%20WA%206160">Google Calendar</a></div>
+      </div>
+    `,
+    'silent-writing-group': `
+      <div class="event-type-library">
+        <div class="eventdetail-icontext"><div class="text"><div class="text-label">Date / Frequency</div><div>Every Friday</div></div></div>
+        <div class="eventdetail-icontext"><div class="text"><div class="text-label">Time</div><div>10:00 am - 11:30 am</div></div></div>
+        <div class="eventdetail-icontext"><div class="text"><div class="text-label">Location</div><div>Fremantle Library, 151 High St, Fremantle WA 6160</div></div></div>
+      </div>
+    `,
+    'pridefest-in-freo': `
+      <div class="event-type-arts-culture-and-languages event-type-access-and-inclusion">
+        <div class="eventdetail-icontext"><div class="text"><div class="text-label">Date / Frequency</div><div>Nov 2026</div></div></div>
+        <div class="eventdetail-icontext"><div class="text"><div class="text-label">Location</div><div>Walyalup Civic Centre, 151 High St, Fremantle WA 6160</div></div></div>
+      </div>
+    `
+  };
+
+  const mockFetch = async (url) => {
+    if (url === FREMANTLE_ENDPOINT) {
+      return { ok: true, async json() { return listingPayload; } };
+    }
+    const key = Object.keys(detailPages).find(k => url.includes(k));
+    return { ok: true, async text() { return detailPages[key] || ''; } };
+  };
+
+  const crawler = createFremantleCrawler({
+    fetchFn: mockFetch,
+    pageDelayMs: 0,
+    detailDelayMs: 0,
+    now: TEST_NOW
+  });
+
+  const listings = await crawler.fetchListings();
+  assert.equal(listings.length, 5);
+
+  const sanitize = (raw) => sanitizeActivity({
+    ...raw,
+    venue: { ...raw.venue, coordinates: FREMANTLE_LGA_CENTROID }
+  }, TEST_NOW.toISOString());
+
+  // 1. Single-day
+  const single = sanitize(listings[0]);
+  assert.equal(single.schedule.start_date, '2026-12-05');
+  assert.equal(single.schedule.end_date, '2026-12-05');
+  assert.equal(single.schedule.start_time, '18:30');
+  assert.equal(single.schedule.end_time, '20:30');
+  assert.equal(single.schedule.recurrence, 'none');
+
+  // 2. Compact multi-day
+  const multiDay = sanitize(listings[1]);
+  assert.equal(multiDay.schedule.start_date, '2026-11-25');
+  assert.equal(multiDay.schedule.end_date, '2026-11-30');
+  assert.equal(multiDay.schedule.start_time, '09:00');
+  assert.equal(multiDay.schedule.end_time, '17:00');
+  assert.equal(multiDay.schedule.recurrence, 'none');
+
+  // 3. In-progress recurring series (clamped from 2026-10-28 to next_date 2026-11-25)
+  const series = sanitize(listings[2]);
+  assert.equal(series.schedule.start_date, '2026-11-25');
+  assert.equal(series.schedule.end_date, null);
+  assert.equal(series.schedule.start_time, '16:00');
+  assert.equal(series.schedule.end_time, '17:45');
+  assert.equal(series.schedule.recurrence, 'weekly');
+  assert.equal(series.schedule.day_of_week, 3);
+  assert.equal(series.venue.name, 'Fremantle Library');
+  assert.equal(listings[2].address, '151 High St, Fremantle WA 6160');
+  assert.equal(listings[2].venue.address, '151 High St, Fremantle WA 6160');
+
+  // 4. Open-ended weekly
+  const openWeekly = sanitize(listings[3]);
+  assert.equal(openWeekly.schedule.start_date, '2026-11-27');
+  assert.equal(openWeekly.schedule.end_date, null);
+  assert.equal(openWeekly.schedule.start_time, '10:00');
+  assert.equal(openWeekly.schedule.end_time, '11:30');
+  assert.equal(openWeekly.schedule.recurrence, 'weekly');
+  assert.equal(openWeekly.schedule.day_of_week, 5);
+
+  // 5. Umbrella festival hub (month-only falls back to next_date, ingested as normal Activity)
+  const hub = sanitize(listings[4]);
+  assert.equal(hub.schedule.start_date, '2026-11-25');
+  assert.equal(hub.schedule.recurrence, 'none');
+  assert.equal(hub.category, 'arts');
+});
+
+test('Slice 9: Detail taxonomy filters civic event-type-council-and-committee-meetings, and when_missing skips complete cards', async () => {
+  const requestedUrls = [];
+  const listingPayload = {
+    data: [
+      {
+        id: 701,
+        title: 'Planning Briefing Session',
+        permalink: 'https://www.fremantle.wa.gov.au/arts-and-culture/whats-on/planning-briefing/'
+      },
+      {
+        id: 702,
+        title: 'Complete Card Activity',
+        permalink: 'https://www.fremantle.wa.gov.au/arts-and-culture/whats-on/complete-card/',
+        address: '151 High St, Fremantle WA 6160',
+        time: '10:00am - 11:00am',
+        categories: ['Music']
+      }
+    ],
+    sorted_events: [
+      { post: { ID: 701 }, next_date: '2026-12-03' },
+      { post: { ID: 702 }, next_date: '2026-12-04' }
+    ]
+  };
+
+  const mockFetch = async (url) => {
+    requestedUrls.push(url);
+    if (url === FREMANTLE_ENDPOINT) {
+      return { ok: true, async json() { return listingPayload; } };
+    }
+    if (url.includes('planning-briefing')) {
+      return {
+        ok: true,
+        async text() {
+          return '<div class="event-type-council-and-committee-meetings"></div>';
+        }
+      };
+    }
+    return { ok: true, async text() { return ''; } };
+  };
+
+  const crawler = createFremantleCrawler({
+    fetchFn: mockFetch,
+    pageDelayMs: 0,
+    detailDelayMs: 0,
+    hydrateDetail: 'when_missing',
+    now: TEST_NOW
+  });
+
+  const listings = await crawler.fetchListings();
+  // 701 hydrated (missing fields) and then filtered out due to event-type-council-and-committee-meetings;
+  // 702 skipped hydration because address, time, and tags were already present.
+  assert.deepEqual(requestedUrls, [
+    FREMANTLE_ENDPOINT,
+    'https://www.fremantle.wa.gov.au/arts-and-culture/whats-on/planning-briefing/'
+  ]);
+  assert.equal(listings.length, 1);
+  assert.equal(listings[0].source_id, '702');
+  assert.equal(listings[0].category, 'music');
 });
