@@ -14,11 +14,15 @@ import { createFirestoreAdapter, initFirestoreFromEnv } from './firestore-adapte
 import { createUrlVerifier } from './url-verifier.js';
 import { createStirlingCrawler } from './crawlers/stirling-crawler.js';
 import { createVisitPerthCrawler } from './crawlers/visit-perth-crawler.js';
+import { createCockburnCrawler } from './crawlers/cockburn-crawler.js';
 import { createVincentCrawler } from './crawlers/vincent-crawler.js';
 import { createWannerooCrawler } from './crawlers/wanneroo-crawler.js';
 import { createGosnellsCrawler } from './crawlers/gosnells-crawler.js';
 import { createCambridgeCrawler } from './crawlers/cambridge-crawler.js';
 import { createVictoriaParkCrawler } from './crawlers/victoria-park-crawler.js';
+import { createRockinghamCrawler } from './crawlers/rockingham-crawler.js';
+import { createBassendeanCrawler } from './crawlers/bassendean-crawler.js';
+import { createNedlandsCrawler } from './crawlers/nedlands-crawler.js';
 import { createDlgscCrawler } from './crawlers/dlgsc-crawler.js';
 import { createVolleyballWaCrawler } from './crawlers/volleyball-wa-crawler.js';
 import { createEventbriteCrawler } from './crawlers/eventbrite-crawler.js';
@@ -97,10 +101,12 @@ export async function runCrawlerHarness({ crawlers = [], adapter, options = {} }
   const normalizedTarget = targetCrawler.toLowerCase();
   const activeCrawlers = normalizedTarget === 'all'
     ? crawlers
-    : crawlers.filter(c =>
-        c.name.toLowerCase() === normalizedTarget ||
-        (typeof c.group === 'string' && c.group.toLowerCase() === normalizedTarget)
-      );
+    : normalizedTarget === 'local-councils'
+      ? crawlers.filter(c => typeof c.group === 'string' && c.group.toLowerCase() === 'councils' && Boolean(c.localOnly))
+      : crawlers.filter(c =>
+          c.name.toLowerCase() === normalizedTarget ||
+          (typeof c.group === 'string' && c.group.toLowerCase() === normalizedTarget)
+        );
 
   const venuesCatalog = Array.isArray(options.existingVenues)
     ? options.existingVenues
@@ -333,33 +339,47 @@ export async function runCrawlerHarness({ crawlers = [], adapter, options = {} }
   return summary;
 }
 
+const DEFAULT_CRAWLER_FACTORIES = [
+  createStirlingCrawler,
+  createVincentCrawler,
+  createWannerooCrawler,
+  createGosnellsCrawler,
+  createCambridgeCrawler,
+  createVictoriaParkCrawler,
+  createRockinghamCrawler,
+  createBassendeanCrawler,
+  createNedlandsCrawler,
+  createDlgscCrawler,
+  createVolleyballWaCrawler,
+  createMeetupCrawler,
+  createVisitPerthCrawler,
+  createCockburnCrawler,
+  createEventbriteCrawler
+];
+
 /**
  * Returns default registered crawlers for production execution.
+ * Local-only crawlers (`crawler.localOnly === true`) are excluded unless
+ * `includeLocal` or their per-crawler opt-in flag is enabled.
  *
  * @param {object} [options]
+ * @param {boolean} [options.includeLocal=false]
  * @param {boolean} [options.includeEventbrite=false]
  * @param {boolean} [options.includeVisitPerth=false]
+ * @param {boolean} [options.includeCockburn=false]
  * @returns {Array<object>}
  */
 export function getDefaultCrawlers(options = {}) {
-  const crawlers = [
-    createStirlingCrawler(),
-    createVincentCrawler(),
-    createWannerooCrawler(),
-    createGosnellsCrawler(),
-    createCambridgeCrawler(),
-    createVictoriaParkCrawler(),
-    createDlgscCrawler(),
-    createVolleyballWaCrawler(),
-    createMeetupCrawler()
-  ];
-  if (options.includeVisitPerth) {
-    crawlers.push(createVisitPerthCrawler());
-  }
-  if (options.includeEventbrite) {
-    crawlers.push(createEventbriteCrawler());
-  }
-  return crawlers;
+  const includeLocal = Boolean(options.includeLocal);
+  const optInByName = {
+    visit_perth: Boolean(options.includeVisitPerth),
+    cockburn: Boolean(options.includeCockburn),
+    eventbrite: Boolean(options.includeEventbrite)
+  };
+
+  return DEFAULT_CRAWLER_FACTORIES
+    .map(factory => factory())
+    .filter(crawler => !crawler.localOnly || includeLocal || Boolean(optInByName[crawler.name]));
 }
 
 /**
@@ -409,9 +429,17 @@ export async function main(argv = process.argv.slice(2), env = process.env, opti
     logger.log?.(`[Crawler Harness] Connected to Firestore project: ${firestoreEnv.projectId}`);
   }
 
-  const includeEventbrite = targetCrawler.toLowerCase() === 'eventbrite' || args.includes('--include-eventbrite');
-  const includeVisitPerth = targetCrawler.toLowerCase() === 'visit_perth' || args.includes('--include-visit-perth');
-  const crawlers = options.crawlers || getDefaultCrawlers({ includeEventbrite, includeVisitPerth });
+  const normalizedTarget = targetCrawler.toLowerCase();
+  const includeLocal = normalizedTarget === 'local-councils' || args.includes('--include-local');
+  const includeEventbrite = includeLocal || normalizedTarget === 'eventbrite' || args.includes('--include-eventbrite');
+  const includeVisitPerth = includeLocal || normalizedTarget === 'visit_perth' || args.includes('--include-visit-perth');
+  const includeCockburn = includeLocal || normalizedTarget === 'cockburn' || args.includes('--include-cockburn');
+  const crawlers = options.crawlers || getDefaultCrawlers({
+    includeLocal,
+    includeEventbrite,
+    includeVisitPerth,
+    includeCockburn
+  });
 
   const summary = await runCrawlerHarness({
     crawlers,

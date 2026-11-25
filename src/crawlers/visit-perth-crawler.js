@@ -15,6 +15,7 @@ export const VISIT_PERTH_CONFIG = {
   source: 'visit_perth',
   label: 'Visit Perth',
   group: 'councils',
+  localOnly: true,
   endpoint: VISIT_PERTH_ENDPOINT,
   baseUrl: VISIT_PERTH_BASE_URL,
   regionId: 'perth',

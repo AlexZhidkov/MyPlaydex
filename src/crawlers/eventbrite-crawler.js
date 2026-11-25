@@ -181,6 +181,7 @@ export function createEventbriteCrawler(options = {}) {
 
   return {
     name: 'eventbrite',
+    localOnly: true,
     ...(typeof options.minExpectedListings === 'number' ? { minExpectedListings: options.minExpectedListings } : {}),
 
     async fetchListings() {

@@ -489,28 +489,32 @@ test('Seam 4C: CLI exits with status 1 on anomaly and writes GITHUB_STEP_SUMMARY
   }
 });
 
-test('Seam 7: getDefaultCrawlers registers the 9 scheduled crawlers and excludes local-only crawlers unless requested', () => {
+test('Seam 7: getDefaultCrawlers registers the 12 scheduled crawlers and excludes local-only crawlers unless requested', () => {
   const crawlers = getDefaultCrawlers();
   const names = crawlers.map(c => c.name);
 
   assert.ok(names.includes('stirling'), 'stirling should be in default crawlers');
   assert.ok(!names.includes('visit_perth'), 'visit_perth should be excluded from default scheduled crawlers');
+  assert.ok(!names.includes('cockburn'), 'cockburn should be excluded from default scheduled crawlers');
   assert.ok(names.includes('vincent'), 'vincent should be in default crawlers');
   assert.ok(names.includes('wanneroo'), 'wanneroo should be in default crawlers');
   assert.ok(names.includes('gosnells'), 'gosnells should be in default crawlers');
   assert.ok(names.includes('cambridge'), 'cambridge should be in default crawlers');
   assert.ok(names.includes('victoria_park'), 'victoria_park should be in default crawlers');
+  assert.ok(names.includes('rockingham'), 'rockingham should be in default crawlers');
+  assert.ok(names.includes('bassendean'), 'bassendean should be in default crawlers');
+  assert.ok(names.includes('nedlands'), 'nedlands should be in default crawlers');
   assert.ok(names.includes('dlgsc'), 'dlgsc should be in default crawlers');
   assert.ok(names.includes('volleyball_wa'), 'volleyball_wa should be in default crawlers');
   assert.ok(names.includes('meetup'), 'meetup should be in default crawlers');
   assert.ok(!names.includes('eventbrite'), 'eventbrite should be excluded from default scheduled crawlers');
-  assert.equal(names.length, 9);
+  assert.equal(names.length, 12);
 
   const vincent = crawlers.find(c => c.name === 'vincent');
   assert.equal(vincent?.group, 'councils');
   assert.equal(vincent?.minExpectedListings, 0);
 
-  for (const councilName of ['wanneroo', 'gosnells', 'cambridge', 'victoria_park']) {
+  for (const councilName of ['wanneroo', 'gosnells', 'cambridge', 'victoria_park', 'rockingham', 'bassendean', 'nedlands']) {
     const council = crawlers.find(c => c.name === councilName);
     assert.equal(council?.group, 'councils', `${councilName} should be in councils group`);
   }
@@ -518,15 +522,22 @@ test('Seam 7: getDefaultCrawlers registers the 9 scheduled crawlers and excludes
   const withVisitPerth = getDefaultCrawlers({ includeVisitPerth: true });
   const withVisitPerthNames = withVisitPerth.map(c => c.name);
   assert.ok(withVisitPerthNames.includes('visit_perth'), 'visit_perth should be included when includeVisitPerth is true');
-  assert.equal(withVisitPerthNames.length, 10);
+  assert.equal(withVisitPerthNames.length, 13);
 
   const withEventbrite = getDefaultCrawlers({ includeEventbrite: true });
   const withEventbriteNames = withEventbrite.map(c => c.name);
   assert.ok(withEventbriteNames.includes('eventbrite'), 'eventbrite should be included when includeEventbrite is true');
-  assert.equal(withEventbriteNames.length, 10);
+  assert.equal(withEventbriteNames.length, 13);
 
-  const withAllOptIn = getDefaultCrawlers({ includeVisitPerth: true, includeEventbrite: true });
-  assert.equal(withAllOptIn.length, 11);
+  const withAllOptIn = getDefaultCrawlers({ includeVisitPerth: true, includeCockburn: true, includeEventbrite: true });
+  assert.equal(withAllOptIn.length, 15);
+  for (const localName of ['visit_perth', 'cockburn', 'eventbrite']) {
+    assert.equal(withAllOptIn.find(c => c.name === localName)?.localOnly, true, `${localName} should have localOnly=true`);
+  }
+
+  const withIncludeLocal = getDefaultCrawlers({ includeLocal: true });
+  assert.equal(withIncludeLocal.length, 15);
+  assert.ok(withIncludeLocal.some(c => c.name === 'cockburn'));
 });
 
 test('Seam 7: runCrawlerHarness targets dlgsc, volleyball_wa, eventbrite, and meetup individually', async () => {
@@ -1793,6 +1804,51 @@ test('Issue #37: --crawler=councils runs all council-grouped crawlers and is sel
   const workflowYaml = readFileSync(resolve(process.cwd(), '.github/workflows/crawler-harness.yml'), 'utf8');
   assert.match(workflowYaml, /^\s*-\s*councils\s*$/m);
   assert.match(workflowYaml, /^\s*-\s*vincent\s*$/m);
+});
+
+test('--crawler=local-councils runs only localOnly council crawlers and --crawler=cockburn auto-includes cockburn', async () => {
+  const ran = [];
+  const makeStub = (name, group, localOnly = false) => ({
+    name,
+    ...(group ? { group } : {}),
+    ...(localOnly ? { localOnly: true } : {}),
+    async fetchListings() {
+      ran.push(name);
+      return [{
+        source: name,
+        source_id: `${name}_1`,
+        title: `${name} Activity`,
+        category: 'community',
+        venue_name: 'Cockburn ARC',
+        coordinates: { lat: -32.1278, lng: 115.8569 },
+        start_time: '2026-12-01T10:00:00+08:00',
+        external_url: 'https://example.org/activity'
+      }];
+    }
+  });
+
+  const summary = await main(
+    ['--dry-run', '--crawler=local-councils'],
+    {},
+    {
+      crawlers: [
+        makeStub('stirling', 'councils', false),
+        makeStub('visit_perth', 'councils', true),
+        makeStub('cockburn', 'councils', true),
+        makeStub('eventbrite', undefined, true)
+      ],
+      exitOnFailure: false,
+      firestoreEnv: { db: null, dryRun: true, projectId: null },
+      logger: { log: () => {}, warn: () => {}, error: () => {} }
+    }
+  );
+
+  assert.deepEqual(ran, ['visit_perth', 'cockburn']);
+  assert.equal(summary.totalCrawlers, 2);
+  assert.equal(summary.successfulCrawlers, 2);
+
+  const cockburnIncluded = getDefaultCrawlers({ includeLocal: true }).filter(c => c.group === 'councils' && c.localOnly).map(c => c.name);
+  assert.deepEqual(cockburnIncluded, ['visit_perth', 'cockburn']);
 });
 
 

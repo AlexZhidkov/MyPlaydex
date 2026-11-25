@@ -220,6 +220,7 @@ export function createOptimizelySsrCrawler(config, options = {}) {
   return {
     name: config.source,
     group: config.group || 'councils',
+    ...(config.localOnly ? { localOnly: true } : {}),
     ...(typeof minExpectedListings === 'number' ? { minExpectedListings } : {}),
     ...(config.fallbackCentroid ? { fallbackCentroid: config.fallbackCentroid } : {}),
 
