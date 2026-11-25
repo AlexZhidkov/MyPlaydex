@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { deduplicateActivities } from '../src/activity-deduplicator.js';
+import { deduplicateActivities, getSourcePriority } from '../src/activity-deduplicator.js';
 import { runCrawlerHarness } from '../src/crawler-runner.js';
 import { runFacebookSync } from '../src/facebook-sync.js';
 
@@ -583,6 +583,116 @@ test('Slice 8: runFacebookSync deduplicates incoming Facebook Activities against
   assert.equal(persisted.id, 'eventbrite_777');
   assert.equal(persisted.source_url, 'https://www.eventbrite.com.au/e/perth-social-basketball-777');
   assert.deepEqual(persisted.source_keys, ['eventbrite_777', 'facebook_888']);
+});
+
+test('Slice 9 (Issue #52): organizer_website precedence ranks above facebook and below council, promoting/retaining Source References and merging metadata', () => {
+  assert.ok(getSourcePriority('eventbrite') > getSourcePriority('meetup'));
+  assert.ok(getSourcePriority('meetup') > getSourcePriority('council'));
+  assert.ok(getSourcePriority('council') > getSourcePriority('organizer_website'));
+  assert.ok(getSourcePriority('stirling') > getSourcePriority('organizer_website'));
+  assert.ok(getSourcePriority('organizer_website') > getSourcePriority('facebook'));
+
+  // 1. Merging organizer_website onto an existing Facebook-sourced Activity promotes organizer_website URL and merges metadata
+  const existingFacebook = makeActivity({
+    id: 'facebook_1001',
+    source: 'facebook',
+    source_id: '1001',
+    source_url: 'https://www.facebook.com/events/1001/',
+    raw_source_url: 'https://www.facebook.com/events/1001/',
+    verified: true,
+    title: 'Social Basketball',
+    description: 'Facebook event post',
+    cost: { is_free: false, display_price: '' }
+  });
+
+  const incomingOrganizerSite = makeActivity({
+    id: 'organizer_website_club_1',
+    source: 'organizer_website',
+    source_id: 'club_1',
+    source_url: 'https://perthhoops.org.au/social-basketball',
+    raw_source_url: 'https://perthhoops.org.au/social-basketball',
+    verified: true,
+    title: 'Perth Social Basketball',
+    description: 'Official club timetable for Tuesday social basketball.',
+    cost: { is_free: false, display_price: '$12' },
+    schedule: {
+      recurrence: 'none',
+      start_date: '2026-12-01',
+      start_time: '18:30',
+      end_date: '2026-12-01',
+      end_time: '20:30',
+      day_of_week: 2
+    }
+  });
+
+  const fbToOrgResult = deduplicateActivities([incomingOrganizerSite], [existingFacebook]);
+  assert.equal(fbToOrgResult.activitiesToUpsert.length, 1);
+  const promoted = fbToOrgResult.activitiesToUpsert[0];
+  assert.equal(promoted.id, 'facebook_1001');
+  assert.equal(promoted.source_url, 'https://perthhoops.org.au/social-basketball');
+  assert.equal(promoted.verified, true);
+  assert.equal(promoted.description, 'Official club timetable for Tuesday social basketball.');
+  assert.equal(promoted.cost.display_price, '$12');
+  assert.deepEqual(promoted.source_keys, ['facebook_1001', 'organizer_website_club_1']);
+  assert.equal(promoted.sources.length, 2);
+  assert.equal(
+    promoted.sources.find(s => s.source_key === 'facebook_1001').source_url,
+    'https://www.facebook.com/events/1001/'
+  );
+
+  // 2. Merging higher-priority sources (council, meetup, eventbrite) over organizer_website promotes the higher-priority URL and preserves organizer_website
+  for (const higher of [
+    {
+      id: 'council_501',
+      source: 'council',
+      source_id: '501',
+      source_url: 'https://perth.wa.gov.au/whats-on/basketball',
+      description: 'Council listing description'
+    },
+    {
+      id: 'meetup_502',
+      source: 'meetup',
+      source_id: '502',
+      source_url: 'https://www.meetup.com/perth-hoops/events/502/',
+      description: 'Meetup listing description'
+    },
+    {
+      id: 'eventbrite_503',
+      source: 'eventbrite',
+      source_id: '503',
+      source_url: 'https://www.eventbrite.com.au/e/perth-social-basketball-503',
+      description: 'Eventbrite listing description'
+    }
+  ]) {
+    const existingOrgSite = makeActivity({
+      id: 'organizer_website_club_1',
+      source: 'organizer_website',
+      source_id: 'club_1',
+      source_url: 'https://perthhoops.org.au/social-basketball',
+      raw_source_url: 'https://perthhoops.org.au/social-basketball',
+      verified: true,
+      description: 'Official club timetable'
+    });
+
+    const incomingHigher = makeActivity({
+      ...higher,
+      raw_source_url: higher.source_url,
+      verified: true
+    });
+
+    const res = deduplicateActivities([incomingHigher], [existingOrgSite]);
+    assert.equal(res.activitiesToUpsert.length, 1);
+    const merged = res.activitiesToUpsert[0];
+    assert.equal(merged.id, 'organizer_website_club_1');
+    assert.equal(merged.source_url, higher.source_url);
+    assert.equal(merged.description, higher.description);
+    assert.ok(merged.source_keys.includes('organizer_website_club_1'));
+    assert.ok(merged.source_keys.includes(`${higher.source}_${higher.source_id}`));
+    assert.equal(
+      merged.sources.find(s => s.source_key === 'organizer_website_club_1').source_url,
+      'https://perthhoops.org.au/social-basketball'
+    );
+  }
 });
 
 

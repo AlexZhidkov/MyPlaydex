@@ -682,6 +682,75 @@ test('Seam 3 (Issue #43): createUrlVerifier evaluates secondary Source Reference
   assert.equal(probedUrls.some(u => u.includes('facebook.com')), false);
 });
 
+test('Seam 3 (Issue #52): createUrlVerifier evaluates organizer_website above facebook and below council with failover', async () => {
+  const probedUrls = [];
+  const mockProber = {
+    async probeAll(urls) {
+      probedUrls.push(...urls);
+      return urls.map(url => {
+        if (url.includes('dead')) {
+          return { reachable: false, status: 404, url: null, error: 'HTTP 404' };
+        }
+        return { reachable: true, status: 200, url };
+      });
+    }
+  };
+
+  const verifier = createUrlVerifier({ prober: mockProber, force: true });
+
+  const [councilBeatsOrgSite, orgSiteBeatsFb, fbFailover] = await verifier.verifyListings([
+    {
+      id: 'act_council_beats_org_site',
+      source: 'organizer_website',
+      source_url: 'https://club.org.au/events/1',
+      raw_source_url: 'https://club.org.au/events/1',
+      verified: true,
+      sources: [
+        { source: 'facebook', source_id: 'fb1', source_key: 'facebook_fb1', source_url: 'https://www.facebook.com/events/101', raw_source_url: 'https://www.facebook.com/events/101', verified: true },
+        { source: 'organizer_website', source_id: 'ow1', source_key: 'organizer_website_ow1', source_url: 'https://club.org.au/events/1', raw_source_url: 'https://club.org.au/events/1', verified: true },
+        { source: 'council', source_id: 'c1', source_key: 'council_c1', source_url: 'https://perth.wa.gov.au/events/101', raw_source_url: 'https://perth.wa.gov.au/events/101', verified: true }
+      ]
+    },
+    {
+      id: 'act_org_site_beats_fb',
+      source: 'council',
+      source_url: 'https://perth.wa.gov.au/events/dead-2',
+      raw_source_url: 'https://perth.wa.gov.au/events/dead-2',
+      verified: true,
+      sources: [
+        { source: 'facebook', source_id: 'fb2', source_key: 'facebook_fb2', source_url: 'https://www.facebook.com/events/202', raw_source_url: 'https://www.facebook.com/events/202', verified: true },
+        { source: 'organizer_website', source_id: 'ow2', source_key: 'organizer_website_ow2', source_url: 'https://club.org.au/events/2', raw_source_url: 'https://club.org.au/events/2', verified: true },
+        { source: 'council', source_id: 'c2', source_key: 'council_c2', source_url: 'https://perth.wa.gov.au/events/dead-2', raw_source_url: 'https://perth.wa.gov.au/events/dead-2', verified: true }
+      ]
+    },
+    {
+      id: 'act_fb_failover',
+      source: 'organizer_website',
+      source_url: 'https://club.org.au/events/dead-3',
+      raw_source_url: 'https://club.org.au/events/dead-3',
+      verified: true,
+      sources: [
+        { source: 'facebook', source_id: 'fb3', source_key: 'facebook_fb3', source_url: 'https://www.facebook.com/events/303', raw_source_url: 'https://www.facebook.com/events/303', verified: true },
+        { source: 'organizer_website', source_id: 'ow3', source_key: 'organizer_website_ow3', source_url: 'https://club.org.au/events/dead-3', raw_source_url: 'https://club.org.au/events/dead-3', verified: true }
+      ]
+    }
+  ]);
+
+  assert.equal(councilBeatsOrgSite.verified, true);
+  assert.equal(councilBeatsOrgSite.source_url, 'https://perth.wa.gov.au/events/101');
+  assert.equal(probedUrls.includes('https://club.org.au/events/1'), false);
+
+  assert.equal(orgSiteBeatsFb.verified, true);
+  assert.equal(orgSiteBeatsFb.source_url, 'https://club.org.au/events/2');
+  assert.equal(orgSiteBeatsFb.sources.find(s => s.source_key === 'council_c2').verified, false);
+  assert.equal(orgSiteBeatsFb.sources.find(s => s.source_key === 'organizer_website_ow2').verified, true);
+
+  assert.equal(fbFailover.verified, true);
+  assert.equal(fbFailover.source_url, 'https://www.facebook.com/events/303');
+  assert.equal(fbFailover.sources.find(s => s.source_key === 'organizer_website_ow3').verified, false);
+  assert.equal(fbFailover.sources.find(s => s.source_key === 'facebook_fb3').verified, true);
+});
+
 test('Seam 3 (Issue #43): createUrlVerifier degrades to Unverified Listing when all Source References fail while preserving history for self-healing', async () => {
   let meetupHealthy = false;
   const mockProber = {
