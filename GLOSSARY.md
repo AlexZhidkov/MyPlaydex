@@ -37,5 +37,9 @@ A non-recurring Activity whose scheduled end date (or start date) has passed the
 _Avoid_: Past Event, Old Record, Dead Activity
 
 **Source Reference**:
-An external platform listing (such as an Eventbrite, Meetup, Facebook, or council page) linked to a canonical Activity for referral and re-crawl idempotency.
+An external platform listing (such as an Eventbrite, Meetup, Facebook, council, organizer website, or PDF timetable page) linked to a canonical Activity for referral and re-crawl idempotency.
 _Avoid_: Mirror, Alias, External Copy, Child Listing
+
+**Admin**:
+An authenticated platform operator authorized to verify, edit, and remove published Listings.
+_Avoid_: Curator, Moderator, Staff
