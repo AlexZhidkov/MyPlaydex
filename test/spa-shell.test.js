@@ -196,3 +196,36 @@ test('Seam 6: styles.css delivers responsive venue cards and feed container with
   assert.match(css, /\.venue-card\s+\.card-venue-row\s+\.venue-name[^{]*\{[^}]*word-break:\s*break-word/, 'venue-card address must break words to fit screen');
 });
 
+test('SEO assets (og-card.png, robots.txt, sitemap.xml) exist and are deployable', () => {
+  const ogCardPath = path.join(REPO_ROOT, 'og-card.png');
+  assert.ok(fs.existsSync(ogCardPath), 'og-card.png must exist at repo root');
+  const pngBuffer = fs.readFileSync(ogCardPath);
+  assert.equal(pngBuffer.subarray(0, 8).toString('hex'), '89504e470d0a1a0a', 'og-card.png must be a valid PNG');
+  const width = pngBuffer.readUInt32BE(16);
+  const height = pngBuffer.readUInt32BE(20);
+  assert.equal(width, 1200, 'og-card.png width must be 1200px');
+  assert.equal(height, 630, 'og-card.png height must be 630px');
+
+  const html = fs.readFileSync(path.join(REPO_ROOT, 'index.html'), 'utf8');
+  assert.ok(html.includes('<meta property="og:image:width" content="1200" />'), 'index.html must declare og:image:width');
+  assert.ok(html.includes('<meta property="og:image:height" content="630" />'), 'index.html must declare og:image:height');
+
+  const robotsPath = path.join(REPO_ROOT, 'robots.txt');
+  assert.ok(fs.existsSync(robotsPath), 'robots.txt must exist at repo root');
+  const robots = fs.readFileSync(robotsPath, 'utf8');
+  assert.match(robots, /^Allow:\s*\/$/m, 'robots.txt must allow crawling /');
+  assert.match(robots, /^Sitemap:\s*https:\/\/myplaydex\.com\.au\/sitemap\.xml$/m, 'robots.txt must reference canonical sitemap.xml');
+
+  const sitemapPath = path.join(REPO_ROOT, 'sitemap.xml');
+  assert.ok(fs.existsSync(sitemapPath), 'sitemap.xml must exist at repo root');
+  const sitemap = fs.readFileSync(sitemapPath, 'utf8');
+  assert.ok(sitemap.includes('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'), 'sitemap.xml must use sitemaps.org schema');
+  assert.ok(sitemap.includes('<loc>https://myplaydex.com.au/</loc>'), 'sitemap.xml must include canonical homepage URL');
+
+  const firebaseJson = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'firebase.json'), 'utf8'));
+  const ignored = firebaseJson.hosting?.ignore || [];
+  for (const asset of ['og-card.png', 'robots.txt', 'sitemap.xml']) {
+    assert.ok(!ignored.includes(asset), `firebase.json must not ignore ${asset}`);
+  }
+});
+
