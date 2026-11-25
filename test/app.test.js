@@ -2560,3 +2560,142 @@ test('initApp emits all 7 curated SPA analytics events without raw GPS coordinat
   }
 });
 
+test('Location gate stays hidden and header location hydrates immediately while async fetch is in flight for returning users', async () => {
+  const storage = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => storage.get(key) || null,
+    setItem: (key, val) => storage.set(key, String(val)),
+    removeItem: (key) => storage.delete(key),
+    clear: () => storage.clear()
+  };
+
+  function setupDom() {
+    const domListeners = new Map();
+    const elements = new Map();
+
+    function createMockEl(id, tag = 'div', classes = []) {
+      const classSet = new Set(classes);
+      const listeners = new Map();
+      let innerHTML = '';
+      let textContent = '';
+      const attrs = new Map();
+
+      const el = {
+        id,
+        tagName: tag.toUpperCase(),
+        style: {},
+        get innerHTML() { return innerHTML; },
+        set innerHTML(val) { innerHTML = val; },
+        get textContent() { return textContent; },
+        set textContent(val) { textContent = val; },
+        classList: {
+          add: (...c) => c.forEach((name) => classSet.add(name)),
+          remove: (...c) => c.forEach((name) => classSet.delete(name)),
+          toggle: (name, force) => {
+            if (force === undefined) {
+              classSet.has(name) ? classSet.delete(name) : classSet.add(name);
+            } else if (force) {
+              classSet.add(name);
+            } else {
+              classSet.delete(name);
+            }
+          },
+          contains: (name) => classSet.has(name)
+        },
+        getAttribute: (name) => attrs.get(name) || null,
+        setAttribute: (name, val) => attrs.set(name, String(val)),
+        removeAttribute: (name) => attrs.delete(name),
+        addEventListener: (type, cb) => {
+          if (!listeners.has(type)) listeners.set(type, []);
+          listeners.get(type).push(cb);
+        },
+        dispatchEvent: (e) => {
+          const cbs = listeners.get(e.type) || [];
+          cbs.forEach((cb) => cb(e));
+        },
+        closest: () => null,
+        scrollIntoView: () => {}
+      };
+      elements.set(id, el);
+      return el;
+    }
+
+    const gateOverlay = createMockEl('location-gate-overlay', 'div', ['hidden']);
+    const gateCloseBtn = createMockEl('gate-close-btn', 'button');
+    const currentLocationLabel = createMockEl('current-location-label', 'span');
+    currentLocationLabel.textContent = 'Set Location';
+    const feedContainer = createMockEl('feed-container', 'section');
+    const loadingLabel = createMockEl('loading-label', 'span');
+    const filterHeaderBtn = createMockEl('filter-header-btn', 'button');
+    const filterCountBadge = createMockEl('filter-count-badge', 'span', ['hidden']);
+    const filterOverlay = createMockEl('filter-view-overlay', 'div', ['hidden']);
+
+    globalThis.window = {
+      location: { hash: '', pathname: '/', search: '' },
+      history: { replaceState: () => {}, pushState: () => {}, back: () => {} },
+      addEventListener: (evt, cb) => {
+        if (!domListeners.has(evt)) domListeners.set(evt, []);
+        domListeners.get(evt).push(cb);
+      }
+    };
+
+    globalThis.document = {
+      body: { classList: { add: () => {}, remove: () => {} } },
+      getElementById: (id) => elements.get(id) || null,
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      addEventListener: (evt, cb) => {
+        if (!domListeners.has(evt)) domListeners.set(evt, []);
+        domListeners.get(evt).push(cb);
+      }
+    };
+
+    return { gateOverlay, currentLocationLabel, feedContainer, loadingLabel };
+  }
+
+  // 1. Returning user with saved location and pending async Firestore fetch
+  saveLocation({ name: 'Scarborough', postcode: '6019', lat: -31.8942, lng: 115.7571 });
+  const returningDom = setupDom();
+  let resolveFetch;
+  const pendingFetch = () => new Promise((resolve) => {
+    resolveFetch = () => resolve({
+      ok: true,
+      json: async () => ({ documents: [] })
+    });
+  });
+
+  const returningApp = initApp({ fetchImpl: pendingFetch, analytics: null });
+
+  assert.equal(
+    returningDom.gateOverlay.classList.contains('hidden'),
+    true,
+    'Location gate must remain hidden immediately on initApp when saved location exists'
+  );
+  assert.equal(
+    returningDom.currentLocationLabel.textContent,
+    'Scarborough',
+    'Header location label must hydrate immediately before fetch completes'
+  );
+
+  resolveFetch();
+  await returningApp.ready;
+
+  // 2. First-time user without saved location, ?suburb=, or deep-link
+  storage.clear();
+  const coldStartDom = setupDom();
+  const coldStartApp = initApp({
+    fetchImpl: async () => ({ ok: true, json: async () => ({ documents: [] }) }),
+    analytics: null
+  });
+
+  assert.equal(
+    coldStartDom.gateOverlay.classList.contains('hidden'),
+    false,
+    'Location gate must be shown for first-time visitors without a saved location'
+  );
+  assert.equal(coldStartDom.currentLocationLabel.textContent, 'Set Location');
+
+  await coldStartApp.ready;
+  storage.clear();
+});
+

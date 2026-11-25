@@ -1383,6 +1383,10 @@ export function initApp(options = {}) {
 
   // Initial render & state hydration (only active tab's collection is fetched initially)
   const initialState = store.getState();
+  if (currentLocationLabel) {
+    currentLocationLabel.textContent = initialState.location ? initialState.location.name : 'Set Location';
+  }
+  updateRadiusPillsUI(initialState.radiusKm);
   updateFilterHeaderUI(initialState.filters);
   updateTabsUI(initialState.activeTab);
 
