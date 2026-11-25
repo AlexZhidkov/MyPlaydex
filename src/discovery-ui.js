@@ -7,9 +7,7 @@
 import {
   DAY_NAMES,
   parseDateInput,
-  resolveDayOfWeek,
-  getNextWeeklyOccurrence,
-  getTodayAwstDate
+  resolveNextWeeklyOccurrence
 } from './discovery-engine.js';
 
 export const CATEGORY_ICONS = {
@@ -162,22 +160,11 @@ function resolveScheduleEndpoint(dateInput, timeInput) {
 }
 
 /**
- * Converts an instant Date into a local calendar Date representing its Australia/Perth calendar date.
- *
- * @param {Date} instantDate
- * @returns {Date}
- */
-function toPerthCalendarDate(instantDate) {
-  const [y, m, d] = getTodayAwstDate(instantDate).split('-').map(Number);
-  return new Date(y, m - 1, d);
-}
-
-/**
  * Formats a schedule object into a readable date and time string in Australian format (en-AU),
  * pinned to the venue timezone (Australia/Perth).
  *
  * @param {object} [schedule={}]
- * @param {Date} [referenceDate=new Date()]
+ * @param {Date | string} [referenceDate=new Date()]
  * @returns {string}
  */
 export function formatScheduleText(schedule = {}, referenceDate = new Date()) {
@@ -192,15 +179,8 @@ export function formatScheduleText(schedule = {}, referenceDate = new Date()) {
     : '';
 
   if (recurrence === 'weekly') {
-    const startCalendarDate = start.dateEntry
-      ? (start.dateEntry.hasTime ? toPerthCalendarDate(start.dateEntry.date) : start.dateEntry.date)
-      : null;
-    const targetDayOfWeek = resolveDayOfWeek(schedule, startCalendarDate);
-    if (targetDayOfWeek !== null) {
-      const refCalendarDate = referenceDate instanceof Date && !Number.isNaN(referenceDate.getTime())
-        ? toPerthCalendarDate(referenceDate)
-        : toPerthCalendarDate(new Date());
-      const nextDate = getNextWeeklyOccurrence(targetDayOfWeek, startCalendarDate, refCalendarDate);
+    const nextDate = resolveNextWeeklyOccurrence(schedule, referenceDate);
+    if (nextDate) {
       const dateLabel = formatDateWithDay({ date: nextDate, hasTime: false });
       return timeStr ? `${dateLabel} • ${timeStr}` : dateLabel;
     }
@@ -444,16 +424,17 @@ function renderSuggestEditTier(editMailtoUrl, titleText) {
 /**
  * Renders a 4-Tier Activity card HTML string.
  *
- * @param {object} activity
+ * @param {object} [activity={}]
+ * @param {Date | string} [referenceDate=new Date()]
  * @returns {string} HTML string
  */
-export function renderActivityCard(activity = {}) {
+export function renderActivityCard(activity = {}, referenceDate = new Date()) {
   const sportBadges = renderSportBadges(activity);
   const isFree = activity.cost ? activity.cost.is_free : Boolean(activity.is_free);
   const costLabel = activity.cost?.display_price || (isFree ? 'Free' : '$');
   const distanceBadge = renderDistanceBadge(activity);
 
-  const scheduleText = formatScheduleText(activity.schedule);
+  const scheduleText = formatScheduleText(activity.schedule, referenceDate);
   const venue = activity.venue || {};
   const organizer = activity.organizer || activity.club || {};
   const directionsUrl = createOutboundDirectionsUrl(venue);

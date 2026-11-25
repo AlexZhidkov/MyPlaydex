@@ -45,7 +45,7 @@ test('Seam 3: createOutboundDirectionsUrl generates valid Google Maps query URL 
 });
 
 test('Seam 3: formatScheduleText formats weekly, one-off, and ISO timestamp dates in Australian format (en-AU)', () => {
-  const fridayRef = new Date(2026, 10, 13); // Friday, 13 Nov 2026
+  const fridayRef = new Date('2026-11-13T00:00:00+08:00'); // Friday, 13 Nov 2026
 
   const weeklySunday = {
     start_time: '07:30',
@@ -855,5 +855,54 @@ test('Issue #44: renderActivityCard excludes unverified and duplicate-URL Source
     !onlyUnverifiedSecondaryHtml.includes('card-secondary-sources'),
     'Card with only unverified secondary sources must not render secondary sources row'
   );
+});
+
+test('Seam 3: formatScheduleText rolls past-today weekly sessions to next week in AWST across timezones', () => {
+  const wednesdaySchedule = {
+    recurrence: 'weekly',
+    day_of_week: 3,
+    start_time: '09:00',
+    end_time: '11:00'
+  };
+
+  // Before end time (10:30 AWST) -> stays on Wednesday, 11/11/2026
+  assert.equal(
+    formatScheduleText(wednesdaySchedule, new Date('2026-11-11T10:30:00+08:00')),
+    'Wednesday, 11/11/2026 • 09:00 – 11:00'
+  );
+
+  // At/after end time (11:00 AWST) -> rolls forward to Wednesday, 18/11/2026
+  assert.equal(
+    formatScheduleText(wednesdaySchedule, new Date('2026-11-11T11:00:00+08:00')),
+    'Wednesday, 18/11/2026 • 09:00 – 11:00'
+  );
+
+  // Timeless weekly schedule on the same day stays on today
+  assert.equal(
+    formatScheduleText({ recurrence: 'weekly', day_of_week: 3 }, new Date('2026-11-11T20:00:00+08:00')),
+    'Wednesday, 11/11/2026'
+  );
+
+  // Verify consistent rollover across non-Perth process timezones
+  const timezones = ['Australia/Sydney', 'Europe/London', 'America/New_York', 'UTC'];
+  const script = `
+    import assert from 'node:assert/strict';
+    import { formatScheduleText } from './src/discovery-ui.js';
+    const sched = { recurrence: 'weekly', day_of_week: 3, start_time: '09:00', end_time: '11:00' };
+    assert.equal(
+      formatScheduleText(sched, new Date('2026-11-11T02:30:00.000Z')),
+      'Wednesday, 11/11/2026 • 09:00 – 11:00'
+    );
+    assert.equal(
+      formatScheduleText(sched, new Date('2026-11-11T03:00:00.000Z')),
+      'Wednesday, 18/11/2026 • 09:00 – 11:00'
+    );
+  `;
+  for (const tz of timezones) {
+    execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+      env: { ...process.env, TZ: tz },
+      stdio: 'pipe'
+    });
+  }
 });
 

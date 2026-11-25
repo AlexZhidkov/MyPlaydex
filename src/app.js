@@ -539,6 +539,8 @@ export function initApp(options = {}) {
     selectedActivityId: targetActivityId,
     selectedOrganizerId: targetOrganizerId,
     selectedVenueId: targetVenueId,
+    todayAwst: options.todayAwst,
+    referenceDate: options.referenceDate,
     filters: {
       categories: savedCategories,
       sports: savedSports
@@ -600,6 +602,8 @@ export function initApp(options = {}) {
   if (hasExplicitVenues) loadedTabs.add('venues');
   const inFlightLoads = new Map();
 
+  const renderReferenceDate = options.referenceDate || options.todayAwst;
+
   const TAB_CONFIG = {
     activities: {
       loadingText: 'Loading activities...',
@@ -607,7 +611,7 @@ export function initApp(options = {}) {
       setRecords: (records) => store.setActivities(records),
       getRecords: (state) => state.activities,
       getFiltered: (state) => state.filteredActivities,
-      renderCard: renderActivityCard
+      renderCard: (activity) => renderActivityCard(activity, renderReferenceDate)
     },
     organizers: {
       loadingText: 'Loading organizers...',

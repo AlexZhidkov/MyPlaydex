@@ -15,7 +15,7 @@ To prevent unbounded database growth and avoid compute or document delete costs,
   - Weekly recurring activities set `expire_at: null`, preserving them perpetually from TTL deletion.
   - TTL policy is applied on the `activities` collection group on the `expire_at` field path (`gcloud firestore fields ttls update --collection-group=activities --field-path=expire_at`).
 - **Client In-Memory Expiration Filtering**:
-  - Because Firestore TTL deletes asynchronously within a 24 to 72-hour sweep window, `src/discovery-engine.js` (`isActivityExpired()`) continues filtering out lingering expired records in-memory from the 50 fetched documents.
+  - Because Firestore TTL deletes asynchronously within a 24 to 72-hour sweep window, `src/discovery-engine.js` retains `isActivityExpired()` for TTL alignment and filters the regular discovery feed via `isActivityUpcoming()` (AWST-pinned, without the 24-hour grace buffer) so only upcoming and currently ongoing activities appear in the feed while deep-linked records remain resolvable during the grace window.
 - **Timestamp Standardization**:
   - `created_at` and `updated_at` across `/activities`, `/organizers`, `/venues`, and `/regions` are migrated from ISO 8601 strings to native Firestore `Timestamp` objects (`FieldValue.serverTimestamp()`).
   - One-off scheduled activity start/end times are stored as native Firestore `Timestamp` objects alongside canonical AWST string schedules.

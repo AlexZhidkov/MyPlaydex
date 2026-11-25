@@ -113,9 +113,206 @@ export function getNextWeeklyOccurrence(targetDayOfWeek, startDateObj, reference
   return new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate() + daysUntil);
 }
 
+const AWST_TIME_FORMATTER = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Australia/Perth',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23'
+});
+
+function getAwstTimeString(date) {
+  return AWST_TIME_FORMATTER.format(date);
+}
+
+function calendarStringToLocalDate(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+function localDateToCalendarString(date) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/**
+ * Parses a time-of-day string ("HH:mm" or "HH:mm:ss") into validated numeric components.
+ *
+ * @param {*} value
+ * @returns {{ hours: number, minutes: number, seconds: number, formatted: string, hhmm: string, totalMinutes: number } | null}
+ */
+function parseTimeOfDay(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  const match = trimmed.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!match) return null;
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  const seconds = match[3] ? Number(match[3]) : 0;
+  if (
+    !Number.isInteger(hours) || hours < 0 || hours > 23 ||
+    !Number.isInteger(minutes) || minutes < 0 || minutes > 59 ||
+    !Number.isInteger(seconds) || seconds < 0 || seconds > 59
+  ) {
+    return null;
+  }
+
+  const pad = (n) => String(n).padStart(2, '0');
+  return {
+    hours,
+    minutes,
+    seconds,
+    formatted: `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`,
+    hhmm: `${pad(hours)}:${pad(minutes)}`,
+    totalMinutes: hours * 60 + minutes + seconds / 60
+  };
+}
+
+/**
+ * Parses a full timestamp (Date, number, Firestore Timestamp, or ISO datetime string)
+ * into epoch milliseconds. Returns null for date-only YYYY-MM-DD strings.
+ *
+ * @param {*} value
+ * @returns {number | null}
+ */
+function parseInstantMs(value) {
+  if (value === null || value === undefined) return null;
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value.getTime();
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === 'object') {
+    if (typeof value.toDate === 'function') {
+      const d = value.toDate();
+      return d instanceof Date && !Number.isNaN(d.getTime()) ? d.getTime() : null;
+    }
+    if (typeof value.seconds === 'number' && Number.isFinite(value.seconds)) {
+      const ns = typeof value.nanoseconds === 'number' && Number.isFinite(value.nanoseconds) ? value.nanoseconds : 0;
+      return value.seconds * 1000 + Math.floor(ns / 1e6);
+    }
+    return null;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed || /^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+      return null;
+    }
+    if (trimmed.includes('T') || /^\d{4}-\d{2}-\d{2}[\sT]/.test(trimmed)) {
+      const ms = Date.parse(trimmed);
+      return Number.isNaN(ms) ? null : ms;
+    }
+  }
+  return null;
+}
+
+/**
+ * Extracts a YYYY-MM-DD calendar date in Australia/Perth from a date-only string or instant.
+ *
+ * @param {*} value
+ * @returns {string | null}
+ */
+function parseAwstCalendarDate(value) {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+      return trimmed;
+    }
+  }
+  const instantMs = parseInstantMs(value);
+  if (instantMs !== null) {
+    return getTodayAwstDate(new Date(instantMs));
+  }
+  return null;
+}
+
+/**
+ * Normalizes a reference time (Date, YYYY-MM-DD string, ISO string, or Timestamp)
+ * into AWST epoch milliseconds, time-presence flag, and AWST calendar date.
+ *
+ * @param {*} [value]
+ * @returns {{ refMs: number, hasTime: boolean, todayAwst: string }}
+ */
+function parseReferenceTime(value) {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+      const ms = Date.parse(`${trimmed}T00:00:00+08:00`);
+      if (!Number.isNaN(ms)) {
+        return { refMs: ms, hasTime: false, todayAwst: trimmed };
+      }
+    }
+  }
+  const instantMs = parseInstantMs(value);
+  if (instantMs !== null) {
+    return {
+      refMs: instantMs,
+      hasTime: true,
+      todayAwst: getTodayAwstDate(new Date(instantMs))
+    };
+  }
+  const now = new Date();
+  return {
+    refMs: now.getTime(),
+    hasTime: true,
+    todayAwst: getTodayAwstDate(now)
+  };
+}
+
+/**
+ * Resolves the next occurrence Date (local calendar date) for a weekly schedule in Australia/Perth,
+ * advancing by 7 days when the session falls on today and its AWST end (or start) time has already passed.
+ *
+ * @param {object} [schedule={}]
+ * @param {Date | string | number | object} [referenceTime=new Date()]
+ * @returns {Date | null}
+ */
+export function resolveNextWeeklyOccurrence(schedule = {}, referenceTime = new Date()) {
+  const s = schedule && typeof schedule === 'object' ? schedule : {};
+  const startDateStr = parseAwstCalendarDate(s.start_date) || parseAwstCalendarDate(s.start_time);
+  const startCalendarDate = startDateStr ? calendarStringToLocalDate(startDateStr) : null;
+  const targetDayOfWeek = resolveDayOfWeek(s, startCalendarDate);
+  if (targetDayOfWeek === null) {
+    return null;
+  }
+
+  const ref = parseReferenceTime(referenceTime);
+  const refCalendarDate = calendarStringToLocalDate(ref.todayAwst);
+  let nextDate = getNextWeeklyOccurrence(targetDayOfWeek, startCalendarDate, refCalendarDate);
+
+  if (ref.hasTime && localDateToCalendarString(nextDate) === ref.todayAwst) {
+    const extractAwstTime = (val) => {
+      const tod = parseTimeOfDay(val);
+      if (tod) return tod;
+      const ms = parseInstantMs(val);
+      return ms !== null ? parseTimeOfDay(getAwstTimeString(new Date(ms))) : null;
+    };
+
+    const startTod = extractAwstTime(s.start_time);
+    const endTod = extractAwstTime(s.end_time);
+
+    let cutoffMs = null;
+    if (endTod) {
+      cutoffMs = Date.parse(`${ref.todayAwst}T${endTod.formatted}+08:00`);
+      if (startTod && endTod.totalMinutes < startTod.totalMinutes) {
+        cutoffMs += ONE_DAY_MS;
+      }
+    } else if (startTod) {
+      cutoffMs = Date.parse(`${ref.todayAwst}T${startTod.formatted}+08:00`);
+    }
+
+    if (cutoffMs !== null && !Number.isNaN(cutoffMs) && ref.refMs >= cutoffMs) {
+      nextDate = new Date(nextDate.getFullYear(), nextDate.getMonth(), nextDate.getDate() + 7);
+    }
+  }
+
+  return nextDate;
+}
+
 /**
  * Resolves the next occurrence calendar date (YYYY-MM-DD) and normalized start time (HH:mm)
- * for an Activity based on its schedule.
+ * for an Activity based on its schedule in Australia/Perth (AWST).
  *
  * @param {object} activity
  * @param {Date | string} [referenceDate=new Date()]
@@ -128,58 +325,59 @@ export function resolveActivityDateTime(activity, referenceDate = new Date()) {
 
   const schedule = activity.schedule || {};
   const recurrence = schedule.recurrence || activity.recurrence || 'none';
+  const ref = parseReferenceTime(referenceDate);
 
-  const ref = typeof referenceDate === 'string'
-    ? (parseDateInput(referenceDate)?.date || new Date())
-    : (referenceDate instanceof Date && !Number.isNaN(referenceDate.getTime()) ? referenceDate : new Date());
-
-  const parsedStartTime = parseDateInput(schedule.start_time || activity.start_time);
-  const parsedStartDate = parseDateInput(schedule.start_date || activity.start_date);
-  const parsedEndDate = parseDateInput(schedule.end_date || activity.end_date);
-
-  const startDateObj = parsedStartDate?.date || parsedStartTime?.date || null;
-  const endDateObj = parsedEndDate?.date || null;
+  const rawStartTime = schedule.start_time ?? activity.start_time;
+  const rawStartDate = schedule.start_date ?? activity.start_date;
+  const rawEndDate = schedule.end_date ?? activity.end_date;
+  const rawEndTime = schedule.end_time ?? activity.end_time;
 
   let timeStr = null;
-  if (parsedStartTime?.hasTime) {
-    const pad = (n) => String(n).padStart(2, '0');
-    timeStr = `${pad(parsedStartTime.date.getHours())}:${pad(parsedStartTime.date.getMinutes())}`;
-  } else if (typeof (schedule.start_time || activity.start_time) === 'string') {
-    const rawTime = (schedule.start_time || activity.start_time).trim();
-    const match = rawTime.match(/^(\d{1,2}):(\d{2})/);
-    if (match) {
-      timeStr = `${match[1].padStart(2, '0')}:${match[2]}`;
+  const startInstantMs = parseInstantMs(rawStartTime);
+  if (startInstantMs !== null) {
+    timeStr = getAwstTimeString(new Date(startInstantMs));
+  } else {
+    const startTod = parseTimeOfDay(rawStartTime);
+    if (startTod) {
+      timeStr = startTod.hhmm;
+    } else if (typeof rawStartTime === 'string') {
+      const match = rawStartTime.trim().match(/^(\d{1,2}):(\d{2})/);
+      if (match) {
+        timeStr = `${match[1].padStart(2, '0')}:${match[2]}`;
+      }
     }
   }
 
   let dateStr = null;
 
   if (recurrence === 'weekly') {
-    const targetDayOfWeek = resolveDayOfWeek(schedule, startDateObj);
-    if (targetDayOfWeek !== null) {
-      const nextDate = getNextWeeklyOccurrence(targetDayOfWeek, startDateObj, ref);
-      const pad = (n) => String(n).padStart(2, '0');
-      dateStr = `${nextDate.getFullYear()}-${pad(nextDate.getMonth() + 1)}-${pad(nextDate.getDate())}`;
-    } else if (startDateObj) {
-      const pad = (n) => String(n).padStart(2, '0');
-      dateStr = `${startDateObj.getFullYear()}-${pad(startDateObj.getMonth() + 1)}-${pad(startDateObj.getDate())}`;
+    const nextDate = resolveNextWeeklyOccurrence(
+      {
+        start_date: rawStartDate,
+        start_time: rawStartTime,
+        end_time: rawEndTime,
+        day_of_week: schedule.day_of_week ?? activity.day_of_week
+      },
+      referenceDate
+    );
+    if (nextDate) {
+      dateStr = localDateToCalendarString(nextDate);
+    } else {
+      dateStr = parseAwstCalendarDate(rawStartDate) || parseAwstCalendarDate(rawStartTime);
     }
   } else {
     // One-off activity
-    if (startDateObj) {
-      const pad = (n) => String(n).padStart(2, '0');
-      const startFormatted = `${startDateObj.getFullYear()}-${pad(startDateObj.getMonth() + 1)}-${pad(startDateObj.getDate())}`;
-      const todayFormatted = `${ref.getFullYear()}-${pad(ref.getMonth() + 1)}-${pad(ref.getDate())}`;
+    const startFormatted = parseAwstCalendarDate(rawStartDate) || parseAwstCalendarDate(rawStartTime);
+    const endFormatted = parseAwstCalendarDate(rawEndDate) || parseAwstCalendarDate(rawEndTime);
 
-      if (endDateObj && startFormatted < todayFormatted) {
-        const endFormatted = `${endDateObj.getFullYear()}-${pad(endDateObj.getMonth() + 1)}-${pad(endDateObj.getDate())}`;
-        dateStr = endFormatted >= todayFormatted ? todayFormatted : startFormatted;
+    if (startFormatted) {
+      if (endFormatted && startFormatted < ref.todayAwst) {
+        dateStr = endFormatted >= ref.todayAwst ? ref.todayAwst : startFormatted;
       } else {
         dateStr = startFormatted;
       }
-    } else if (typeof (schedule.start_date || activity.start_date) === 'string') {
-      const raw = (schedule.start_date || activity.start_date).trim();
-      const match = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+    } else if (typeof rawStartDate === 'string') {
+      const match = rawStartDate.trim().match(/^(\d{4}-\d{2}-\d{2})/);
       if (match) {
         dateStr = match[1];
       }
@@ -199,7 +397,9 @@ export function resolveActivityDateTime(activity, referenceDate = new Date()) {
  * @returns {number}
  */
 export function compareActivitiesByDateTime(a, b, options = {}) {
-  const refDate = options.referenceDate || (options.todayAwst ? parseDateInput(options.todayAwst)?.date : null) || new Date();
+  const refDate = options.referenceDate !== undefined
+    ? options.referenceDate
+    : (options.todayAwst || new Date());
   const dtA = resolveActivityDateTime(a, refDate);
   const dtB = resolveActivityDateTime(b, refDate);
 
@@ -442,8 +642,114 @@ export function isActivityExpired(activity, referenceTime = new Date()) {
 }
 
 /**
+ * Resolves the AWST end boundary `{ endMs, isEndOfDay }` for a non-recurring activity.
+ * Returns `null` for undated activities.
+ *
+ * @param {object} activity
+ * @returns {{ endMs: number, isEndOfDay: boolean } | null}
+ */
+function resolveActivityEndBoundary(activity) {
+  const schedule = activity.schedule || {};
+  const rawStartDate = schedule.start_date ?? activity.start_date;
+  const rawEndDate = schedule.end_date ?? activity.end_date;
+  const rawStartTime = schedule.start_time ?? activity.start_time;
+  const rawEndTime = schedule.end_time ?? activity.end_time;
+
+  const startInstantMs = parseInstantMs(rawStartTime) ?? parseInstantMs(rawStartDate);
+  const endInstantMs = parseInstantMs(rawEndTime);
+  const startTimeOfDay = parseTimeOfDay(rawStartTime);
+  const endTimeOfDay = parseTimeOfDay(rawEndTime);
+  const effectiveStartTime = startTimeOfDay
+    || (startInstantMs !== null ? parseTimeOfDay(getAwstTimeString(new Date(startInstantMs))) : null);
+
+  if (endInstantMs !== null) {
+    return { endMs: endInstantMs, isEndOfDay: false };
+  }
+
+  const endDateStr = parseAwstCalendarDate(rawEndDate);
+  if (endDateStr) {
+    const startDateStr = parseAwstCalendarDate(rawStartDate)
+      || (startInstantMs !== null ? getTodayAwstDate(new Date(startInstantMs)) : null);
+
+    if (endTimeOfDay) {
+      let endMs = Date.parse(`${endDateStr}T${endTimeOfDay.formatted}+08:00`);
+      if (startDateStr === endDateStr && effectiveStartTime && endTimeOfDay.totalMinutes < effectiveStartTime.totalMinutes) {
+        endMs += ONE_DAY_MS;
+      }
+      return Number.isNaN(endMs) ? null : { endMs, isEndOfDay: false };
+    }
+    if (startDateStr === endDateStr && startInstantMs !== null) {
+      return { endMs: startInstantMs, isEndOfDay: false };
+    }
+    if (startDateStr === endDateStr && startTimeOfDay) {
+      const endMs = Date.parse(`${endDateStr}T${startTimeOfDay.formatted}+08:00`);
+      return Number.isNaN(endMs) ? null : { endMs, isEndOfDay: false };
+    }
+    const dayStartMs = Date.parse(`${endDateStr}T00:00:00+08:00`);
+    return Number.isNaN(dayStartMs) ? null : { endMs: dayStartMs + ONE_DAY_MS, isEndOfDay: true };
+  }
+
+  const startDateStr = parseAwstCalendarDate(rawStartDate);
+  if (startDateStr) {
+    if (endTimeOfDay) {
+      let endMs = Date.parse(`${startDateStr}T${endTimeOfDay.formatted}+08:00`);
+      if (effectiveStartTime && endTimeOfDay.totalMinutes < effectiveStartTime.totalMinutes) {
+        endMs += ONE_DAY_MS;
+      }
+      return Number.isNaN(endMs) ? null : { endMs, isEndOfDay: false };
+    }
+    if (startInstantMs !== null) {
+      return { endMs: startInstantMs, isEndOfDay: false };
+    }
+    if (startTimeOfDay) {
+      const endMs = Date.parse(`${startDateStr}T${startTimeOfDay.formatted}+08:00`);
+      return Number.isNaN(endMs) ? null : { endMs, isEndOfDay: false };
+    }
+    const dayStartMs = Date.parse(`${startDateStr}T00:00:00+08:00`);
+    return Number.isNaN(dayStartMs) ? null : { endMs: dayStartMs + ONE_DAY_MS, isEndOfDay: true };
+  }
+
+  if (startInstantMs !== null) {
+    return { endMs: startInstantMs, isEndOfDay: false };
+  }
+
+  return null;
+}
+
+/**
+ * Checks whether an activity is upcoming (or currently ongoing) in Australia/Perth (AWST)
+ * without applying the 24-hour Firestore TTL retention grace buffer.
+ * Weekly recurring activities are always upcoming.
+ *
+ * @param {object} activity
+ * @param {string | Date | number | object} [referenceTime=new Date()]
+ * @returns {boolean}
+ */
+export function isActivityUpcoming(activity, referenceTime = new Date()) {
+  if (!activity || typeof activity !== 'object') return false;
+
+  const schedule = activity.schedule;
+  const recurrence = schedule?.recurrence || activity.recurrence || 'none';
+  if (recurrence === 'weekly') {
+    return true;
+  }
+
+  const boundary = resolveActivityEndBoundary(activity);
+  const ref = parseReferenceTime(referenceTime);
+
+  if (boundary !== null) {
+    if (ref.hasTime) {
+      return ref.refMs < boundary.endMs;
+    }
+    return boundary.isEndOfDay ? ref.refMs < boundary.endMs : ref.refMs <= boundary.endMs;
+  }
+
+  return !isActivityExpired(activity, referenceTime);
+}
+
+/**
  * Filter listings (Activities, Organizers, or Venues) by categorical facets
- * and optional AWST date expiration.
+ * and optional AWST upcoming schedule check.
  *
  * @param {Array<object>} [listings=[]]
  * @param {{ categories?: string[], sport?: string, sports?: string[], freeOnly?: boolean, gender?: string, age?: string }} [filters={}]
@@ -455,14 +761,16 @@ export function isActivityExpired(activity, referenceTime = new Date()) {
  */
 export function filterListings(listings = [], filters = {}, options = {}) {
   const { categories, sport, sports, freeOnly, gender, age } = filters;
-  const expirationRef = options.referenceDate || options.todayAwst || new Date();
+  const expirationRef = options.referenceDate !== undefined
+    ? options.referenceDate
+    : (options.todayAwst || new Date());
   const applyExpiration = options.applyExpiration !== false;
   const hasCategoryFilter = Array.isArray(categories) && categories.length > 0;
   const hasSportArrayFilter = Array.isArray(sports) && sports.length > 0;
 
   return listings.filter((item) => {
-    // Expiration check (applied strictly to Activities, never Organizers/Venues)
-    if (applyExpiration && isActivityExpired(item, expirationRef)) {
+    // Upcoming schedule check (applied strictly to Activities, never Organizers/Venues)
+    if (applyExpiration && !isActivityUpcoming(item, expirationRef)) {
       return false;
     }
 
@@ -526,15 +834,15 @@ export function filterListings(listings = [], filters = {}, options = {}) {
 }
 
 /**
- * Filter activities by categorical facets and deterministic AWST expiration.
+ * Filter activities by categorical facets and upcoming AWST schedule visibility.
  *
  * @param {Array<object>} activities
  * @param {{ sport?: string, sports?: string[], freeOnly?: boolean, gender?: string, age?: string }} [filters={}]
- * @param {string} [todayAwst=getTodayAwstDate()]
+ * @param {string | Date} [referenceTime=new Date()]
  * @returns {Array<object>} Filtered activities
  */
-export function filterActivities(activities, filters = {}, todayAwst = getTodayAwstDate()) {
-  return filterListings(activities, filters, { todayAwst, applyExpiration: true });
+export function filterActivities(activities, filters = {}, referenceTime = new Date()) {
+  return filterListings(activities, filters, { referenceDate: referenceTime, applyExpiration: true });
 }
 
 /**

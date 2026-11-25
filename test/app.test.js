@@ -2124,3 +2124,97 @@ test('Issue #33: Category filter persistence and two-tier filter modal interacti
   storage.clear();
 });
 
+test('initApp hides yesterday activities and renders only upcoming activities in feed-container', () => {
+  const storage = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => storage.get(key) || null,
+    setItem: (key, val) => storage.set(key, String(val)),
+    removeItem: (key) => storage.delete(key),
+    clear: () => storage.clear()
+  };
+
+  const elements = new Map();
+  function createMockEl(id) {
+    const classSet = new Set();
+    const el = {
+      id,
+      innerHTML: '',
+      textContent: '',
+      style: {},
+      classList: {
+        add: (...c) => c.forEach((n) => classSet.add(n)),
+        remove: (...c) => c.forEach((n) => classSet.delete(n)),
+        toggle: (n, force) => (force === undefined ? (classSet.has(n) ? classSet.delete(n) : classSet.add(n)) : (force ? classSet.add(n) : classSet.delete(n))),
+        contains: (n) => classSet.has(n)
+      },
+      getAttribute: () => null,
+      setAttribute: () => {},
+      removeAttribute: () => {},
+      addEventListener: () => {}
+    };
+    elements.set(id, el);
+    return el;
+  }
+
+  const feedContainer = createMockEl('feed-container');
+  createMockEl('location-gate-overlay');
+  createMockEl('loading-label');
+  createMockEl('current-location-label');
+
+  globalThis.window = {
+    location: { hash: '', pathname: '/', search: '' },
+    history: { length: 1, pushState: () => {}, replaceState: () => {}, back: () => {} },
+    addEventListener: () => {}
+  };
+  globalThis.document = {
+    getElementById: (id) => elements.get(id) || null,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    addEventListener: () => {}
+  };
+
+  const app = initApp({
+    location: { name: 'Perth CBD', lat: -31.9505, lng: 115.8605 },
+    referenceDate: new Date('2026-11-25T11:00:00+08:00'),
+    activities: [
+      {
+        id: 'act_yesterday',
+        title: 'Yesterday Social Soccer',
+        subcategory: 'soccer',
+        venue: { name: 'Langley Park', coordinates: { lat: -31.959, lng: 115.869 } },
+        schedule: { start_date: '2026-11-24', end_date: '2026-11-24', start_time: '18:00', end_time: '20:00', recurrence: 'none' },
+        source_url: 'https://example.org/yesterday',
+        verified: true
+      },
+      {
+        id: 'act_today_later',
+        title: 'Today Evening Tennis',
+        subcategory: 'tennis',
+        venue: { name: 'Perth Tennis', coordinates: { lat: -31.951, lng: 115.861 } },
+        schedule: { start_date: '2026-11-25', end_date: '2026-11-25', start_time: '18:00', end_time: '20:00', recurrence: 'none' },
+        source_url: 'https://example.org/today',
+        verified: true
+      },
+      {
+        id: 'act_tomorrow',
+        title: 'Tomorrow Morning Volleyball',
+        subcategory: 'volleyball',
+        venue: { name: 'Perth Beach', coordinates: { lat: -31.952, lng: 115.862 } },
+        schedule: { start_date: '2026-11-26', end_date: '2026-11-26', start_time: '08:00', end_time: '10:00', recurrence: 'none' },
+        source_url: 'https://example.org/tomorrow',
+        verified: true
+      }
+    ]
+  });
+
+  assert.deepEqual(
+    app.store.getState().filteredActivities.map((a) => a.id),
+    ['act_today_later', 'act_tomorrow']
+  );
+  assert.ok(!feedContainer.innerHTML.includes('Yesterday Social Soccer'));
+  assert.ok(feedContainer.innerHTML.includes('Today Evening Tennis'));
+  assert.ok(feedContainer.innerHTML.includes('Tomorrow Morning Volleyball'));
+
+  storage.clear();
+});
+

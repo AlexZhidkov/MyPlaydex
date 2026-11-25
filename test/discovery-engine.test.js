@@ -13,7 +13,10 @@ import {
   normalizeDiscoveryTab,
   createDiscoveryStore,
   resolveActivityDateTime,
-  compareActivitiesByDateTime
+  compareActivitiesByDateTime,
+  isActivityExpired,
+  isActivityUpcoming,
+  resolveNextWeeklyOccurrence
 } from '../src/discovery-engine.js';
 
 const mockActivities = [
@@ -614,7 +617,7 @@ test('Seam 1 (Issue #13): Discovery store tracks activeTab, shares location/radi
 });
 
 test('Seam 1 (Activity Ordering): resolveActivityDateTime accurately resolves one-off and weekly recurring dates and times', () => {
-  const refDate = new Date(2026, 10, 14); // Saturday, 14 Nov 2026
+  const refDate = new Date('2026-11-14T00:00:00+08:00'); // Saturday, 14 Nov 2026
 
   // 1. One-off event in the future
   const oneOff = {
@@ -657,7 +660,7 @@ test('Seam 1 (Activity Ordering): resolveActivityDateTime accurately resolves on
 
 test('Seam 2 (Activity Ordering): orders activities chronologically by date and time from earlier to later', () => {
   const perthCbd = { lat: -31.9505, lng: 115.8605 };
-  const refDate = new Date(2026, 10, 14); // Saturday, 14 Nov 2026
+  const refDate = new Date('2026-11-14T00:00:00+08:00'); // Saturday, 14 Nov 2026
 
   const activities = [
     {
@@ -730,7 +733,7 @@ test('Seam 2 (Activity Ordering): orders activities chronologically by date and 
 
 test('Seam 3 (Activity Ordering): breaks ties by proximity (distanceKm) when activities have identical dates and times', () => {
   const perthCbd = { lat: -31.9505, lng: 115.8605 };
-  const refDate = new Date(2026, 10, 14);
+  const refDate = new Date('2026-11-14T00:00:00+08:00');
 
   const activities = [
     {
@@ -763,7 +766,7 @@ test('Seam 3 (Activity Ordering): breaks ties by proximity (distanceKm) when act
 });
 
 test('Seam 4 (Activity Ordering): Discovery store delivers activities in chronological date/time order to subscribers', () => {
-  const refDate = new Date(2026, 10, 14); // Sat 14 Nov 2026
+  const refDate = new Date('2026-11-14T00:00:00+08:00'); // Sat 14 Nov 2026
   const perthCbd = { lat: -31.9505, lng: 115.8605 };
 
   const activities = [
@@ -797,7 +800,7 @@ test('Seam 4 (Activity Ordering): Discovery store delivers activities in chronol
   assert.equal(state.filteredActivities[1].id, 'act_monday');
 });
 
-test('Seam 1: In-memory expiration filtering enforces 24-hour AWST grace window and honors expire_at', () => {
+test('Seam 1: In-memory expiration filtering enforces 24-hour AWST grace window for TTL while discovery feed shows only upcoming activities', () => {
   const perthCbd = { lat: -31.9505, lng: 115.8605 };
   const activities = [
     {
@@ -816,6 +819,13 @@ test('Seam 1: In-memory expiration filtering enforces 24-hour AWST grace window 
       expire_at: '2026-11-11T16:00:00.000Z' // 2026-11-12T00:00:00+08:00
     },
     {
+      id: 'upcoming_today',
+      title: 'Today Evening Basketball',
+      subcategory: 'basketball',
+      venue: { coordinates: perthCbd },
+      schedule: { start_date: '2026-11-11', end_date: '2026-11-11', start_time: '19:00', end_time: '21:00', recurrence: 'none' }
+    },
+    {
       id: 'weekly_with_null_expire_at',
       title: 'Weekly Social Volleyball',
       subcategory: 'volleyball',
@@ -825,24 +835,175 @@ test('Seam 1: In-memory expiration filtering enforces 24-hour AWST grace window 
     }
   ];
 
-  // Within 24h AWST grace window (2026-11-11 23:59:59 AWST) -> both non-recurring activities remain visible
-  const duringGrace = filterAndRankActivities(activities, {
+  // 1. isActivityExpired still retains the 24h AWST TTL grace window (both 2026-11-10 activities expire at 2026-11-12 00:00 AWST)
+  const duringGraceRef = new Date('2026-11-11T23:59:59+08:00');
+  assert.equal(isActivityExpired(activities[0], duringGraceRef), false);
+  assert.equal(isActivityExpired(activities[1], duringGraceRef), false);
+
+  const afterGraceRef = new Date('2026-11-12T00:00:00+08:00');
+  assert.equal(isActivityExpired(activities[0], afterGraceRef), true);
+  assert.equal(isActivityExpired(activities[1], afterGraceRef), true);
+  assert.equal(isActivityExpired(activities[3], afterGraceRef), false);
+
+  // 2. Discovery feed & isActivityUpcoming exclude yesterday's activities even during their 24h TTL grace window
+  const startOfTodayRef = new Date('2026-11-11T00:00:00+08:00');
+  assert.equal(isActivityUpcoming(activities[0], startOfTodayRef), false);
+  assert.equal(isActivityUpcoming(activities[1], startOfTodayRef), false);
+  assert.equal(isActivityUpcoming(activities[2], startOfTodayRef), true);
+  assert.equal(isActivityUpcoming(activities[3], startOfTodayRef), true);
+
+  const morningFeed = filterAndRankActivities(activities, {
     location: perthCbd,
     radiusKm: 25,
-    referenceDate: new Date('2026-11-11T23:59:59+08:00')
+    referenceDate: startOfTodayRef
   });
+  assert.deepEqual(morningFeed.map(a => a.id), ['weekly_with_null_expire_at', 'upcoming_today']);
+
+  const lateNightFeed = filterAndRankActivities(activities, {
+    location: perthCbd,
+    radiusKm: 25,
+    referenceDate: duringGraceRef
+  });
+  assert.deepEqual(lateNightFeed.map(a => a.id), ['weekly_with_null_expire_at']);
+
+  // 3. Deep-linked yesterday activity remains pinned when explicitly selected during TTL grace window
+  const deepLinkStore = createDiscoveryStore({
+    activities,
+    location: perthCbd,
+    radiusKm: 25,
+    selectedActivityId: 'ended_yesterday_with_expire_at',
+    referenceDate: startOfTodayRef
+  });
+  assert.equal(deepLinkStore.getState().filteredActivities[0].id, 'ended_yesterday_with_expire_at');
+});
+
+test('Seam 1 (Upcoming Visibility): handles today end_time/start_time, ongoing, multi-day, overnight, Timestamps, undated, and weekly rollover in AWST', () => {
+  const perthCbd = { lat: -31.9505, lng: 115.8605 };
+
+  const earlierFinished = {
+    id: 'earlier_finished',
+    subcategory: 'tennis',
+    venue: { coordinates: perthCbd },
+    schedule: { start_date: '2026-11-11', start_time: '09:00', end_time: '11:00', recurrence: 'none' }
+  };
+  const earlierNoEndTime = {
+    id: 'earlier_no_end',
+    subcategory: 'tennis',
+    venue: { coordinates: perthCbd },
+    schedule: { start_date: '2026-11-11', start_time: '11:00', recurrence: 'none' }
+  };
+  const ongoing = {
+    id: 'ongoing',
+    subcategory: 'soccer',
+    venue: { coordinates: perthCbd },
+    schedule: { start_date: '2026-11-11', start_time: '11:00', end_time: '13:00', recurrence: 'none' }
+  };
+  const laterToday = {
+    id: 'later_today',
+    subcategory: 'volleyball',
+    venue: { coordinates: perthCbd },
+    schedule: { start_date: '2026-11-11', start_time: '18:00', recurrence: 'none' }
+  };
+  const dateOnlyToday = {
+    id: 'date_only_today',
+    subcategory: 'walking',
+    venue: { coordinates: perthCbd },
+    schedule: { start_date: '2026-11-11', recurrence: 'none' }
+  };
+  const multiDayOngoing = {
+    id: 'multi_day_ongoing',
+    subcategory: 'cricket',
+    venue: { coordinates: perthCbd },
+    schedule: { start_date: '2026-11-10', end_date: '2026-11-12', start_time: '09:00', recurrence: 'none' }
+  };
+  const multiDayEndedYesterday = {
+    id: 'multi_day_ended_yesterday',
+    subcategory: 'cricket',
+    venue: { coordinates: perthCbd },
+    schedule: { start_date: '2026-11-08', end_date: '2026-11-10', recurrence: 'none' }
+  };
+  const multiDayEndedEarlierToday = {
+    id: 'multi_day_ended_today',
+    subcategory: 'cricket',
+    venue: { coordinates: perthCbd },
+    schedule: { start_date: '2026-11-10', end_date: '2026-11-11', end_time: '11:00', recurrence: 'none' }
+  };
+  const overnightSession = {
+    id: 'overnight',
+    subcategory: 'other',
+    venue: { coordinates: perthCbd },
+    schedule: { start_date: '2026-11-10', start_time: '22:00', end_time: '01:00', recurrence: 'none' }
+  };
+  const timestampActivity = {
+    id: 'ts_activity',
+    subcategory: 'running',
+    venue: { coordinates: perthCbd },
+    schedule: {
+      start_time: new Date('2026-11-11T04:00:00.000Z'), // 12:00 AWST
+      end_time: { toDate: () => new Date('2026-11-11T06:00:00.000Z') }, // 14:00 AWST
+      recurrence: 'none'
+    }
+  };
+  const undatedActive = {
+    id: 'undated_active',
+    subcategory: 'pickleball',
+    venue: { coordinates: perthCbd }
+  };
+  const undatedExpired = {
+    id: 'undated_expired',
+    subcategory: 'pickleball',
+    venue: { coordinates: perthCbd },
+    expire_at: '2026-11-11T03:00:00.000Z' // 11:00 AWST
+  };
+
+  const noonAwst = new Date('2026-11-11T12:00:00+08:00');
+  const results = filterActivities([
+    earlierFinished,
+    earlierNoEndTime,
+    ongoing,
+    laterToday,
+    dateOnlyToday,
+    multiDayOngoing,
+    multiDayEndedYesterday,
+    multiDayEndedEarlierToday,
+    overnightSession,
+    timestampActivity,
+    undatedActive,
+    undatedExpired
+  ], {}, noonAwst);
+
   assert.deepEqual(
-    duringGrace.map(a => a.id),
-    ['ended_yesterday_no_expire_at', 'ended_yesterday_with_expire_at', 'weekly_with_null_expire_at']
+    results.map(a => a.id),
+    ['ongoing', 'later_today', 'date_only_today', 'multi_day_ongoing', 'ts_activity', 'undated_active']
   );
 
-  // After 24h AWST grace window (2026-11-12 00:00:00 AWST) -> expired non-recurring activities are filtered out
-  const afterGrace = filterAndRankActivities(activities, {
-    location: perthCbd,
-    radiusKm: 25,
-    referenceDate: new Date('2026-11-12T00:00:00+08:00')
-  });
-  assert.deepEqual(afterGrace.map(a => a.id), ['weekly_with_null_expire_at']);
+  // Overnight session crossing midnight (22:00 Nov 10 -> 01:00 Nov 11 AWST)
+  assert.equal(isActivityUpcoming(overnightSession, new Date('2026-11-11T00:30:00+08:00')), true);
+  assert.equal(isActivityUpcoming(overnightSession, new Date('2026-11-11T01:00:00+08:00')), false);
+
+  // Weekly rollover: Wednesday 2026-11-11
+  const wedWeeklyEnded = {
+    id: 'weekly_ended',
+    schedule: { recurrence: 'weekly', day_of_week: 3, start_time: '09:00', end_time: '11:00' }
+  };
+  const wedWeeklyOngoing = {
+    id: 'weekly_ongoing',
+    schedule: { recurrence: 'weekly', day_of_week: 3, start_time: '11:00', end_time: '13:00' }
+  };
+  const wedWeeklyLater = {
+    id: 'weekly_later',
+    schedule: { recurrence: 'weekly', day_of_week: 3, start_time: '18:00' }
+  };
+  const wedWeeklyTimeless = {
+    id: 'weekly_timeless',
+    schedule: { recurrence: 'weekly', day_of_week: 3 }
+  };
+
+  assert.equal(resolveActivityDateTime(wedWeeklyEnded, noonAwst).date, '2026-11-18');
+  assert.equal(resolveActivityDateTime(wedWeeklyOngoing, noonAwst).date, '2026-11-11');
+  assert.equal(resolveActivityDateTime(wedWeeklyLater, noonAwst).date, '2026-11-11');
+  assert.equal(resolveActivityDateTime(wedWeeklyTimeless, noonAwst).date, '2026-11-11');
+  assert.ok(resolveNextWeeklyOccurrence(wedWeeklyEnded.schedule, noonAwst));
 });
 
 test('Seam 2 (Issue #16): Unreviewed Listings (needs_review: true) remain visible in Activities and Organizers discovery', () => {
