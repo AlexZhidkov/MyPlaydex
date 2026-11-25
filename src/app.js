@@ -6,6 +6,7 @@
  */
 
 import { createDiscoveryStore, extractListingCoordinates, normalizeDiscoveryTab } from './discovery-engine.js';
+import { createAnalyticsClient, createNoopAnalyticsClient } from './analytics.js';
 import { searchSuburbs, getSuburbByPostcodeOrName, getSuburbBySlugOrName, suburbNameToSlug, findNearestSuburb } from './perth-centroids.js';
 import {
   renderActivityCard,
@@ -456,6 +457,12 @@ export function saveLocation(location) {
  * @returns {object} Application context and store
  */
 export function initApp(options = {}) {
+  const analytics = options.analytics === null
+    ? createNoopAnalyticsClient()
+    : (options.analytics && typeof options.analytics.track === 'function'
+        ? options.analytics
+        : createAnalyticsClient());
+
   const urlParams = parseDiscoveryUrlParams();
   const hasExplicitActivities = Array.isArray(options.activities);
   const hasExplicitOrganizers = Array.isArray(options.organizers);
@@ -519,6 +526,12 @@ export function initApp(options = {}) {
   const initialTargetId = getTabTargetId(initialTab);
   if (initialTargetId && !initialLocation) {
     initialLocation = resolveDeepLinkLocation(initialTabRecords, initialTargetId);
+    if (initialLocation) {
+      analytics.track('location_selected', {
+        method: 'deep_link',
+        suburb: initialLocation.name || 'Unknown'
+      });
+    }
   }
 
   let initialRadius = options.radiusKm !== undefined ? options.radiusKm : 10;
@@ -571,6 +584,9 @@ export function initApp(options = {}) {
 
   if (suggestHeaderBtn) {
     suggestHeaderBtn.href = createSuggestActivityMailtoUrl();
+    suggestHeaderBtn.addEventListener('click', () => {
+      analytics.track('suggest_activity_click', { entry_point: 'header' });
+    });
   }
 
   function hideLoading() {
@@ -717,6 +733,16 @@ export function initApp(options = {}) {
     saveCategoryFilters(nextCategories);
     saveSportsFilters(nextSports);
     store.setDiscoveryFilters({ categories: nextCategories, sports: nextSports });
+    const currentState = store.getState();
+    const activeTab = normalizeDiscoveryTab(currentState.activeTab);
+    const resultCount = TAB_CONFIG[activeTab].getFiltered(currentState).length;
+    analytics.track('filters_applied', {
+      categories: nextCategories,
+      sports: nextSports,
+      category_count: nextCategories.length,
+      sport_count: nextSports.length,
+      result_count: resultCount
+    });
     returnToFeed();
   }
 
@@ -729,12 +755,13 @@ export function initApp(options = {}) {
     applyDiscoveryFilters({ categories, sports });
   }
 
-  function clearAllDiscoveryFilters() {
+  function clearAllDiscoveryFilters(source = 'filter_modal') {
     stagedCategories.clear();
     stagedSports.clear();
     clearSavedCategoryFilters();
     clearSavedSportsFilters();
     store.setDiscoveryFilters({ categories: [], sports: [] });
+    analytics.track('filters_cleared', { source });
   }
 
   function openLocationGate(canClose = false) {
@@ -756,10 +783,16 @@ export function initApp(options = {}) {
     updateBodyScrollLock();
   }
 
-  function handleLocationSelected(location) {
+  function handleLocationSelected(location, method) {
     saveLocation(location);
     store.setLocation(location);
     closeLocationGate();
+    if (method) {
+      analytics.track('location_selected', {
+        method,
+        suburb: location?.name || 'Unknown'
+      });
+    }
   }
 
   function renderSuggestions(query = '') {
@@ -798,7 +831,7 @@ export function initApp(options = {}) {
             name: 'Near Me',
             lat: pos.coords.latitude,
             lng: pos.coords.longitude
-          });
+          }, 'gps');
         },
         (err) => {
           gpsBtn.disabled = false;
@@ -821,10 +854,10 @@ export function initApp(options = {}) {
     });
   }
 
-  function selectSuburbByName(suburbName) {
+  function selectSuburbByName(suburbName, method = 'suburb_search') {
     const found = getSuburbByPostcodeOrName(suburbName);
     if (found) {
-      handleLocationSelected(found);
+      handleLocationSelected(found, method);
     }
   }
 
@@ -833,7 +866,7 @@ export function initApp(options = {}) {
     suggestionsList.addEventListener('click', (e) => {
       const item = e.target.closest('[data-suburb]');
       if (!item) return;
-      selectSuburbByName(item.getAttribute('data-suburb'));
+      selectSuburbByName(item.getAttribute('data-suburb'), 'suburb_search');
     });
   }
 
@@ -841,7 +874,7 @@ export function initApp(options = {}) {
   document.addEventListener('click', (e) => {
     const presetBtn = e.target.closest('.chip-preset');
     if (presetBtn) {
-      selectSuburbByName(presetBtn.getAttribute('data-suburb'));
+      selectSuburbByName(presetBtn.getAttribute('data-suburb'), 'preset');
     }
   });
 
@@ -866,6 +899,7 @@ export function initApp(options = {}) {
       pill.addEventListener('click', () => {
         const radiusVal = pill.getAttribute('data-radius');
         store.setRadius(radiusVal);
+        analytics.track('radius_changed', { radius: String(radiusVal), source: 'pill' });
       });
     });
   }
@@ -929,6 +963,10 @@ export function initApp(options = {}) {
           const deepLinkLoc = resolveDeepLinkLocation(records, targetId);
           if (deepLinkLoc) {
             store.setLocation(deepLinkLoc);
+            analytics.track('location_selected', {
+              method: 'deep_link',
+              suburb: deepLinkLoc.name || 'Unknown'
+            });
           }
         }
         tabMeta.setRecords(records);
@@ -951,6 +989,7 @@ export function initApp(options = {}) {
     const loadPromise = loadTabCollection(normalized);
     if (store.getState().activeTab !== normalized) {
       store.setTab(normalized);
+      analytics.track('tab_switched', { tab: normalized });
     }
     return loadPromise;
   }
@@ -996,6 +1035,8 @@ export function initApp(options = {}) {
     }
   }
 
+  let lastEmptyStateKey = null;
+
   // Render Feed on Store Updates
   function renderFeed(state) {
     const activeTab = normalizeDiscoveryTab(state.activeTab);
@@ -1026,6 +1067,7 @@ export function initApp(options = {}) {
 
     // If cold start without location
     if (!location) {
+      lastEmptyStateKey = null;
       openLocationGate(false);
       feedContainer.innerHTML = '';
       hideLoading();
@@ -1046,9 +1088,19 @@ export function initApp(options = {}) {
         hasFilters: hasActiveFilters,
         tab: activeTab
       });
+      const emptyKey = `${activeTab}|${radiusKm}|${hasActiveFilters}`;
+      if (emptyKey !== lastEmptyStateKey) {
+        lastEmptyStateKey = emptyKey;
+        analytics.track('empty_state_shown', {
+          tab: activeTab,
+          radius: String(radiusKm),
+          has_filters: hasActiveFilters
+        });
+      }
       return;
     }
 
+    lastEmptyStateKey = null;
     feedContainer.innerHTML = filteredList.map(tabMeta.renderCard).join('\n');
 
     if (activeDeepLinkId && !handledDeepLinks.has(activeDeepLinkId)) {
@@ -1122,7 +1174,7 @@ export function initApp(options = {}) {
       // Clear All
       const clearBtn = e.target.closest('[data-action="clear-filters"]') || e.target.closest('[data-action="clear-all"]');
       if (clearBtn) {
-        clearAllDiscoveryFilters();
+        clearAllDiscoveryFilters('filter_modal');
         renderStagedFilterView();
         return;
       }
@@ -1152,17 +1204,33 @@ export function initApp(options = {}) {
     window.addEventListener('hashchange', handleHashRouting);
   }
 
+  const LISTING_CARD_SELECTOR = '.activity-card, .organizer-card, .venue-card';
+
+  function extractCardMeta(el, isCard = false) {
+    const fallbackType = normalizeDiscoveryTab(store.getState().activeTab);
+    if (!el) return { listing_id: '', listing_type: fallbackType };
+    const card = isCard
+      ? el
+      : (el.closest ? el.closest(LISTING_CARD_SELECTOR) : null) || el;
+    const listingId = card.dataset?.id || (card.getAttribute && card.getAttribute('data-id')) || '';
+    const listingType = card.dataset?.entityType
+      || (card.getAttribute && card.getAttribute('data-entity-type'))
+      || fallbackType;
+    return { listing_id: listingId, listing_type: listingType };
+  }
+
   function openVerifiedCardUrl(card) {
     if (!card || card.classList?.contains('activity-card-unverified')) {
       return;
     }
     const url = card.dataset?.url || (card.getAttribute && card.getAttribute('data-url'));
     if (url && url !== '#' && typeof window !== 'undefined' && typeof window.open === 'function') {
+      const { listing_type, listing_id } = extractCardMeta(card, true);
+      const destination = url.startsWith('https://www.google.com/maps/') ? 'directions' : 'referral';
+      analytics.track('listing_outbound_click', { listing_type, listing_id, destination });
       window.open(url, '_blank', 'noopener,noreferrer');
     }
   }
-
-  const LISTING_CARD_SELECTOR = '.activity-card, .organizer-card, .venue-card';
 
   function getFocusedListingCard(e) {
     const card = e.target.closest && e.target.closest(LISTING_CARD_SELECTOR);
@@ -1176,18 +1244,21 @@ export function initApp(options = {}) {
       const expandBtn = e.target.closest && e.target.closest('[data-action="expand-radius"]');
       if (expandBtn) {
         store.setRadius(25);
+        analytics.track('radius_changed', { radius: '25', source: 'empty_state' });
         return;
       }
 
       const clearFiltersBtn = e.target.closest && e.target.closest('[data-action="clear-filters"]');
       if (clearFiltersBtn) {
-        clearAllDiscoveryFilters();
+        clearAllDiscoveryFilters('empty_state');
         return;
       }
 
       // 2. Venue row: Outbound Google Maps directions
       const venueRow = e.target.closest && e.target.closest('.card-venue-row');
       if (venueRow) {
+        const { listing_type, listing_id } = extractCardMeta(venueRow);
+        analytics.track('listing_outbound_click', { listing_type, listing_id, destination: 'directions' });
         // If clicked outside the <a> tag (e.g. on 📍 icon or row padding), open directions in a new tab.
         // If clicked on the <a> link itself, native browser link behavior handles it.
         const isAnchor = Boolean(e.target.closest && e.target.closest('a'));
@@ -1203,12 +1274,36 @@ export function initApp(options = {}) {
         return;
       }
 
-      // 3. Other interactive links (e.g. Suggest an edit mailto link, secondary source links)
+      // 3. Secondary source links & Suggest an edit links
+      const secondaryLink = e.target.closest && e.target.closest('a.secondary-source-link');
+      if (secondaryLink) {
+        const { listing_type, listing_id } = extractCardMeta(secondaryLink);
+        analytics.track('listing_outbound_click', {
+          listing_type,
+          listing_id,
+          destination: 'secondary_source',
+          source_label: (secondaryLink.textContent || '').trim()
+        });
+        return;
+      }
+
+      const editLink = e.target.closest && e.target.closest('a.suggest-edit-link');
+      if (editLink) {
+        const { listing_type, listing_id } = extractCardMeta(editLink);
+        analytics.track('suggest_activity_click', {
+          entry_point: 'card_edit',
+          listing_type,
+          listing_id
+        });
+        return;
+      }
+
+      // 4. Other interactive links/buttons
       if (e.target.closest && e.target.closest('a, button')) {
         return;
       }
 
-      // 4. Listing card: whole-card click opens verified source_url (or Venue directions) in a new tab
+      // 5. Listing card: whole-card click opens verified source_url (or Venue directions) in a new tab
       const card = e.target.closest && e.target.closest(LISTING_CARD_SELECTOR);
       if (card) {
         openVerifiedCardUrl(card);
@@ -1316,6 +1411,7 @@ export function initApp(options = {}) {
   return {
     store,
     ready,
+    analytics,
     selectTab,
     switchTab: selectTab,
     loadTabCollection,

@@ -1617,6 +1617,7 @@ test('Seam 3 (Issue #13): 3-tab lazy-loading fetches only active tab initially, 
       getAttribute: (n) => attrs.get(n) || null,
       setAttribute: (n, v) => attrs.set(n, String(v)),
       removeAttribute: (n) => attrs.delete(n),
+      contains: () => false,
       addEventListener: (type, cb) => {
         if (!listeners.has(type)) listeners.set(type, []);
         listeners.get(type).push(cb);
@@ -2216,5 +2217,302 @@ test('initApp hides yesterday activities and renders only upcoming activities in
   assert.ok(feedContainer.innerHTML.includes('Tomorrow Morning Volleyball'));
 
   storage.clear();
+});
+
+test('initApp emits all 7 curated SPA analytics events without raw GPS coordinates', () => {
+  const storage = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => storage.get(key) || null,
+    setItem: (key, val) => storage.set(key, String(val)),
+    removeItem: (key) => storage.delete(key),
+    clear: () => storage.clear()
+  };
+
+  const trackedEvents = [];
+  const analyticsSpy = {
+    track: (name, params) => trackedEvents.push({ name, params }),
+    isEnabled: () => true,
+    ready: Promise.resolve(true)
+  };
+
+  const elements = new Map();
+  function createMockEl(id, tag = 'div', classes = []) {
+    const classSet = new Set(classes);
+    const listeners = new Map();
+    const attrs = new Map();
+    let innerHTML = '';
+    let textContent = '';
+    const el = {
+      id,
+      tagName: tag.toUpperCase(),
+      style: {},
+      get innerHTML() { return innerHTML; },
+      set innerHTML(val) { innerHTML = val; },
+      get textContent() { return textContent; },
+      set textContent(val) { textContent = val; },
+      classList: {
+        add: (...c) => c.forEach((n) => classSet.add(n)),
+        remove: (...c) => c.forEach((n) => classSet.delete(n)),
+        toggle: (n, force) => (force === undefined ? (classSet.has(n) ? classSet.delete(n) : classSet.add(n)) : (force ? classSet.add(n) : classSet.delete(n))),
+        contains: (n) => classSet.has(n)
+      },
+      getAttribute: (n) => attrs.get(n) || null,
+      setAttribute: (n, v) => attrs.set(n, String(v)),
+      removeAttribute: (n) => attrs.delete(n),
+      contains: () => false,
+      addEventListener: (type, cb) => {
+        if (!listeners.has(type)) listeners.set(type, []);
+        listeners.get(type).push(cb);
+      },
+      dispatchEvent: (e) => {
+        const cbs = listeners.get(e.type) || [];
+        cbs.forEach((cb) => cb(e));
+      }
+    };
+    elements.set(id, el);
+    return el;
+  }
+
+  const feedContainer = createMockEl('feed-container', 'section');
+  const filterOverlay = createMockEl('filter-view-overlay', 'div', ['hidden']);
+  const suggestHeaderBtn = createMockEl('suggest-header-btn', 'a');
+  const suggestionsList = createMockEl('suburb-suggestions-list', 'div');
+  createMockEl('location-gate-overlay', 'div', ['hidden']);
+  createMockEl('loading-label', 'span');
+  createMockEl('current-location-label', 'span');
+
+  const pill25 = createMockEl('pill-25', 'button', ['radius-pill']);
+  pill25.setAttribute('data-radius', '25');
+
+  const gpsBtn = createMockEl('gps-btn', 'button');
+  gpsBtn.setAttribute('data-action', 'use-gps');
+
+  const docListeners = new Map();
+  const openedUrls = [];
+  globalThis.window = {
+    location: { hash: '', pathname: '/', search: '' },
+    history: { length: 1, pushState: () => {}, replaceState: () => {}, back: () => {} },
+    addEventListener: () => {},
+    open: (url) => openedUrls.push(url)
+  };
+  globalThis.document = {
+    getElementById: (id) => elements.get(id) || null,
+    querySelector: (sel) => (sel === '[data-action="use-gps"]' ? gpsBtn : null),
+    querySelectorAll: (sel) => (sel === '.radius-pill' ? [pill25] : []),
+    addEventListener: (type, cb) => {
+      if (!docListeners.has(type)) docListeners.set(type, []);
+      docListeners.get(type).push(cb);
+    }
+  };
+  const prevNavigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', {
+    value: {
+      geolocation: {
+        getCurrentPosition: (onSuccess) => onSuccess({ coords: { latitude: -31.95, longitude: 115.86 } })
+      }
+    },
+    configurable: true
+  });
+
+  try {
+    // Seed saved location first so we also confirm localStorage hydration does NOT emit location_selected
+    saveLocation({ name: 'Perth CBD', lat: -31.9505, lng: 115.8605 });
+
+    const app = initApp({
+      analytics: analyticsSpy,
+      referenceDate: new Date('2026-11-25T11:00:00+08:00'),
+      activities: [
+        {
+          id: 'act_1',
+          title: 'Social Soccer',
+          category: 'sports',
+          subcategory: 'soccer',
+          venue: { name: 'Langley Park', coordinates: { lat: -31.959, lng: 115.869 } },
+          schedule: { start_date: '2026-11-26', recurrence: 'none' },
+          source_url: 'https://example.org/soccer',
+          verified: true
+        }
+      ],
+      organizers: [],
+      venues: []
+    });
+
+    assert.equal(trackedEvents.length, 0, 'localStorage location hydration should not emit location_selected');
+
+    // 1. location_selected via gps, suburb_search, preset
+    gpsBtn.dispatchEvent({ type: 'click' });
+    suggestionsList.dispatchEvent({
+      type: 'click',
+      target: {
+        closest: (sel) => (sel === '[data-suburb]' ? { getAttribute: () => 'Scarborough' } : null)
+      }
+    });
+    (docListeners.get('click') || []).forEach((cb) =>
+      cb({
+        target: {
+          closest: (sel) => (sel === '.chip-preset' ? { getAttribute: () => 'Fremantle' } : null)
+        }
+      })
+    );
+
+    // 2. radius_changed via pill
+    pill25.dispatchEvent({ type: 'click' });
+
+    // 3. suggest_activity_click via header
+    suggestHeaderBtn.dispatchEvent({ type: 'click' });
+
+    // 4. listing_outbound_click (referral, directions, secondary_source) & suggest_activity_click (card_edit)
+    const mockCard = {
+      dataset: { id: 'act_1', entityType: 'activity', url: 'https://example.org/soccer' },
+      classList: { contains: () => false }
+    };
+    feedContainer.dispatchEvent({
+      type: 'click',
+      target: {
+        closest: (sel) => (sel === '.activity-card, .organizer-card, .venue-card' ? mockCard : null)
+      }
+    });
+    feedContainer.dispatchEvent({
+      type: 'click',
+      target: {
+        closest: (sel) => {
+          if (sel === '.card-venue-row') {
+            return {
+              dataset: { directionsUrl: 'https://www.google.com/maps/search/?api=1&query=Langley+Park' },
+              closest: (s) => (s === '.activity-card, .organizer-card, .venue-card' ? mockCard : null)
+            };
+          }
+          return null;
+        }
+      }
+    });
+    feedContainer.dispatchEvent({
+      type: 'click',
+      target: {
+        closest: (sel) => {
+          if (sel === 'a.secondary-source-link') {
+            return {
+              textContent: 'Eventbrite',
+              closest: (s) => (s === '.activity-card, .organizer-card, .venue-card' ? mockCard : null)
+            };
+          }
+          return null;
+        }
+      }
+    });
+    feedContainer.dispatchEvent({
+      type: 'click',
+      target: {
+        closest: (sel) => {
+          if (sel === 'a.suggest-edit-link') {
+            return {
+              closest: (s) => (s === '.activity-card, .organizer-card, .venue-card' ? mockCard : null)
+            };
+          }
+          return null;
+        }
+      }
+    });
+
+    // 5. filters_applied & empty_state_shown (deduplicated) + empty_state recovery
+    app.applyDiscoveryFilters({ categories: ['music'], sports: [] });
+    // Trigger same empty state again (should deduplicate)
+    app.store.setDiscoveryFilters({ categories: ['music'], sports: [] });
+    // Empty state clear-filters & expand-radius
+    feedContainer.dispatchEvent({
+      type: 'click',
+      target: { closest: (sel) => (sel === '[data-action="expand-radius"]' ? {} : null) }
+    });
+    feedContainer.dispatchEvent({
+      type: 'click',
+      target: { closest: (sel) => (sel === '[data-action="clear-filters"]' ? {} : null) }
+    });
+    // Filter modal clear-filters
+    filterOverlay.dispatchEvent({
+      type: 'click',
+      target: { closest: (sel) => (sel === '[data-action="clear-filters"]' ? {} : null) }
+    });
+
+    // 6. tab_switched -> organizers (which is empty -> emits empty_state_shown for organizers)
+    app.selectTab('organizers');
+
+    // Verify no raw lat/lng leaked into any event params
+    for (const ev of trackedEvents) {
+      assert.equal('lat' in ev.params, false);
+      assert.equal('lng' in ev.params, false);
+    }
+
+    assert.deepEqual(
+      trackedEvents.filter((e) => e.name === 'location_selected').map((e) => e.params),
+      [
+        { method: 'gps', suburb: 'Near Me' },
+        { method: 'suburb_search', suburb: 'Scarborough' },
+        { method: 'preset', suburb: 'Fremantle' }
+      ]
+    );
+
+    assert.deepEqual(
+      trackedEvents.filter((e) => e.name === 'radius_changed').map((e) => e.params),
+      [
+        { radius: '25', source: 'pill' },
+        { radius: '25', source: 'empty_state' }
+      ]
+    );
+
+    assert.deepEqual(
+      trackedEvents.filter((e) => e.name === 'suggest_activity_click').map((e) => e.params),
+      [
+        { entry_point: 'header' },
+        { entry_point: 'card_edit', listing_type: 'activity', listing_id: 'act_1' }
+      ]
+    );
+
+    assert.deepEqual(
+      trackedEvents.filter((e) => e.name === 'listing_outbound_click').map((e) => e.params),
+      [
+        { listing_type: 'activity', listing_id: 'act_1', destination: 'referral' },
+        { listing_type: 'activity', listing_id: 'act_1', destination: 'directions' },
+        { listing_type: 'activity', listing_id: 'act_1', destination: 'secondary_source', source_label: 'Eventbrite' }
+      ]
+    );
+
+    assert.deepEqual(
+      trackedEvents.filter((e) => e.name === 'filters_applied').map((e) => e.params),
+      [
+        { categories: ['music'], sports: [], category_count: 1, sport_count: 0, result_count: 0 }
+      ]
+    );
+
+    assert.deepEqual(
+      trackedEvents.filter((e) => e.name === 'filters_cleared').map((e) => e.params),
+      [
+        { source: 'empty_state' },
+        { source: 'filter_modal' }
+      ]
+    );
+
+    assert.deepEqual(
+      trackedEvents.filter((e) => e.name === 'tab_switched').map((e) => e.params),
+      [{ tab: 'organizers' }]
+    );
+
+    assert.deepEqual(
+      trackedEvents.filter((e) => e.name === 'empty_state_shown').map((e) => e.params),
+      [
+        { tab: 'activities', radius: '10', has_filters: false },
+        { tab: 'activities', radius: '25', has_filters: true },
+        { tab: 'organizers', radius: '25', has_filters: false }
+      ]
+    );
+
+    assert.equal(openedUrls.length, 2);
+  } finally {
+    if (prevNavigatorDescriptor) {
+      Object.defineProperty(globalThis, 'navigator', prevNavigatorDescriptor);
+    } else {
+      delete globalThis.navigator;
+    }
+    storage.clear();
+  }
 });
 
