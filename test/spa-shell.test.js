@@ -214,13 +214,13 @@ test('SEO assets (og-card.png, robots.txt, sitemap.xml) exist and are deployable
   assert.ok(fs.existsSync(robotsPath), 'robots.txt must exist at web root');
   const robots = fs.readFileSync(robotsPath, 'utf8');
   assert.match(robots, /^Allow:\s*\/$/m, 'robots.txt must allow crawling /');
-  assert.match(robots, /^Sitemap:\s*https:\/\/myplaydex\.com\.au\/sitemap\.xml$/m, 'robots.txt must reference canonical sitemap.xml');
+  assert.match(robots, /^Sitemap:\s*https:\/\/myplaydex\.web\.app\/sitemap\.xml$/m, 'robots.txt must reference canonical sitemap.xml');
 
   const sitemapPath = path.join(PUBLIC_DIR, 'sitemap.xml');
   assert.ok(fs.existsSync(sitemapPath), 'sitemap.xml must exist at web root');
   const sitemap = fs.readFileSync(sitemapPath, 'utf8');
   assert.ok(sitemap.includes('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'), 'sitemap.xml must use sitemaps.org schema');
-  assert.ok(sitemap.includes('<loc>https://myplaydex.com.au/</loc>'), 'sitemap.xml must include canonical homepage URL');
+  assert.ok(sitemap.includes('<loc>https://myplaydex.web.app/</loc>'), 'sitemap.xml must include canonical homepage URL');
 
   const firebaseJson = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'firebase.json'), 'utf8'));
   const ignored = firebaseJson.hosting?.ignore || [];
