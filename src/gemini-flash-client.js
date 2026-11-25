@@ -6,7 +6,7 @@
 
 import { CANONICAL_CATEGORIES } from './sanitizer.js';
 
-export const DEFAULT_GEMINI_FLASH_MODEL = 'gemini-2.5-flash';
+export const DEFAULT_GEMINI_FLASH_MODEL = 'gemini-2.5-flash-lite';
 export const DEFAULT_GEMINI_API_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
 export const DEFAULT_GEMINI_TIMEOUT_MS = 30000;
 export const DEFAULT_MAX_MARKDOWN_CHARS = 30000;
