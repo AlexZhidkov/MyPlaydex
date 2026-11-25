@@ -120,22 +120,24 @@ test('Seam 4: Responsive header hides Suggest and Filter text labels on small sc
   );
 });
 
-test('Seam 4: firestore.rules grants public read and denies client write on activities, organizers, and venues while denying regions', () => {
+test('Seam 4: firestore.rules grants public read and Admin-only writes on Listings while restricting /regions to Admin read-only', () => {
   const rulesPath = path.join(REPO_ROOT, 'firestore.rules');
   const rules = fs.readFileSync(rulesPath, 'utf8');
 
-  for (const collectionMatch of [
-    /match \/activities\/\{activityId\}\s*\{[^}]*allow read:\s*if true;\s*allow write:\s*if false;\s*\}/s,
-    /match \/organizers\/\{organizerId\}\s*\{[^}]*allow read:\s*if true;\s*allow write:\s*if false;\s*\}/s,
-    /match \/venues\/\{venueId\}\s*\{[^}]*allow read:\s*if true;\s*allow write:\s*if false;\s*\}/s
-  ]) {
-    assert.match(rules, collectionMatch, `Missing public read / deny write rule for ${collectionMatch}`);
+  assert.match(rules, /function isAdmin\(\)\s*\{\s*return request\.auth != null && request\.auth\.token\.admin == true;\s*\}/s);
+
+  for (const [col, idParam] of [['activities', 'activityId'], ['organizers', 'organizerId'], ['venues', 'venueId']]) {
+    const pattern = new RegExp(
+      `match \\/${col}\\/\\{${idParam}\\}\\s*\\{[^}]*allow read:\\s*if true;\\s*allow create,\\s*delete:\\s*if isAdmin\\(\\);\\s*allow update:\\s*if isAdmin\\(\\) && immutableListingFieldsPreserved\\(\\);\\s*\\}`,
+      's'
+    );
+    assert.match(rules, pattern, `Missing public read / Admin-only write rule for /${col}`);
   }
 
   assert.match(
     rules,
-    /match \/regions\/\{regionId\}\s*\{[^}]*allow read,\s*write:\s*if false;\s*\}/s,
-    '/regions must remain denied to client reads and writes'
+    /match \/regions\/\{regionId\}\s*\{[^}]*allow read:\s*if isAdmin\(\);\s*allow write:\s*if false;\s*\}/s,
+    '/regions must allow Admin read-only and deny all writes'
   );
   assert.match(
     rules,

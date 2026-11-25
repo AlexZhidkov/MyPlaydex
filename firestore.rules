@@ -85,42 +85,69 @@ rules_version = '2';
 //     /activities/{activityId}, /organizers/{organizerId}, and /venues/{venueId}
 //     so the browser discovery client can fetch sanitized discovery listings
 //     across all three tabs via the Cloud Firestore REST API.
-//   - All writes across all collections are performed exclusively by backend
-//     ingestion and verification pipelines using the privileged Firebase Admin
-//     SDK (which bypasses Firestore Security Rules).
-//   - Client writes are strictly denied across the entire database.
-//   - Client reads and writes on /regions and all other paths remain strictly denied
-//     (backend-only).
+//   - Authenticated Admins (Firebase Auth custom claim `admin == true`) have
+//     read, create, update, and delete access on /activities/{activityId},
+//     /organizers/{organizerId}, and /venues/{venueId} for /admin workspace
+//     curation, with `id` and `created_at` enforced immutable on update.
+//   - Authenticated Admins have read-only access on /regions/{regionId}; all
+//     client writes to /regions are denied (backend-only).
+//   - Backend ingestion and verification pipelines use the privileged Firebase
+//     Admin SDK (which bypasses Firestore Security Rules).
+//   - Non-admin users and unauthenticated clients are denied all writes and
+//     denied read/write access on /regions and all other paths.
 //
 // ===============================================================
 
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    // Check if the caller is an authenticated Admin via Firebase Auth custom claim.
+    function isAdmin() {
+      return request.auth != null && request.auth.token.admin == true;
+    }
+
+    // Ensure immutable listing identity and creation timestamp are preserved on update.
+    function immutableListingFieldsPreserved() {
+      return 'id' in resource.data &&
+        'created_at' in resource.data &&
+        'id' in request.resource.data &&
+        'created_at' in request.resource.data &&
+        request.resource.data.id == resource.data.id &&
+        request.resource.data.created_at == resource.data.created_at;
+    }
+
     // Public discovery feed (scheduled activities): read-only for browser clients.
-    // All writes are restricted to backend firebase-admin pipelines.
+    // Admins may create, update (preserving id and created_at), and delete.
     match /activities/{activityId} {
       allow read: if true;
-      allow write: if false;
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() && immutableListingFieldsPreserved();
     }
 
     // Public discovery directory (canonical organizers with public directory contact details):
-    // read-only for browser clients; all writes restricted to backend firebase-admin pipelines.
+    // read-only for browser clients; Admins may create, update (preserving id and created_at), and delete.
     match /organizers/{organizerId} {
       allow read: if true;
-      allow write: if false;
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() && immutableListingFieldsPreserved();
     }
 
     // Public discovery directory (canonical venues): read-only for browser clients.
-    // All writes are restricted to backend firebase-admin pipelines.
+    // Admins may create, update (preserving id and created_at), and delete.
     match /venues/{venueId} {
       allow read: if true;
-      allow write: if false;
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() && immutableListingFieldsPreserved();
     }
 
-    // Canonical regions collection: backend-only access.
+    // Canonical regions collection: Admin read-only; all client writes denied (backend-only).
     match /regions/{regionId} {
-      allow read, write: if false;
+      allow read: if isAdmin();
+      allow write: if false;
     }
 
     // Default deny for all other collections and document paths.
