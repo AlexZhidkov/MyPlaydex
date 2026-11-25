@@ -23,7 +23,7 @@ import {
   harvestDirectoryDomains,
   normalizeDomainHost
 } from './directory-harvester.js';
-import { reconcileListingWithCatalog } from './entity-matcher.js';
+import { matchVenueByNameOnly, reconcileListingWithCatalog } from './entity-matcher.js';
 import { createFileCacheStore } from './file-cache.js';
 import { createFirecrawlClientFromEnv } from './firecrawl-client.js';
 import { createFirestoreAdapter, initFirestoreFromEnv } from './firestore-adapter.js';
@@ -35,6 +35,12 @@ import {
   extractMarkdownActivities
 } from './markdown-activity-extractor.js';
 import { loadDotEnv } from './places-sync.js';
+import {
+  DEFAULT_PDF_SCRAPE_TIMEOUT_MS,
+  DEFAULT_PDF_TIMETABLE_SEEDS,
+  isPdfUrl,
+  scorePdfCandidateUrl
+} from './pdf-timetable-seeds.js';
 import {
   normalizeSport,
   parseSchedule,
@@ -115,6 +121,7 @@ export function parseCliArgs(argv = process.argv.slice(2), env = process.env) {
     refresh: argv.includes('--refresh'),
     force: argv.includes('--force'),
     harvestDirectories: !argv.includes('--no-directories') && !getArgValue(argv, 'organizer'),
+    includePdfSeeds: !argv.includes('--no-pdf-seeds') && !getArgValue(argv, 'organizer'),
     organizer: getArgValue(argv, 'organizer'),
     maxDomains,
     maxUrlsPerDomain,
@@ -151,8 +158,10 @@ function normalizeHost(hostname = '') {
 }
 
 function scoreCandidateUrl(parsedUrl) {
+  if (parsedUrl.pathname.toLowerCase().endsWith('.pdf')) {
+    return scorePdfCandidateUrl(parsedUrl);
+  }
   const lowerPath = `${parsedUrl.pathname}${parsedUrl.search}`.toLowerCase();
-  const isPdf = parsedUrl.pathname.toLowerCase().endsWith('.pdf');
   let keywordMatchIndex = -1;
   for (let i = 0; i < HIGH_SIGNAL_KEYWORDS.length; i++) {
     if (lowerPath.includes(HIGH_SIGNAL_KEYWORDS[i])) {
@@ -160,11 +169,11 @@ function scoreCandidateUrl(parsedUrl) {
       break;
     }
   }
-  if (keywordMatchIndex === -1 && !isPdf) {
+  if (keywordMatchIndex === -1) {
     return null;
   }
 
-  let score = isPdf ? 40 : 100 - keywordMatchIndex * 2;
+  let score = 100 - keywordMatchIndex * 2;
   const segments = parsedUrl.pathname.split('/').filter(Boolean).length;
   score -= segments * 3;
   if (parsedUrl.search) {
@@ -297,6 +306,7 @@ export async function selectDripOrganizerTargets({
   organizersCatalog = [],
   activitiesCatalog = [],
   harvestedDomains = [],
+  pdfTimetableSeeds = [],
   cacheStore = null,
   now = new Date(),
   force = false,
@@ -319,6 +329,7 @@ export async function selectDripOrganizerTargets({
 
   const eligible = [];
   const seenHosts = new Set();
+  const seenUrls = new Set();
   const knownOrganizerHosts = collectKnownOrganizerHosts(organizersCatalog);
 
   for (const org of organizersCatalog) {
@@ -341,6 +352,7 @@ export async function selectDripOrganizerTargets({
 
     const host = normalizeDomainHost(websiteUrl);
     if (host) seenHosts.add(host);
+    seenUrls.add(websiteUrl);
 
     const orgActivities = org.id ? (activitiesByOrgId.get(org.id) || []) : [];
     const activeActivityCount = orgActivities.filter(a => isActivityActive(a, nowMs)).length;
@@ -360,6 +372,43 @@ export async function selectDripOrganizerTargets({
   }
 
   if (!organizerId) {
+    for (const seed of Array.isArray(pdfTimetableSeeds) ? pdfTimetableSeeds : []) {
+      const seedUrl = normalizeWebsiteUrl(seed?.url);
+      if (!seedUrl || seenUrls.has(seedUrl)) continue;
+
+      const backoff = await readDripTargetBackoffState({
+        cacheStore,
+        websiteUrl: seedUrl,
+        nowMs,
+        force,
+        refresh,
+        productiveCooldownMs,
+        zeroYieldBackoffMs
+      });
+      if (backoff.skip) continue;
+
+      seenUrls.add(seedUrl);
+
+      const host = normalizeDomainHost(seedUrl);
+      eligible.push({
+        organizer: {
+          id: seed.organizerId || null,
+          name: seed.organizerName || seed.venueName || host || seedUrl,
+          website: seedUrl
+        },
+        websiteUrl: seedUrl,
+        tier: 1,
+        isHarvestedDomain: false,
+        isPdfSeed: true,
+        venueName: seed.venueName || null,
+        suburb: seed.suburb || null,
+        activeActivityCount: 0,
+        hasExternalSource: false,
+        lastCrawledAtMs: backoff.lastCrawledAtMs,
+        lastYieldCount: backoff.lastYieldCount
+      });
+    }
+
     for (const harvested of Array.isArray(harvestedDomains) ? harvestedDomains : []) {
       const websiteUrl = normalizeWebsiteUrl(harvested?.websiteUrl);
       const host = normalizeDomainHost(websiteUrl);
@@ -399,6 +448,7 @@ export async function selectDripOrganizerTargets({
   eligible.sort((a, b) => {
     if (a.tier !== b.tier) return a.tier - b.tier;
     if (a.lastCrawledAtMs !== b.lastCrawledAtMs) return a.lastCrawledAtMs - b.lastCrawledAtMs;
+    if (Boolean(a.isPdfSeed) !== Boolean(b.isPdfSeed)) return a.isPdfSeed ? 1 : -1;
     const idCmp = String(a.organizer.id || '').localeCompare(String(b.organizer.id || ''));
     return idCmp !== 0 ? idCmp : a.websiteUrl.localeCompare(b.websiteUrl);
   });
@@ -524,19 +574,43 @@ function resolveOrganizerHomeVenue(organizer) {
   };
 }
 
-function ingestWebsiteActivity(rawActivity, { venuesCatalog, organizersCatalog, organizer }) {
+const SUB_SPACE_VENUE_REGEX = /\b(studio|room|pool|lane|court|hall|gym|arena|turf|deck|level|floor|poolside|foyer)\b/i;
+
+function ingestWebsiteActivity(rawActivity, {
+  venuesCatalog,
+  organizersCatalog,
+  target
+}) {
+  const organizer = target?.organizer;
   const homeVenue = resolveOrganizerHomeVenue(organizer);
+  const fallbackVenueName = (typeof target?.venueName === 'string' && target.venueName.trim())
+    || homeVenue?.name
+    || null;
   const rawVenueName = typeof rawActivity.venue_name === 'string' ? rawActivity.venue_name.trim() : '';
+
+  const isPdfSource = Boolean(target?.isPdfSeed) || isPdfUrl(rawActivity.source_url);
+  const shouldUseFallbackVenue = Boolean(
+    fallbackVenueName && (
+      !rawVenueName
+      || rawVenueName.toLowerCase() === fallbackVenueName.toLowerCase()
+      || (isPdfSource
+        && (Boolean(target?.isPdfSeed) || SUB_SPACE_VENUE_REGEX.test(rawVenueName))
+        && !matchVenueByNameOnly(rawVenueName, venuesCatalog).candidate)
+    )
+  );
+
   const shouldUseHomeVenue = Boolean(
-    homeVenue && (!rawVenueName || rawVenueName.toLowerCase() === homeVenue.name.toLowerCase())
+    homeVenue && shouldUseFallbackVenue && fallbackVenueName === homeVenue.name
   );
 
   const effectiveVenuesCatalog = shouldUseHomeVenue && !venuesCatalog.some(v => v.id === homeVenue.id)
     ? [...venuesCatalog, homeVenue]
     : venuesCatalog;
-  const effectiveRawActivity = shouldUseHomeVenue && !rawVenueName
-    ? { ...rawActivity, venue_name: homeVenue.name }
-    : rawActivity;
+  const effectiveRawActivity = {
+    ...rawActivity,
+    ...(shouldUseFallbackVenue ? { venue_name: fallbackVenueName } : {}),
+    ...(!rawActivity.suburb && target?.suburb ? { suburb: target.suburb } : {})
+  };
 
   const resolved = resolveActivityVenueAndCoordinates(effectiveRawActivity, {
     venuesCatalog: effectiveVenuesCatalog,
@@ -649,10 +723,15 @@ export async function runOrganizerWebsiteSync({
     harvestedDomains = harvestResult.harvestedDomains;
   }
 
+  const pdfTimetableSeeds = Array.isArray(options.pdfTimetableSeeds)
+    ? options.pdfTimetableSeeds
+    : (options.includePdfSeeds && !options.organizer ? DEFAULT_PDF_TIMETABLE_SEEDS : []);
+
   const targets = await selectDripOrganizerTargets({
     organizersCatalog,
     activitiesCatalog,
     harvestedDomains,
+    pdfTimetableSeeds,
     cacheStore,
     now,
     force,
@@ -674,16 +753,18 @@ export async function runOrganizerWebsiteSync({
       processedDomains += 1;
       let candidateUrls = [target.websiteUrl];
 
-      try {
-        const mapResult = await firecrawlClient.map(target.websiteUrl, {
-          refresh,
-          cacheTtlMs: DEFAULT_MAP_CACHE_TTL_MS
-        });
-        candidateUrls = filterCandidateUrls(mapResult?.links || [], target.websiteUrl, {
-          maxUrls: maxUrlsPerDomain
-        });
-      } catch (err) {
-        logger?.warn?.(`[Organizer Website Sync] /v2/map failed for ${target.websiteUrl}, falling back to homepage: ${err.message}`);
+      if (!target.isPdfSeed && !isPdfUrl(target.websiteUrl)) {
+        try {
+          const mapResult = await firecrawlClient.map(target.websiteUrl, {
+            refresh,
+            cacheTtlMs: DEFAULT_MAP_CACHE_TTL_MS
+          });
+          candidateUrls = filterCandidateUrls(mapResult?.links || [], target.websiteUrl, {
+            maxUrls: maxUrlsPerDomain
+          });
+        } catch (err) {
+          logger?.warn?.(`[Organizer Website Sync] /v2/map failed for ${target.websiteUrl}, falling back to homepage: ${err.message}`);
+        }
       }
 
       mappedUrls += candidateUrls.length;
@@ -692,11 +773,19 @@ export async function runOrganizerWebsiteSync({
 
       for (const candidateUrl of candidateUrls) {
         try {
-          const scraped = await firecrawlClient.scrape(candidateUrl, {
-            formats: ['html', 'markdown'],
-            onlyMainContent: false,
-            refresh
-          });
+          const scrapeOptions = isPdfUrl(candidateUrl)
+            ? {
+                formats: ['markdown'],
+                onlyMainContent: false,
+                refresh,
+                timeoutMs: options.pdfScrapeTimeoutMs ?? DEFAULT_PDF_SCRAPE_TIMEOUT_MS
+              }
+            : {
+                formats: ['html', 'markdown'],
+                onlyMainContent: false,
+                refresh
+              };
+          const scraped = await firecrawlClient.scrape(candidateUrl, scrapeOptions);
           scrapedUrls += 1;
           domainHadScrapeSuccess = true;
 
@@ -722,7 +811,7 @@ export async function runOrganizerWebsiteSync({
             const ingested = ingestWebsiteActivity(rawActivity, {
               venuesCatalog,
               organizersCatalog,
-              organizer: target.organizer
+              target
             });
             if (ingested) {
               validActivities.push(ingested);

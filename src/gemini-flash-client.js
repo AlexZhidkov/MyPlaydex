@@ -60,6 +60,7 @@ function buildExtractionPrompt({ markdown, sourceUrl, organizerName, todayAwst }
     'Rules:',
     '- Only extract real, scheduled in-person activities with either an explicit calendar date (start_date as YYYY-MM-DD) OR a recurring weekly weekday (weekday as Sunday..Saturday with start_date null).',
     '- For undated recurring weekly timetable classes, set weekday (e.g. "Tuesday") and leave start_date and end_date as null.',
+    '- For multi-row weekly timetables (tables or grouped-by-day class schedules), emit one separate activity entry per class session row with its specific weekday, start_time, end_time, and venue/studio name.',
     '- For dated Activities, set start_date (and end_date if multi-day) as YYYY-MM-DD in AWST.',
     '- Format start_time and end_time as 24-hour HH:mm when known, or null if missing.',
     '- Mark is_noise: true (or omit) for AGMs, committee notices, job ads, volunteer recruitment, generic "contact us for private lessons" enquiries, or news articles without a scheduled session.',
