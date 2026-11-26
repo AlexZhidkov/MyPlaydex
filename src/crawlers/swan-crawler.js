@@ -19,19 +19,17 @@ export const SWAN_CONFIG = {
   fallbackCentroid: SWAN_LGA_CENTROID,
   minExpectedListings: 1,
   searchIndex: 'Events',
-  orderBy: '',
+  orderBy: 'PossibleStart ASC',
   pageSize: 50,
   firstPageSize: 50,
   parameters: [
-    { key: 'widgetclassname', values: [{ value: 'AWEventSmartSearchListing' }] },
-    { key: 'widgettemplatename', values: [{ value: 'AWEventSmartSearchListing' }] },
     { key: 'transformationname', values: [{ value: 'AWPT.Event.SmartSearchItem' }] },
     { key: 'headertransformationname', values: [{ value: 'AWPT.Event.SmartSearchHeader' }] },
     { key: 'footertransformationname', values: [{ value: 'AWPT.Event.SmartSearchFooter' }] },
     { key: 'classname', values: [{ value: 'AWPT.Event' }] },
-    { key: 'nodealiaspath', values: [{ value: '/Explore-and-Do/Events' }] },
-    { key: 'FilterIsExpired', values: [{ value: 'false' }] },
-    { key: 'EventPossibleStart', values: [{ value: '[0 TO 99999999999999]' }] }
+    { key: 'FilterIsExpired', values: [{ value: 'False' }] },
+    { key: 'searchindexes', values: [{ value: 'Events' }] },
+    { key: 'nodealiaspath', values: [{ value: '/explore-and-do' }] }
   ],
   defaultOrganizer: {
     id: 'org_city_of_swan',

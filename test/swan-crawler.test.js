@@ -76,9 +76,22 @@ test('City of Swan crawler parses Swan card variations, attributes Organizer, an
   assert.equal(requests[0].url, 'https://www.swan.wa.gov.au/v1/aapi/search/htmlresult');
   assert.equal(requests[0].method, 'POST');
   assert.equal(requests[0].body.SI, 'Events');
+  assert.equal(requests[0].body.OB, 'PossibleStart ASC');
   assert.ok(Array.isArray(requests[0].body.PR));
-  assert.ok(requests[0].body.PR.some(p => p.key === 'classname' && p.values?.[0]?.value === 'AWPT.Event'));
-  assert.ok(requests[0].body.PR.some(p => p.key === 'nodealiaspath' && p.values?.[0]?.value === '/Explore-and-Do/Events'));
+
+  const prByKey = Object.fromEntries(requests[0].body.PR.map(p => [p.key, p.values?.[0]?.value]));
+  assert.deepEqual(prByKey, {
+    transformationname: 'AWPT.Event.SmartSearchItem',
+    headertransformationname: 'AWPT.Event.SmartSearchHeader',
+    footertransformationname: 'AWPT.Event.SmartSearchFooter',
+    classname: 'AWPT.Event',
+    FilterIsExpired: 'False',
+    searchindexes: 'Events',
+    nodealiaspath: '/explore-and-do'
+  });
+  assert.equal('widgetclassname' in prByKey, false);
+  assert.equal('widgettemplatename' in prByKey, false);
+  assert.equal('EventPossibleStart' in prByKey, false);
 
   assert.equal(listings.length, 2);
 
