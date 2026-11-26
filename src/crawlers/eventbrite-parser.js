@@ -545,7 +545,7 @@ export function parseActivityCost(merged) {
   const isFreeFromText = determineIsFree(description);
   return {
     isFree: isFreeFromText,
-    displayPrice: isFreeFromText ? 'Free' : 'See listing details'
+    displayPrice: isFreeFromText ? 'Free' : ''
   };
 }
 

@@ -380,7 +380,8 @@ test('Seam 2: renderActivityCard and createSuggestEditMailtoUrl handle Unverifie
   assert.ok(html.includes('Unverified'), 'Tier 1 must render Unverified badge text');
   assert.ok(html.includes('basketball'), 'Tier 1 must still include sport badge');
   assert.ok(html.includes('$10'), 'Tier 1 must still include cost badge');
-  assert.ok(html.includes('3.2 km away'), 'Tier 1 must still include distance badge');
+  assert.ok(html.includes('3.2 km'), 'Tier 1 must still include distance badge');
+  assert.ok(!html.includes('km away'), 'Distance badge must omit "away"');
 
   // 3. Venue Google Maps outbound row and Suggest an edit link remain intact
   assert.ok(html.includes('card-venue-row'), 'Unverified card must keep card-venue-row');
@@ -438,7 +439,7 @@ test('Seam 2 (Issue #13): renderOrganizerCard outputs 4-tier layout for verified
   assert.ok(verifiedHtml.includes('volleyball'), 'Should render first subcategory');
   assert.ok(verifiedHtml.includes('social-fitness'), 'Should render second subcategory');
   assert.ok(verifiedHtml.includes('KidSport eligible'), 'Should render KidSport/cost badge');
-  assert.ok(verifiedHtml.includes('1.8 km away'), 'Should render rounded distance badge');
+  assert.ok(verifiedHtml.includes('1.8 km'), 'Should render rounded distance badge');
   assert.ok(!verifiedHtml.includes('badge-unverified'), 'Verified organizer should not render Unverified badge');
 
   // Tier 2: name, description, phone/email contact summary
@@ -496,7 +497,7 @@ test('Seam 2 (Issue #13): renderVenueCard outputs 4-tier layout with verified UR
   assert.ok(verifiedHtml.includes('venue-card'), 'Should have venue-card class');
   assert.ok(verifiedHtml.includes('volleyball') && verifiedHtml.includes('basketball'), 'Should render sport badges');
   assert.ok(!verifiedHtml.includes('badge-unverified'), 'Verified venue should not render Unverified badge');
-  assert.ok(verifiedHtml.includes('2.3 km away'), 'Should render distance badge');
+  assert.ok(verifiedHtml.includes('2.3 km'), 'Should render distance badge');
   assert.ok(verifiedHtml.includes('Loftus Recreation Centre'), 'Should render venue name');
   assert.ok(verifiedHtml.includes('99 Loftus St, Leederville WA 6007'), 'Should render formatted street address');
   assert.ok(verifiedHtml.includes('Indoor court centre'), 'Should render description');
@@ -1018,6 +1019,13 @@ test('renderActivityCard omits cost badge when cost is unknown, and preserves Fr
   });
   assert.ok(!unknownEmptyHtml.includes('badge-cost'), 'Unknown cost (empty display_price, is_free: false) must omit badge-cost');
   assert.ok(!unknownEmptyHtml.includes('>$<'), 'Unknown cost must not render $ fallback');
+
+  const unknownPlaceholderHtml = renderActivityCard({
+    ...baseActivity,
+    cost: { is_free: false, display_price: 'See listing details' }
+  });
+  assert.ok(!unknownPlaceholderHtml.includes('badge-cost'), 'Placeholder "See listing details" must omit badge-cost');
+  assert.ok(!unknownPlaceholderHtml.includes('See listing details'), 'Placeholder "See listing details" must not render');
 
   const unknownMissingCostHtml = renderActivityCard({ ...baseActivity });
   assert.ok(!unknownMissingCostHtml.includes('badge-cost'), 'Missing cost object must omit badge-cost');

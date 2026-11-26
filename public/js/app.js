@@ -798,6 +798,11 @@ export function initApp(options = {}) {
 
   function renderSuggestions(query = '') {
     if (!suggestionsList) return;
+    if (!query || !query.trim()) {
+      suggestionsList.classList.remove('visible');
+      suggestionsList.innerHTML = '';
+      return;
+    }
     const matches = searchSuburbs(query, 6);
     if (matches.length === 0) {
       suggestionsList.classList.remove('visible');
@@ -822,12 +827,12 @@ export function initApp(options = {}) {
         return;
       }
       gpsBtn.disabled = true;
-      gpsBtn.textContent = '📍 Locating...';
+      gpsBtn.textContent = 'Locating...';
 
       navigator.geolocation.getCurrentPosition(
         (pos) => {
           gpsBtn.disabled = false;
-          gpsBtn.textContent = '📍 Use My Current Location';
+          gpsBtn.textContent = 'Use My Current Location';
           handleLocationSelected({
             name: 'Near Me',
             lat: pos.coords.latitude,
@@ -836,7 +841,7 @@ export function initApp(options = {}) {
         },
         (err) => {
           gpsBtn.disabled = false;
-          gpsBtn.textContent = '📍 Use My Current Location';
+          gpsBtn.textContent = 'Use My Current Location';
           console.warn('Geolocation error:', err);
           alert('Could not retrieve your location. Please select your suburb from the list.');
         },
@@ -911,6 +916,9 @@ export function initApp(options = {}) {
       const val = pill.getAttribute('data-radius');
       const isMatch = val === 'all' ? activeRadius === 'all' : Number(val) === Number(activeRadius);
       pill.classList.toggle('active', isMatch);
+      if (typeof pill.setAttribute === 'function') {
+        pill.setAttribute('aria-checked', isMatch ? 'true' : 'false');
+      }
     });
   }
 
@@ -1341,6 +1349,18 @@ export function initApp(options = {}) {
       suggestionsList.classList.remove('visible');
     }
   });
+
+  // Escape key dismissal for open modals
+  if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      if (filterOverlay && !filterOverlay.classList.contains('hidden')) {
+        returnToFeed();
+      } else if (gateOverlay && !gateOverlay.classList.contains('hidden') && store.getState().location) {
+        closeLocationGate();
+      }
+    });
+  }
 
   let lastSyncedLocationName = initialLocation ? initialLocation.name : null;
   let lastSyncedRadius = store.getState().radiusKm;

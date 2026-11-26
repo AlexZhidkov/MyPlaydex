@@ -84,10 +84,26 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
+    <a href="#main-content" class="skip-link visually-hidden">Skip to main content</a>
+
     <!-- Top Sticky Navigation Header -->
     <header class="app-header">
       <div class="header-container">
         <a href="/" class="brand">
+          <svg
+            class="brand-mark"
+            width="24"
+            height="24"
+            viewBox="0 0 64 64"
+            aria-hidden="true"
+          >
+            <rect width="64" height="64" rx="16" fill="#0284c7" />
+            <path
+              d="M32 13c-8.284 0-15 6.716-15 15 0 10.5 15 24 15 24s15-13.5 15-24c0-8.284-6.716-15-15-15z"
+              fill="#ffffff"
+            />
+            <circle cx="32" cy="28" r="5.5" fill="#0284c7" />
+          </svg>
           <span class="brand-name">MyPlaydex</span>
           <span class="brand-badge">Perth</span>
         </a>
@@ -102,7 +118,20 @@
             target="_blank"
             rel="noopener noreferrer"
           >
-            <span class="suggest-header-icon" aria-hidden="true">➕</span>
+            <svg
+              class="suggest-header-icon"
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 5v14M5 12h14" />
+            </svg>
             <span class="suggest-btn-text">Suggest an Activity</span>
           </a>
           <button
@@ -112,7 +141,20 @@
             aria-label="Filter activities"
             title="Filter by category and sport"
           >
-            <span class="filter-header-icon" aria-hidden="true">⚡</span>
+            <svg
+              class="filter-header-icon"
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M4 6h16M7 12h10M10 18h4" />
+            </svg>
             <span class="filter-btn-text">Filters</span>
             <span
               class="filter-count-badge hidden"
@@ -126,110 +168,140 @@
             id="location-switcher-btn"
             aria-label="Change current location"
           >
-            <span aria-hidden="true">📍</span>
+            <svg
+              class="location-pin-icon"
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 21s-6-5.33-6-10a6 6 0 1 1 12 0c0 4.67-6 10-6 10z" />
+              <circle cx="12" cy="11" r="2.2" />
+            </svg>
             <span id="current-location-label" class="location-name-text"
               >Set Location</span
             >
-            <span class="caret-icon" aria-hidden="true">▾</span>
+            <svg
+              class="caret-icon"
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="m6 9 6 6 6-6" />
+            </svg>
           </button>
         </div>
       </div>
     </header>
 
     <!-- Main Feed & Controls -->
-    <main class="main-layout">
+    <main id="main-content" class="main-layout" tabindex="-1">
       <h1 class="visually-hidden">
         MyPlaydex Perth — Local Activities, Social Sports, Organizers &amp;
         Venues
       </h1>
-      <!-- Top-Level 3-Tab Discovery Switcher -->
-      <section class="discovery-tabs-section" aria-label="Discovery lists">
-        <div
-          id="discovery-tabs"
-          class="discovery-tabs"
-          role="tablist"
-          focusgroup="tablist nomemory"
-          aria-label="Discovery categories"
-        >
-          <button
-            type="button"
-            id="tab-activities"
-            class="discovery-tab active"
-            data-tab="activities"
-            role="tab"
-            aria-selected="true"
-            focusgroupstart
-          >
-            Activities
-          </button>
-          <button
-            type="button"
-            id="tab-organizers"
-            class="discovery-tab"
-            data-tab="organizers"
-            role="tab"
-            aria-selected="false"
-          >
-            Organizers
-          </button>
-          <button
-            type="button"
-            id="tab-venues"
-            class="discovery-tab"
-            data-tab="venues"
-            role="tab"
-            aria-selected="false"
-          >
-            Venues
-          </button>
-        </div>
-      </section>
 
-      <!-- Proximity Radius Selector Bar -->
-      <section class="radius-bar-section" aria-label="Proximity Radius">
-        <div
-          class="radius-pill-group"
-          role="radiogroup"
-          aria-label="Distance filter radius"
-        >
-          <button
-            type="button"
-            class="radius-pill"
-            data-radius="5"
-            role="radio"
-            aria-checked="false"
+      <div class="discovery-toolbar">
+        <!-- Top-Level 3-Tab Discovery Switcher -->
+        <section class="discovery-tabs-section" aria-label="Discovery lists">
+          <div
+            id="discovery-tabs"
+            class="discovery-tabs"
+            role="tablist"
+            focusgroup="tablist nomemory"
+            aria-label="Discovery categories"
           >
-            5 km
-          </button>
-          <button
-            type="button"
-            class="radius-pill active"
-            data-radius="10"
-            role="radio"
-            aria-checked="true"
+            <button
+              type="button"
+              id="tab-activities"
+              class="discovery-tab active"
+              data-tab="activities"
+              role="tab"
+              aria-selected="true"
+              focusgroupstart
+            >
+              Activities
+            </button>
+            <button
+              type="button"
+              id="tab-organizers"
+              class="discovery-tab"
+              data-tab="organizers"
+              role="tab"
+              aria-selected="false"
+            >
+              Organizers
+            </button>
+            <button
+              type="button"
+              id="tab-venues"
+              class="discovery-tab"
+              data-tab="venues"
+              role="tab"
+              aria-selected="false"
+            >
+              Venues
+            </button>
+          </div>
+        </section>
+
+        <!-- Proximity Radius Selector Bar -->
+        <section class="radius-bar-section" aria-label="Proximity Radius">
+          <div
+            class="radius-pill-group"
+            role="radiogroup"
+            aria-label="Distance filter radius"
           >
-            10 km
-          </button>
-          <button
-            type="button"
-            class="radius-pill"
-            data-radius="25"
-            role="radio"
-            aria-checked="false"
-          >
-            25 km
-          </button>
-          <button
-            type="button"
-            class="radius-pill"
-            data-radius="all"
-            role="radio"
-            aria-checked="false"
-          >
-            All
-          </button>
-        </div>
-      </section>
+            <button
+              type="button"
+              class="radius-pill"
+              data-radius="5"
+              role="radio"
+              aria-checked="false"
+            >
+              5 km
+            </button>
+            <button
+              type="button"
+              class="radius-pill active"
+              data-radius="10"
+              role="radio"
+              aria-checked="true"
+            >
+              10 km
+            </button>
+            <button
+              type="button"
+              class="radius-pill"
+              data-radius="25"
+              role="radio"
+              aria-checked="false"
+            >
+              25 km
+            </button>
+            <button
+              type="button"
+              class="radius-pill"
+              data-radius="all"
+              role="radio"
+              aria-checked="false"
+            >
+              All
+            </button>
+          </div>
+        </section>
+      </div>
 
       <!-- Feed Meta & Loading State -->
       <div class="feed-meta-row">
@@ -269,7 +341,21 @@
           &times;
         </button>
 
-        <div class="gate-hero-icon" aria-hidden="true">📍</div>
+        <div class="gate-hero-icon" aria-hidden="true">
+          <svg
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.75"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M12 21s-6-5.33-6-10a6 6 0 1 1 12 0c0 4.67-6 10-6 10z" />
+            <circle cx="12" cy="11" r="2.2" />
+          </svg>
+        </div>
         <h2 id="gate-title" class="gate-title">
           Find Local Activities Near You
         </h2>
@@ -284,7 +370,7 @@
             class="btn btn-primary btn-gps"
             data-action="use-gps"
           >
-            📍 Use My Current Location
+            Use My Current Location
           </button>
         </div>
 
@@ -297,12 +383,26 @@
             >Search Greater Perth Suburb or Postcode</label
           >
           <div class="input-with-icon">
-            <span class="search-icon" aria-hidden="true">🔎</span>
+            <svg
+              class="search-icon"
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="11" cy="11" r="7" />
+              <path d="m20 20-3.5-3.5" />
+            </svg>
             <input
               type="text"
               id="suburb-search-input"
               name="suburb-search"
-              placeholder="Search suburb or postcode (e.g. Scarborough, 6000)..."
+              placeholder="Suburb or postcode (e.g. Scarborough, 6000)"
               autocomplete="off"
             />
           </div>

@@ -10,6 +10,18 @@ import {
   resolveNextWeeklyOccurrence,
 } from "../shared/discovery-engine.js";
 
+const ICON_CALENDAR =
+  '<svg class="schedule-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2" /><path d="M16 2v4M8 2v4M3 10h18" /></svg>';
+
+const ICON_PIN =
+  '<svg class="venue-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-6-5.33-6-10a6 6 0 1 1 12 0c0 4.67-6 10-6 10z" /><circle cx="12" cy="11" r="2.2" /></svg>';
+
+const ICON_USERS =
+  '<svg class="organizer-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="3.5" /><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a3.5 3.5 0 0 1 0 6.75" /></svg>';
+
+const ICON_SEARCH_EMPTY =
+  '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>';
+
 export const CATEGORY_ICONS = {
   sports: "🏅",
   health: "🧘",
@@ -334,7 +346,7 @@ function renderDistanceBadge(item = {}) {
       ? Math.round(item.distanceKm * 10) / 10
       : null;
   return distanceKm !== null
-    ? `<span class="badge badge-distance">${distanceKm} km away</span>`
+    ? `<span class="badge badge-distance">${distanceKm} km</span>`
     : "";
 }
 
@@ -461,13 +473,13 @@ function renderMapsRow(directionsUrl, labelText) {
   if (!safeDirectionsUrl) {
     return `
         <div class="card-venue-row" title="Venue location">
-          <span class="venue-icon" aria-hidden="true">📍</span>
+          ${ICON_PIN}
           <span class="venue-name">${escapeHtml(labelText)}</span>
         </div>`.trim();
   }
   return `
         <div class="card-venue-row" data-directions-url="${escapeHtml(safeDirectionsUrl)}" title="Open in Google Maps">
-          <span class="venue-icon" aria-hidden="true">📍</span>
+          ${ICON_PIN}
           <a href="${escapeHtml(safeDirectionsUrl)}" class="venue-name" target="_blank" rel="noopener noreferrer" title="Open in Google Maps">${escapeHtml(labelText)}</a>
         </div>`.trim();
 }
@@ -488,6 +500,12 @@ function renderSuggestEditTier(editMailtoUrl, titleText) {
       </div>`.trim();
 }
 
+function normalizeDisplayCostLabel(raw = "") {
+  if (typeof raw !== "string") return "";
+  const trimmed = raw.trim();
+  return /^see listing details$/i.test(trimmed) ? "" : trimmed;
+}
+
 /**
  * Renders a 4-Tier Activity card HTML string.
  *
@@ -500,10 +518,7 @@ export function renderActivityCard(activity = {}, referenceDate = new Date()) {
   const isFree = activity.cost
     ? Boolean(activity.cost.is_free)
     : Boolean(activity.is_free);
-  const rawDisplayPrice =
-    typeof activity.cost?.display_price === "string"
-      ? activity.cost.display_price.trim()
-      : "";
+  const rawDisplayPrice = normalizeDisplayCostLabel(activity.cost?.display_price);
   const costLabel = rawDisplayPrice || (isFree ? "Free" : "");
   const costBadge = costLabel
     ? `<span class="badge badge-cost ${isFree ? "badge-free" : ""}">${escapeHtml(costLabel)}</span>`
@@ -540,13 +555,13 @@ export function renderActivityCard(activity = {}, referenceDate = new Date()) {
       <!-- Tier 2: Title & Schedule -->
       <div class="card-tier card-tier-2">
         <h3 class="card-title">${escapeHtml(activity.title || "Untitled Activity")}</h3>
-        <p class="card-schedule"><span class="schedule-icon" aria-hidden="true">📅</span> <span>${escapeHtml(scheduleText)}</span></p>
+        <p class="card-schedule">${ICON_CALENDAR} <span>${escapeHtml(scheduleText)}</span></p>
       </div>
 
       <!-- Tier 3: Venue (Outbound Google Maps), Organizer -->
       <div class="card-tier card-tier-3">
         ${renderMapsRow(directionsUrl, venue.name || "Venue location")}
-        ${organizer.name ? `<div class="card-organizer-row"><span class="organizer-icon" aria-hidden="true">👥</span> <span class="organizer-name">${escapeHtml(organizer.name)}</span></div>` : ""}
+        ${organizer.name ? `<div class="card-organizer-row">${ICON_USERS} <span class="organizer-name">${escapeHtml(organizer.name)}</span></div>` : ""}
       </div>
       ${isVerified ? renderSecondarySourcesRow(activity.sources, safeSourceUrl) : ""}
 
@@ -689,11 +704,11 @@ export function renderOrganizerCard(organizer = {}) {
   const sportBadges = renderSportBadges(organizer);
   const distanceBadge = renderDistanceBadge(organizer);
 
-  const rawCost = (
+  const rawCost = normalizeDisplayCostLabel(
     organizer.cost_description ||
-    organizer.cost?.display_price ||
-    (organizer.kidsport ? "KidSport eligible" : "")
-  ).trim();
+      organizer.cost?.display_price ||
+      (organizer.kidsport ? "KidSport eligible" : ""),
+  );
   const isHighlightCost = Boolean(
     organizer.cost?.is_free ||
     organizer.is_free ||
@@ -925,7 +940,7 @@ export function renderEmptyState(options = {}) {
 
   return `
     <div class="empty-state">
-      <div class="empty-state-icon" aria-hidden="true">🔍</div>
+      <div class="empty-state-icon" aria-hidden="true">${ICON_SEARCH_EMPTY}</div>
       <h3 class="empty-state-title">${copy.title}</h3>
       <p class="empty-state-message">
         We couldn't find any ${copy.noun} matching your selected radius or filters. Try expanding your search or resetting sport filters.

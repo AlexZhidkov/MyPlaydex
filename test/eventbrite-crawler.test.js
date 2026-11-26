@@ -690,7 +690,7 @@ test('Seam 8 (Issue #32): Normalization resolves missing geo via suburb/postcode
 
   const soccer = listings.find(l => l.source_id === '902');
   assert.ok(soccer.coordinates.lat < -32.0 && soccer.coordinates.lat > -32.1, 'Resolves Fremantle 6160 centroid');
-  assert.equal(soccer.display_price, 'See listing details');
+  assert.equal(soccer.display_price, '');
   assert.ok(!soccer.display_price.includes('null'));
   assert.deepEqual(soccer.demographics, { gender: 'all', age: 'juniors' });
 
