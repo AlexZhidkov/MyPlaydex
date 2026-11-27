@@ -29,6 +29,7 @@ import { createSwanCrawler } from './crawlers/swan-crawler.js';
 import { createDlgscCrawler } from './crawlers/dlgsc-crawler.js';
 import { createVolleyballWaCrawler } from './crawlers/volleyball-wa-crawler.js';
 import { createEventbriteCrawler } from './crawlers/eventbrite-crawler.js';
+import { createHumanitixCrawler } from './crawlers/humanitix-crawler.js';
 import { createMeetupCrawler } from './crawlers/meetup-crawler.js';
 import {
   createFileLogger,
@@ -360,7 +361,8 @@ const DEFAULT_CRAWLER_FACTORIES = [
   createMeetupCrawler,
   createVisitPerthCrawler,
   createCockburnCrawler,
-  createEventbriteCrawler
+  createEventbriteCrawler,
+  createHumanitixCrawler
 ];
 
 /**
@@ -371,6 +373,7 @@ const DEFAULT_CRAWLER_FACTORIES = [
  * @param {object} [options]
  * @param {boolean} [options.includeLocal=false]
  * @param {boolean} [options.includeEventbrite=false]
+ * @param {boolean} [options.includeHumanitix=false]
  * @param {boolean} [options.includeVisitPerth=false]
  * @param {boolean} [options.includeCockburn=false]
  * @returns {Array<object>}
@@ -380,7 +383,8 @@ export function getDefaultCrawlers(options = {}) {
   const optInByName = {
     visit_perth: Boolean(options.includeVisitPerth),
     cockburn: Boolean(options.includeCockburn),
-    eventbrite: Boolean(options.includeEventbrite)
+    eventbrite: Boolean(options.includeEventbrite),
+    humanitix: Boolean(options.includeHumanitix)
   };
 
   return DEFAULT_CRAWLER_FACTORIES

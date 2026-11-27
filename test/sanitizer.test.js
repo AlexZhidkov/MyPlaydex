@@ -533,6 +533,20 @@ test('Seam 1: sanitizeActivity computes expire_at as Date (end_date or start_dat
   });
 
   assert.equal(weeklyRecurring.expire_at, null);
+
+  const finiteWeeklyRecurring = sanitizeActivity({
+    source: 'humanitix',
+    source_id: 'weekly-finite',
+    title: 'Term 4 Junior Tennis',
+    sport: 'tennis',
+    coordinates: { lat: -31.9505, lng: 115.8605 },
+    start_date: '2026-11-10',
+    end_date: '2026-12-15',
+    recurrence: 'weekly'
+  });
+
+  assert.ok(finiteWeeklyRecurring.expire_at instanceof Date);
+  assert.equal(finiteWeeklyRecurring.expire_at.toISOString(), '2026-12-16T16:00:00.000Z');
 });
 
 test('Seam 1 (Issue #19): sanitizeOrganizer, extractCanonicalEntities, and mergeEntityDocuments support and preserve contact.facebook', () => {

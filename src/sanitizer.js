@@ -488,11 +488,6 @@ export function parseSchedule(raw, nowIso) {
     endDate = extractedDates[extractedDates.length - 1] || null;
   }
 
-  // Weekly recurring activities have null end_date by canonical specification
-  if (recurrence === 'weekly') {
-    endDate = null;
-  }
-
   // Validate format of HH:mm
   const timeRegex = /^\d{2}:\d{2}$/;
   if (startTime && !timeRegex.test(startTime)) {
@@ -1071,9 +1066,9 @@ const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Computes the expiration Date for an Activity schedule.
- * Weekly recurring activities return `null` to remain perpetual.
- * Non-recurring activities expire 24 hours after the conclusion of `end_date`
- * (or `start_date` if `end_date` is omitted) in AWST (UTC+08:00).
+ * Perpetual weekly recurring activities (without an explicit `end_date`) return `null`.
+ * Non-recurring activities and finite weekly series expire 24 hours after the conclusion of `end_date`
+ * (or `start_date` if `end_date` is omitted for non-recurring) in AWST (UTC+08:00).
  *
  * @param {object} [schedule={}]
  * @returns {Date | null}
@@ -1085,7 +1080,12 @@ export function computeActivityExpireAt(schedule = {}) {
 
   const recurrence = schedule.recurrence || 'none';
   if (recurrence === 'weekly') {
-    return null;
+    const endDate = typeof schedule.end_date === 'string' ? schedule.end_date.trim() : '';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+      return null;
+    }
+    const endStartOfDayMs = Date.parse(`${endDate}T00:00:00+08:00`);
+    return Number.isNaN(endStartOfDayMs) ? null : new Date(endStartOfDayMs + 2 * ONE_DAY_MS);
   }
 
   const targetDate = schedule.end_date || schedule.start_date;

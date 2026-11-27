@@ -695,5 +695,33 @@ test('Slice 9 (Issue #52): organizer_website precedence ranks above facebook and
   }
 });
 
+test('Humanitix source priority equals Eventbrite (5) and outranks Meetup/Facebook', () => {
+  assert.equal(getSourcePriority('humanitix'), 5);
+  assert.equal(getSourcePriority('humanitix'), getSourcePriority('eventbrite'));
+  assert.ok(getSourcePriority('humanitix') > getSourcePriority('meetup'));
+
+  const existingMeetup = makeActivity({
+    id: 'meetup_801',
+    source: 'meetup',
+    source_id: '801',
+    source_url: 'https://www.meetup.com/perth-hoops/events/801/',
+    raw_source_url: 'https://www.meetup.com/perth-hoops/events/801/',
+    verified: true
+  });
+  const incomingHumanitix = makeActivity({
+    id: 'humanitix_802',
+    source: 'humanitix',
+    source_id: '802',
+    source_url: 'https://events.humanitix.com/perth-social-basketball',
+    raw_source_url: 'https://events.humanitix.com/perth-social-basketball',
+    verified: true
+  });
+
+  const res = deduplicateActivities([incomingHumanitix], [existingMeetup]);
+  assert.equal(res.activitiesToUpsert.length, 1);
+  assert.equal(res.activitiesToUpsert[0].id, 'meetup_801');
+  assert.equal(res.activitiesToUpsert[0].source_url, 'https://events.humanitix.com/perth-social-basketball');
+});
+
 
 

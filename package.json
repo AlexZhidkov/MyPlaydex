@@ -13,6 +13,7 @@
     "sync:places": "node src/places-sync.js",
     "sync:facebook": "node src/facebook-sync.js",
     "sync:eventbrite": "node src/eventbrite-sync.js",
+    "sync:humanitix": "node src/humanitix-sync.js",
     "sync:visit-perth": "node src/crawler-runner.js --crawler=visit_perth",
     "sync:cockburn": "node src/crawler-runner.js --crawler=cockburn",
     "sync:local-councils": "node src/crawler-runner.js --crawler=local-councils",

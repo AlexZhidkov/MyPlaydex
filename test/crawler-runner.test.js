@@ -532,15 +532,16 @@ test('Seam 7: getDefaultCrawlers registers the 15 scheduled crawlers and exclude
   assert.ok(withEventbriteNames.includes('eventbrite'), 'eventbrite should be included when includeEventbrite is true');
   assert.equal(withEventbriteNames.length, 16);
 
-  const withAllOptIn = getDefaultCrawlers({ includeVisitPerth: true, includeCockburn: true, includeEventbrite: true });
-  assert.equal(withAllOptIn.length, 18);
-  for (const localName of ['visit_perth', 'cockburn', 'eventbrite']) {
+  const withAllOptIn = getDefaultCrawlers({ includeVisitPerth: true, includeCockburn: true, includeEventbrite: true, includeHumanitix: true });
+  assert.equal(withAllOptIn.length, 19);
+  for (const localName of ['visit_perth', 'cockburn', 'eventbrite', 'humanitix']) {
     assert.equal(withAllOptIn.find(c => c.name === localName)?.localOnly, true, `${localName} should have localOnly=true`);
   }
 
   const withIncludeLocal = getDefaultCrawlers({ includeLocal: true });
-  assert.equal(withIncludeLocal.length, 18);
+  assert.equal(withIncludeLocal.length, 19);
   assert.ok(withIncludeLocal.some(c => c.name === 'cockburn'));
+  assert.ok(withIncludeLocal.some(c => c.name === 'humanitix'));
 });
 
 test('Seam 7: runCrawlerHarness targets dlgsc, volleyball_wa, eventbrite, and meetup individually', async () => {
