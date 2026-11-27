@@ -5,14 +5,19 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { createFileCacheStore } from '../src/file-cache.js';
 import {
+  DEFAULT_DEAD_DOMAIN_BACKOFF_MS,
+  DEFAULT_FAILURE_BACKOFF_MS,
   DEFAULT_MAP_CACHE_TTL_MS,
   DEFAULT_MAX_DOMAINS,
   DEFAULT_MAX_URLS_PER_DOMAIN,
   DEFAULT_PRODUCTIVE_COOLDOWN_MS,
+  DEFAULT_SKIPPED_ORGANIZER_DOMAINS,
   DEFAULT_ZERO_YIELD_BACKOFF_MS,
   extractOrganizerWebsiteActivities,
   filterCandidateUrls,
+  isSkippedOrganizerDomain,
   main,
+  normalizeWebsiteUrl,
   parseCliArgs,
   runOrganizerWebsiteSync,
   selectDripOrganizerTargets
@@ -581,5 +586,168 @@ describe('Organizer Website Drip Sync (Issue #53)', () => {
     );
     assert.equal(unsetSummary.llmFallbackCalls, 0);
     assert.equal(unsetSummary.upsertedCount, 1);
+  });
+
+  it('Seam 7: skips known dead domains, rejects credentialed URLs, and backs off failing domains without stalling the queue', async () => {
+    assert.equal(normalizeWebsiteUrl('https://paul.hempsall@oss.wa.gov.au/'), null);
+    assert.equal(normalizeWebsiteUrl('https://user:pass@example.com/'), null);
+
+    assert.ok(DEFAULT_SKIPPED_ORGANIZER_DOMAINS.includes('applecrossswimmingclub.com.au'));
+    assert.equal(isSkippedOrganizerDomain('https://www.applecrossswimmingclub.com.au/'), true);
+    assert.equal(isSkippedOrganizerDomain('https://sub.apacherebels.com/events'), true);
+    assert.equal(isSkippedOrganizerDomain('https://validclub.org.au/'), false);
+
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'myplaydex-org-skip-'));
+    const cacheStore = createFileCacheStore(path.join(tmpDir, 'cache.json'));
+    const now = new Date('2026-11-27T19:00:00+08:00');
+    const nowMs = now.getTime();
+
+    const organizers = [
+      { id: 'org_dead_list', name: 'Dead Listed', website: 'https://www.applecrossswimmingclub.com.au/' },
+      { id: 'org_cred', name: 'Email As URL', website: 'https://paul.hempsall@oss.wa.gov.au/' },
+      { id: 'org_a_socks_fail', name: 'Socks Fail', website: 'https://dead-socks.org.au/' },
+      { id: 'org_b_timeout_fail', name: 'Timeout Fail', website: 'https://flaky-timeout.org.au/' },
+      { id: 'org_c_healthy', name: 'Healthy Club', website: 'https://healthy-club.org.au/' }
+    ];
+
+    // Skip list excludes org_dead_list by default, but allows explicit --organizer or --force
+    const defaultTargets = await selectDripOrganizerTargets({ organizersCatalog: organizers, cacheStore, now });
+    assert.deepEqual(
+      defaultTargets.map(t => t.organizer.id),
+      ['org_a_socks_fail', 'org_b_timeout_fail', 'org_c_healthy']
+    );
+
+    const forcedTargets = await selectDripOrganizerTargets({ organizersCatalog: organizers, cacheStore, now, force: true });
+    assert.ok(forcedTargets.some(t => t.organizer.id === 'org_dead_list'));
+
+    const explicitTargets = await selectDripOrganizerTargets({
+      organizersCatalog: organizers,
+      cacheStore,
+      now,
+      organizerId: 'org_dead_list'
+    });
+    assert.deepEqual(explicitTargets.map(t => t.organizer.id), ['org_dead_list']);
+
+    // Run 1 (maxDomains=2): org_socks_fail (ERR_SOCKS_CONNECTION_FAILED) + org_timeout_fail (timeout)
+    let timeoutShouldSucceed = false;
+    const venues = [
+      { id: 'venue_kings_park', name: 'Kings Park', coordinates: { lat: -31.9615, lng: 115.8435 } }
+    ];
+    const firecrawlClient = {
+      async map(url) {
+        return { url, links: [url], fromCache: false };
+      },
+      async scrape(url) {
+        if (url.includes('dead-socks.org.au')) {
+          throw new Error('Firecrawl /v2/scrape HTTP 502: {"success":false,"code":"RENDER_FAILED","error":"navigation failed: net::ERR_SOCKS_CONNECTION_FAILED"}');
+        }
+        if (url.includes('flaky-timeout.org.au') && !timeoutShouldSucceed) {
+          throw new Error('Firecrawl /v2/scrape HTTP 502: {"success":false,"code":"RENDER_FAILED","error":"the page did not finish loading in time"}');
+        }
+        return {
+          url,
+          html: `<script type="application/ld+json">${JSON.stringify({
+            '@type': 'Event',
+            name: 'Club Session',
+            startDate: '2027-02-05T08:00:00',
+            location: { '@type': 'Place', name: 'Kings Park', geo: { latitude: -31.9615, longitude: 115.8435 } }
+          })}</script>`,
+          links: []
+        };
+      },
+      async flushCache() {}
+    };
+
+    const run1 = await runOrganizerWebsiteSync({
+      adapter: createMemoryAdapter({ organizers, venues }),
+      firecrawlClient,
+      cacheStore,
+      options: { dryRun: false, maxDomains: 2, now },
+      logger: { log() {}, warn() {}, error() {} }
+    });
+    assert.equal(run1.processedDomains, 2);
+    assert.equal(run1.failedDomains, 2);
+
+    const socksCp = await cacheStore.read('drip_checkpoint|https://dead-socks.org.au/');
+    assert.equal(socksCp.consecutiveFailures, 1);
+    assert.match(socksCp.lastError, /ERR_SOCKS_CONNECTION_FAILED/);
+
+    // Run 2 (1 day later): both failed domains are in backoff -> org_healthy is picked!
+    const plus1Day = new Date(nowMs + 1 * 24 * 60 * 60 * 1000);
+    const run2 = await runOrganizerWebsiteSync({
+      adapter: createMemoryAdapter({ organizers, venues }),
+      firecrawlClient,
+      cacheStore,
+      options: { dryRun: false, maxDomains: 2, now: plus1Day },
+      logger: { log() {}, warn() {}, error() {} }
+    });
+    assert.equal(run2.processedDomains, 1);
+    assert.equal(run2.failedDomains, 0);
+    assert.equal(run2.upsertedCount, 1);
+
+    // 8 days later (> 7-day failure backoff, < 30-day dead-domain backoff):
+    // org_b_timeout_fail is eligible again, while org_a_socks_fail (hard dead error) is still skipped for 30 days
+    const plus8Days = new Date(nowMs + 8 * 24 * 60 * 60 * 1000);
+    const after8DaysTargets = await selectDripOrganizerTargets({ organizersCatalog: organizers, cacheStore, now: plus8Days });
+    assert.ok(!after8DaysTargets.some(t => t.organizer.id === 'org_a_socks_fail'));
+    assert.ok(after8DaysTargets.some(t => t.organizer.id === 'org_b_timeout_fail'));
+
+    // 2nd consecutive failure on org_timeout_fail escalates to 30-day dead-domain backoff
+    await runOrganizerWebsiteSync({
+      adapter: createMemoryAdapter({ organizers: [organizers[3]], venues }),
+      firecrawlClient,
+      cacheStore,
+      options: { dryRun: false, maxDomains: 1, now: plus8Days },
+      logger: { log() {}, warn() {}, error() {} }
+    });
+    const timeoutCp2 = await cacheStore.read('drip_checkpoint|https://flaky-timeout.org.au/');
+    assert.equal(timeoutCp2.consecutiveFailures, 2);
+
+    const plus16Days = new Date(nowMs + 16 * 24 * 60 * 60 * 1000);
+    const after16DaysTargets = await selectDripOrganizerTargets({
+      organizersCatalog: [organizers[3]],
+      cacheStore,
+      now: plus16Days
+    });
+    assert.equal(after16DaysTargets.length, 0);
+
+    // 40 days later (> 30-day dead-domain backoff): eligible again, and a clean scrape resets consecutiveFailures
+    const plus40Days = new Date(nowMs + 40 * 24 * 60 * 60 * 1000);
+    timeoutShouldSucceed = true;
+    await runOrganizerWebsiteSync({
+      adapter: createMemoryAdapter({ organizers: [organizers[3]], venues }),
+      firecrawlClient,
+      cacheStore,
+      options: { dryRun: false, maxDomains: 1, now: plus40Days },
+      logger: { log() {}, warn() {}, error() {} }
+    });
+    const timeoutCpRecovered = await cacheStore.read('drip_checkpoint|https://flaky-timeout.org.au/');
+    assert.equal(timeoutCpRecovered.consecutiveFailures, 0);
+    assert.equal(timeoutCpRecovered.lastFailedAt, null);
+    assert.equal(timeoutCpRecovered.lastYieldCount, 1);
+
+    // Local sidecar unavailable error (fetch failed / ECONNREFUSED) must NOT write a failure checkpoint
+    const downSidecarClient = {
+      async map(url) {
+        return { url, links: [url], fromCache: false };
+      },
+      async scrape() {
+        const err = new Error('fetch failed');
+        err.cause = { code: 'ECONNREFUSED' };
+        throw err;
+      },
+      async flushCache() {}
+    };
+    const downCache = createFileCacheStore(path.join(tmpDir, 'cache-down.json'));
+    await runOrganizerWebsiteSync({
+      adapter: createMemoryAdapter({ organizers: [{ id: 'org_sidecar_down', name: 'Down', website: 'https://sidecar-down.org.au/' }], venues }),
+      firecrawlClient: downSidecarClient,
+      cacheStore: downCache,
+      options: { dryRun: false, maxDomains: 1, now },
+      logger: { log() {}, warn() {}, error() {} }
+    });
+    assert.equal(await downCache.read('drip_checkpoint|https://sidecar-down.org.au/'), null);
+    assert.equal(DEFAULT_FAILURE_BACKOFF_MS, 7 * 24 * 60 * 60 * 1000);
+    assert.equal(DEFAULT_DEAD_DOMAIN_BACKOFF_MS, 30 * 24 * 60 * 60 * 1000);
   });
 });
