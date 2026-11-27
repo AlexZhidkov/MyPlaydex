@@ -7,6 +7,13 @@
 
 import { encodeGeohash } from './geohash.js';
 import { isGenericDirectoryFallbackUrl, normalizeFacebookUrl } from './url-utils.js';
+import {
+  CANONICAL_CATEGORIES,
+  computeActivityExpireAt,
+  normalizeCuratedFields
+} from '../public/shared/listing-domain.js';
+
+export { CANONICAL_CATEGORIES, computeActivityExpireAt };
 
 function buildOrganizerContact(contactInput = {}, raw = {}, website = null) {
   const rawFacebook = contactInput?.facebook || raw.facebook || raw.organizer?.facebook || null;
@@ -39,17 +46,7 @@ export function slugify(str = '') {
     .replace(/^_+|_+$/g, '');
 }
 
-export const CANONICAL_CATEGORIES = Object.freeze([
-  'sports',
-  'health',
-  'arts',
-  'music',
-  'community',
-  'family',
-  'food',
-  'hobbies',
-  'travel'
-]);
+// CANONICAL_CATEGORIES imported and re-exported from ../public/shared/listing-domain.js
 
 const CATEGORY_ALIAS_RULES = [
   { category: 'sports', patterns: [/\bmartial\s+arts?\b/] },
@@ -733,25 +730,7 @@ const COUPLED_DERIVED_CURATED_FIELDS = {
   schedule: ['expire_at']
 };
 
-/**
- * Normalizes a `curated_fields` list into a deduplicated array of non-empty field paths.
- *
- * @param {unknown} value
- * @returns {Array<string>}
- */
-function normalizeCuratedFields(value) {
-  if (!Array.isArray(value)) return [];
-  const seen = new Set();
-  const normalized = [];
-  for (const entry of value) {
-    if (typeof entry !== 'string') continue;
-    const trimmed = entry.trim();
-    if (!trimmed || seen.has(trimmed)) continue;
-    seen.add(trimmed);
-    normalized.push(trimmed);
-  }
-  return normalized;
-}
+// normalizeCuratedFields imported from ../public/shared/listing-domain.js
 
 /**
  * Safely reads a nested property value along `segments`, returning `undefined` if missing.
@@ -1196,45 +1175,7 @@ export function sanitizeVenue(raw = {}, options = {}) {
   };
 }
 
-const ONE_DAY_MS = 24 * 60 * 60 * 1000;
-
-/**
- * Computes the expiration Date for an Activity schedule.
- * Perpetual weekly recurring activities (without an explicit `end_date`) return `null`.
- * Non-recurring activities and finite weekly series expire 24 hours after the conclusion of `end_date`
- * (or `start_date` if `end_date` is omitted for non-recurring) in AWST (UTC+08:00).
- *
- * @param {object} [schedule={}]
- * @returns {Date | null}
- */
-export function computeActivityExpireAt(schedule = {}) {
-  if (!schedule || typeof schedule !== 'object') {
-    return null;
-  }
-
-  const recurrence = schedule.recurrence || 'none';
-  if (recurrence === 'weekly') {
-    const endDate = typeof schedule.end_date === 'string' ? schedule.end_date.trim() : '';
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
-      return null;
-    }
-    const endStartOfDayMs = Date.parse(`${endDate}T00:00:00+08:00`);
-    return Number.isNaN(endStartOfDayMs) ? null : new Date(endStartOfDayMs + 2 * ONE_DAY_MS);
-  }
-
-  const targetDate = schedule.end_date || schedule.start_date;
-  if (typeof targetDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(targetDate.trim())) {
-    return null;
-  }
-
-  // End of targetDate in AWST (start of next day) + 24h grace = +2 days from 00:00:00+08:00
-  const startOfDayMs = Date.parse(`${targetDate.trim()}T00:00:00+08:00`);
-  if (Number.isNaN(startOfDayMs)) {
-    return null;
-  }
-
-  return new Date(startOfDayMs + 2 * ONE_DAY_MS);
-}
+// computeActivityExpireAt imported and re-exported from ../public/shared/listing-domain.js
 
 /**
  * Sanitizes a raw crawled record into a canonical ActivityDocument.

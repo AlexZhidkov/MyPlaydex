@@ -7,8 +7,17 @@ import {
   ENTITY_TYPES,
   ENTITY_LABELS,
   formatReviewReason,
-  requiresLinkedActivityCheck
+  requiresLinkedActivityCheck,
+  toEpochMs
 } from './admin-data.js';
+import {
+  CANONICAL_CATEGORIES,
+  CANONICAL_GENDERS,
+  CANONICAL_AGES,
+  CANONICAL_RECURRENCES,
+  DAY_NAMES,
+  isValidHttpUrl
+} from '../shared/listing-domain.js';
 import {
   VIEWS,
   getEntityCounts,
@@ -114,7 +123,7 @@ function buildMetadataParts(item, nowMs) {
   return parts;
 }
 
-function renderListingRow(item, { showApprove, approvingKeys, deletingKeys, nowMs }) {
+function renderListingRow(item, { showApprove, approvingKeys, deletingKeys, savingKeys, nowMs }) {
   const safeName = escapeHtml(item.name);
   const safeHref = getSafeHttpUrl(item.sourceUrl);
   const titleHtml = safeHref
@@ -137,7 +146,16 @@ function renderListingRow(item, { showApprove, approvingKeys, deletingKeys, nowM
 
   const isApproving = approvingKeys?.has(item.key);
   const isDeleting = deletingKeys?.has(item.key);
-  const isBusy = isApproving || isDeleting;
+  const isSaving = savingKeys?.has(item.key);
+  const isBusy = isApproving || isDeleting || isSaving;
+  const editButtonHtml = `<button
+        type="button"
+        class="edit-btn"
+        data-action="edit"
+        data-entity-type="${escapeHtml(item.entityType)}"
+        data-doc-id="${escapeHtml(item.docId)}"
+        ${isBusy ? 'disabled' : ''}
+      >Edit</button>`;
   const approveButtonHtml = showApprove
     ? `<button
           type="button"
@@ -158,6 +176,7 @@ function renderListingRow(item, { showApprove, approvingKeys, deletingKeys, nowM
       >${isDeleting ? 'Deleting...' : 'Delete'}</button>`;
 
   const actionHtml = `<div class="listing-actions">
+        ${editButtonHtml}
         ${approveButtonHtml}
         ${deleteButtonHtml}
       </div>`;
@@ -290,6 +309,7 @@ export function renderWorkspaceHtml(state, nowMs = state.lastLoadedAtMs ?? Date.
               showApprove: true,
               approvingKeys: state.approvingKeys,
               deletingKeys: state.deletingKeys,
+              savingKeys: state.savingKeys,
               nowMs
             })
           )
@@ -318,6 +338,7 @@ export function renderWorkspaceHtml(state, nowMs = state.lastLoadedAtMs ?? Date.
                 showApprove: false,
                 approvingKeys: state.approvingKeys,
                 deletingKeys: state.deletingKeys,
+                savingKeys: state.savingKeys,
                 nowMs
               })
             )
@@ -425,4 +446,289 @@ export function renderDeleteDialogHtml(deleteDialog) {
       <button type="button" class="dialog-confirm-delete-btn" data-action="confirm-delete"${isDeleting ? ' disabled' : ''}>${isDeleting ? 'Deleting...' : `Delete ${escapeHtml(entitySingular)}`}</button>
     </div>`
   );
+}
+
+function formatReadOnlyDate(value) {
+  const ms = toEpochMs(value);
+  if (ms === null) return '—';
+  return `${AWST_FORMATTER.format(new Date(ms))} AWST`;
+}
+
+function renderFormField({
+  name,
+  label,
+  value = '',
+  type = 'text',
+  required = false,
+  autofocus = false,
+  placeholder = '',
+  hint = '',
+  error = '',
+  step = '',
+  autocorrectOff = false,
+  dataRole = ''
+}) {
+  const inputId = `edit-field-${name}`;
+  const errorId = `edit-err-${name}`;
+  const hintId = hint ? `edit-hint-${name}` : '';
+  const describedBy = [hintId, error ? errorId : ''].filter(Boolean).join(' ');
+  const invalidAttr = error ? ' aria-invalid="true"' : ' aria-invalid="false"';
+  const describedByAttr = describedBy ? ` aria-describedby="${escapeHtml(describedBy)}"` : '';
+  const requiredAttr = required ? ' required' : '';
+  const autofocusAttr = autofocus ? ' autofocus' : '';
+  const placeholderAttr = placeholder ? ` placeholder="${escapeHtml(placeholder)}"` : '';
+  const stepAttr = step ? ` step="${escapeHtml(step)}"` : '';
+  const textCorrectionAttrs = autocorrectOff
+    ? ' autocorrect="off" autocapitalize="none" spellcheck="false"'
+    : '';
+  const roleAttr = dataRole ? ` data-role="${escapeHtml(dataRole)}"` : '';
+
+  const controlHtml = type === 'textarea'
+    ? `<textarea id="${escapeHtml(inputId)}" name="${escapeHtml(name)}" rows="3"${requiredAttr}${autofocusAttr}${placeholderAttr}${invalidAttr}${describedByAttr}>${escapeHtml(value)}</textarea>`
+    : `<input id="${escapeHtml(inputId)}" name="${escapeHtml(name)}" type="${escapeHtml(type)}" value="${escapeHtml(value)}"${requiredAttr}${autofocusAttr}${placeholderAttr}${stepAttr}${textCorrectionAttrs}${roleAttr}${invalidAttr}${describedByAttr} />`;
+
+  const hintHtml = hint ? `<span id="${escapeHtml(hintId)}" class="field-hint">${escapeHtml(hint)}</span>` : '';
+  const errorHtml = error ? `<p id="${escapeHtml(errorId)}" class="field-error">${escapeHtml(error)}</p>` : '';
+
+  return `<div class="edit-field">
+    <label for="${escapeHtml(inputId)}" class="edit-label">${escapeHtml(label)}${required ? ' <span aria-hidden="true">*</span>' : ''}</label>
+    ${hintHtml}
+    ${controlHtml}
+    ${errorHtml}
+  </div>`;
+}
+
+function renderSelectField({ name, label, value = '', options = [], error = '' }) {
+  const inputId = `edit-field-${name}`;
+  const errorId = `edit-err-${name}`;
+  const invalidAttr = error ? ' aria-invalid="true"' : ' aria-invalid="false"';
+  const describedByAttr = error ? ` aria-describedby="${escapeHtml(errorId)}"` : '';
+  const optionsHtml = options
+    .map((opt) => {
+      const optValue = typeof opt === 'string' ? opt : opt.value;
+      const optLabel = typeof opt === 'string' ? opt : opt.label;
+      const selected = String(value) === String(optValue) ? ' selected' : '';
+      return `<option value="${escapeHtml(optValue)}"${selected}>${escapeHtml(optLabel)}</option>`;
+    })
+    .join('');
+  const errorHtml = error ? `<p id="${escapeHtml(errorId)}" class="field-error">${escapeHtml(error)}</p>` : '';
+
+  return `<div class="edit-field">
+    <label for="${escapeHtml(inputId)}" class="edit-label">${escapeHtml(label)}</label>
+    <select id="${escapeHtml(inputId)}" name="${escapeHtml(name)}"${invalidAttr}${describedByAttr}>${optionsHtml}</select>
+    ${errorHtml}
+  </div>`;
+}
+
+function renderCheckboxField({ name, label, checked = false, disabled = false, hint = '', dataRole = '' }) {
+  const inputId = `edit-field-${name}`;
+  const hintId = hint ? `edit-hint-${name}` : '';
+  const describedByAttr = hintId ? ` aria-describedby="${escapeHtml(hintId)}"` : '';
+  const roleAttr = dataRole ? ` data-role="${escapeHtml(dataRole)}"` : '';
+  const hintHtml = hint ? `<span id="${escapeHtml(hintId)}" class="field-hint">${escapeHtml(hint)}</span>` : '';
+
+  return `<div class="edit-field edit-field-checkbox">
+    <div class="checkbox-row">
+      <input id="${escapeHtml(inputId)}" name="${escapeHtml(name)}" type="checkbox"${checked ? ' checked' : ''}${disabled ? ' disabled' : ''}${roleAttr}${describedByAttr} />
+      <label for="${escapeHtml(inputId)}" class="edit-checkbox-label">${escapeHtml(label)}</label>
+    </div>
+    ${hintHtml}
+  </div>`;
+}
+
+function renderReferralFieldset(values, fieldErrors, hasValidSourceUrl) {
+  return `<fieldset class="edit-fieldset">
+    <legend>Referral &amp; verification</legend>
+    ${renderFormField({ name: 'source_url', label: 'Source URL', value: values.source_url, type: 'url', placeholder: 'https://...', hint: 'Clearing Source URL automatically sets verified to false.', error: fieldErrors.source_url, autocorrectOff: true, dataRole: 'source-url' })}
+    ${renderCheckboxField({ name: 'verified', label: 'Verified referral URL', checked: hasValidSourceUrl && Boolean(values.verified), disabled: !hasValidSourceUrl, dataRole: 'verified-toggle' })}
+  </fieldset>`;
+}
+
+/**
+ * Renders the slide-over edit drawer HTML for an Activity, Organizer, or Venue.
+ *
+ * @param {object | null | undefined} editDrawer
+ * @returns {string}
+ */
+export function renderEditDrawerHtml(editDrawer) {
+  if (!editDrawer) return '';
+
+  const {
+    status = 'editing',
+    entityType,
+    readOnly = {},
+    values = {},
+    fieldErrors = {},
+    error = null
+  } = editDrawer;
+
+  const isSaving = status === 'saving';
+  const entitySingular = ENTITY_SINGULAR_LABELS[entityType] || 'Listing';
+  const hasValidSourceUrl = isValidHttpUrl(values.source_url);
+  const curatedList = Array.isArray(readOnly.curated_fields) && readOnly.curated_fields.length > 0
+    ? readOnly.curated_fields.join(', ')
+    : 'None yet';
+
+  const readOnlyHtml = `<dl class="edit-readonly-grid" aria-label="Read-only metadata">
+    <div class="readonly-item"><dt>ID</dt><dd><code>${escapeHtml(readOnly.id || '—')}</code></dd></div>
+    <div class="readonly-item"><dt>Source</dt><dd><code>${escapeHtml(readOnly.source || '—')}</code></dd></div>
+    <div class="readonly-item"><dt>Source ID</dt><dd><code>${escapeHtml(readOnly.source_id || '—')}</code></dd></div>
+    <div class="readonly-item"><dt>Created</dt><dd>${escapeHtml(formatReadOnlyDate(readOnly.created_at))}</dd></div>
+    <div class="readonly-item"><dt>Geohash</dt><dd><code>${escapeHtml(readOnly.geohash || '—')}</code></dd></div>
+    <div class="readonly-item"><dt>Curated fields</dt><dd><code>${escapeHtml(curatedList)}</code></dd></div>
+  </dl>`;
+
+  const categoryOptions = CANONICAL_CATEGORIES.map((c) => ({ value: c, label: c }));
+  const genderOptions = CANONICAL_GENDERS.map((g) => ({ value: g, label: g.replaceAll('_', ' ') }));
+  const ageOptions = CANONICAL_AGES.map((a) => ({ value: a, label: a }));
+  const recurrenceOptions = CANONICAL_RECURRENCES.map((r) => ({ value: r, label: r }));
+  const dayOptions = [
+    { value: '', label: 'Auto from start date' },
+    ...DAY_NAMES.map((dayName, idx) => ({ value: String(idx), label: dayName }))
+  ];
+
+  let sectionsHtml = '';
+  if (entityType === 'activities') {
+    sectionsHtml = `
+      <fieldset class="edit-fieldset">
+        <legend>Activity details</legend>
+        ${renderFormField({ name: 'title', label: 'Title', value: values.title, required: true, autofocus: true, error: fieldErrors.title })}
+        ${renderFormField({ name: 'description', label: 'Description', value: values.description, type: 'textarea', error: fieldErrors.description })}
+        <div class="edit-row-2">
+          ${renderSelectField({ name: 'category', label: 'Category', value: values.category, options: categoryOptions })}
+          ${renderFormField({ name: 'subcategory', label: 'Subcategory', value: values.subcategory, autocorrectOff: true })}
+        </div>
+        ${renderFormField({ name: 'region_id', label: 'Region ID', value: values.region_id, autocorrectOff: true })}
+      </fieldset>
+      ${renderReferralFieldset(values, fieldErrors, hasValidSourceUrl)}
+      <fieldset class="edit-fieldset">
+        <legend>Venue &amp; coordinates</legend>
+        <div class="edit-row-2">
+          ${renderFormField({ name: 'venue_name', label: 'Venue name', value: values.venue_name })}
+          ${renderFormField({ name: 'venue_id', label: 'Venue ID', value: values.venue_id, autocorrectOff: true })}
+        </div>
+        <div class="edit-row-2">
+          ${renderFormField({ name: 'lat', label: 'Latitude', value: values.lat, type: 'number', step: 'any', required: true, error: fieldErrors.lat })}
+          ${renderFormField({ name: 'lng', label: 'Longitude', value: values.lng, type: 'number', step: 'any', required: true, error: fieldErrors.lng })}
+        </div>
+      </fieldset>
+      <fieldset class="edit-fieldset">
+        <legend>Organizer</legend>
+        <div class="edit-row-2">
+          ${renderFormField({ name: 'organizer_name', label: 'Organizer name', value: values.organizer_name })}
+          ${renderFormField({ name: 'organizer_id', label: 'Organizer ID', value: values.organizer_id, autocorrectOff: true })}
+        </div>
+      </fieldset>
+      <fieldset class="edit-fieldset">
+        <legend>Schedule</legend>
+        <div class="edit-row-2">
+          ${renderSelectField({ name: 'recurrence', label: 'Recurrence', value: values.recurrence, options: recurrenceOptions })}
+          ${renderSelectField({ name: 'day_of_week', label: 'Day of week', value: values.day_of_week, options: dayOptions, error: fieldErrors.day_of_week })}
+        </div>
+        <div class="edit-row-2">
+          ${renderFormField({ name: 'start_date', label: 'Start date', value: values.start_date, type: 'date', error: fieldErrors.start_date })}
+          ${renderFormField({ name: 'end_date', label: 'End date', value: values.end_date, type: 'date', error: fieldErrors.end_date })}
+        </div>
+        <div class="edit-row-2">
+          ${renderFormField({ name: 'start_time', label: 'Start time', value: values.start_time, type: 'time', error: fieldErrors.start_time })}
+          ${renderFormField({ name: 'end_time', label: 'End time', value: values.end_time, type: 'time', error: fieldErrors.end_time })}
+        </div>
+      </fieldset>
+      <fieldset class="edit-fieldset">
+        <legend>Cost &amp; demographics</legend>
+        ${renderCheckboxField({ name: 'is_free', label: 'Free activity', checked: Boolean(values.is_free) })}
+        ${renderFormField({ name: 'display_price', label: 'Display price', value: values.display_price, placeholder: 'e.g. Free or $15' })}
+        <div class="edit-row-2">
+          ${renderSelectField({ name: 'gender', label: 'Gender', value: values.gender, options: genderOptions })}
+          ${renderSelectField({ name: 'age', label: 'Age group', value: values.age, options: ageOptions })}
+        </div>
+      </fieldset>`;
+  } else if (entityType === 'organizers') {
+    sectionsHtml = `
+      <fieldset class="edit-fieldset">
+        <legend>Organizer details</legend>
+        ${renderFormField({ name: 'name', label: 'Name', value: values.name, required: true, autofocus: true, error: fieldErrors.name })}
+        ${renderFormField({ name: 'description', label: 'Description', value: values.description, type: 'textarea' })}
+        ${renderFormField({ name: 'address', label: 'Address', value: values.address })}
+        <div class="edit-row-2">
+          ${renderSelectField({ name: 'category', label: 'Category', value: values.category, options: categoryOptions })}
+          ${renderFormField({ name: 'subcategory', label: 'Primary subcategory', value: values.subcategory, autocorrectOff: true })}
+        </div>
+        ${renderFormField({ name: 'subcategories', label: 'Subcategories (comma-separated)', value: values.subcategories, autocorrectOff: true })}
+        ${renderFormField({ name: 'region_id', label: 'Region ID', value: values.region_id, autocorrectOff: true })}
+      </fieldset>
+      <fieldset class="edit-fieldset">
+        <legend>Coordinates</legend>
+        <div class="edit-row-2">
+          ${renderFormField({ name: 'lat', label: 'Latitude', value: values.lat, type: 'number', step: 'any', required: true, error: fieldErrors.lat })}
+          ${renderFormField({ name: 'lng', label: 'Longitude', value: values.lng, type: 'number', step: 'any', required: true, error: fieldErrors.lng })}
+        </div>
+      </fieldset>
+      <fieldset class="edit-fieldset">
+        <legend>Website, contact &amp; verification</legend>
+        ${renderFormField({ name: 'website', label: 'Website', value: values.website, type: 'url', placeholder: 'https://...', error: fieldErrors.website, autocorrectOff: true })}
+        <div class="edit-row-2">
+          ${renderFormField({ name: 'contact_email', label: 'Contact email', value: values.contact_email, type: 'email', autocorrectOff: true })}
+          ${renderFormField({ name: 'contact_phone', label: 'Contact phone', value: values.contact_phone, type: 'tel' })}
+        </div>
+        ${renderFormField({ name: 'contact_facebook', label: 'Facebook URL', value: values.contact_facebook, type: 'url', placeholder: 'https://facebook.com/...', error: fieldErrors.contact_facebook, autocorrectOff: true })}
+        ${renderFormField({ name: 'source_url', label: 'Source URL', value: values.source_url, type: 'url', placeholder: 'https://...', hint: 'Clearing Source URL automatically sets verified to false.', error: fieldErrors.source_url, autocorrectOff: true, dataRole: 'source-url' })}
+        ${renderCheckboxField({ name: 'verified', label: 'Verified referral URL', checked: hasValidSourceUrl && Boolean(values.verified), disabled: !hasValidSourceUrl, dataRole: 'verified-toggle' })}
+      </fieldset>
+      <fieldset class="edit-fieldset">
+        <legend>Cost &amp; demographics</legend>
+        ${renderFormField({ name: 'cost_description', label: 'Cost description', value: values.cost_description })}
+        <div class="edit-row-2">
+          ${renderSelectField({ name: 'gender', label: 'Gender', value: values.gender, options: genderOptions })}
+          ${renderSelectField({ name: 'age', label: 'Age group', value: values.age, options: ageOptions })}
+        </div>
+      </fieldset>`;
+  } else {
+    sectionsHtml = `
+      <fieldset class="edit-fieldset">
+        <legend>Venue details</legend>
+        ${renderFormField({ name: 'name', label: 'Name', value: values.name, required: true, autofocus: true, error: fieldErrors.name })}
+        ${renderFormField({ name: 'description', label: 'Description', value: values.description, type: 'textarea' })}
+        ${renderFormField({ name: 'address', label: 'Address', value: values.address })}
+        <div class="edit-row-2">
+          ${renderSelectField({ name: 'category', label: 'Category', value: values.category, options: categoryOptions })}
+          ${renderFormField({ name: 'subcategory', label: 'Primary subcategory', value: values.subcategory, autocorrectOff: true })}
+        </div>
+        ${renderFormField({ name: 'subcategories', label: 'Subcategories (comma-separated)', value: values.subcategories, autocorrectOff: true })}
+        ${renderFormField({ name: 'region_id', label: 'Region ID', value: values.region_id, autocorrectOff: true })}
+      </fieldset>
+      <fieldset class="edit-fieldset">
+        <legend>Coordinates</legend>
+        <div class="edit-row-2">
+          ${renderFormField({ name: 'lat', label: 'Latitude', value: values.lat, type: 'number', step: 'any', required: true, error: fieldErrors.lat })}
+          ${renderFormField({ name: 'lng', label: 'Longitude', value: values.lng, type: 'number', step: 'any', required: true, error: fieldErrors.lng })}
+        </div>
+      </fieldset>
+      ${renderReferralFieldset(values, fieldErrors, hasValidSourceUrl)}`;
+  }
+
+  const errorBannerHtml = error
+    ? `<p class="workspace-alert" role="alert">${escapeHtml(error)}</p>`
+    : '';
+
+  return `<div class="edit-drawer-shell">
+    <header class="edit-drawer-header">
+      <div>
+        <h1 id="edit-dialog-title" class="edit-drawer-title">Edit ${escapeHtml(entitySingular)}</h1>
+        <p class="edit-drawer-subtitle">Saving approves this Listing and protects edited fields from crawler overwrites.</p>
+      </div>
+      <button type="button" class="dialog-cancel-btn" data-action="close-edit" aria-label="Close edit drawer"${isSaving ? ' disabled' : ''}>Close</button>
+    </header>
+    <div class="edit-drawer-body">
+      ${readOnlyHtml}
+      ${errorBannerHtml}
+      <form id="admin-edit-form" class="edit-form" novalidate>
+        ${sectionsHtml}
+      </form>
+    </div>
+    <footer class="edit-drawer-footer">
+      <button type="button" class="dialog-cancel-btn" data-action="close-edit"${isSaving ? ' disabled' : ''}>Cancel</button>
+      <button type="submit" form="admin-edit-form" class="save-btn"${isSaving ? ' disabled' : ''}>${isSaving ? 'Saving...' : 'Save & Approve'}</button>
+    </footer>
+  </div>`;
 }

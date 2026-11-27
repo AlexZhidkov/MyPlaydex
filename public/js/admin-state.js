@@ -34,7 +34,9 @@ export function createAdminWorkspaceState() {
     actionError: null,
     approvingKeys: new Set(),
     deletingKeys: new Set(),
+    savingKeys: new Set(),
     deleteDialog: null,
+    editDrawer: null,
     lastLoadedAtMs: null
   };
 }
@@ -302,6 +304,111 @@ export function closeDeleteDialog(state) {
   return {
     ...state,
     deleteDialog: null
+  };
+}
+
+/**
+ * Marks a listing key as currently saving (or clears it).
+ *
+ * @param {object} state
+ * @param {string} key
+ * @param {boolean} isSaving
+ * @returns {object}
+ */
+export function markSaving(state, key, isSaving) {
+  return {
+    ...state,
+    savingKeys: updateKeySet(state.savingKeys, key, isSaving)
+  };
+}
+
+/**
+ * Opens the edit drawer for a Listing.
+ *
+ * @param {object} state
+ * @param {{ entityType: string, docId: string, originalDoc: object, draft: { readOnly: object, values: object } }} target
+ * @returns {object}
+ */
+export function openEditDrawer(state, { entityType, docId, originalDoc, draft }) {
+  return {
+    ...state,
+    actionError: null,
+    editDrawer: {
+      status: 'editing',
+      entityType,
+      docId,
+      originalDoc: originalDoc || {},
+      readOnly: draft?.readOnly || {},
+      values: draft?.values || {},
+      fieldErrors: {},
+      error: null
+    }
+  };
+}
+
+/**
+ * Updates fields on the active edit drawer if open.
+ *
+ * @param {object} state
+ * @param {object} patch
+ * @returns {object}
+ */
+export function setEditDrawerState(state, patch) {
+  if (!state.editDrawer) return state;
+  return {
+    ...state,
+    editDrawer: {
+      ...state.editDrawer,
+      ...patch
+    }
+  };
+}
+
+/**
+ * Closes the edit drawer.
+ *
+ * @param {object} state
+ * @returns {object}
+ */
+export function closeEditDrawer(state) {
+  if (!state.editDrawer) return state;
+  return {
+    ...state,
+    editDrawer: null
+  };
+}
+
+/**
+ * Applies a successful Listing save & auto-approve mutation to local state:
+ * removes the row from Unreviewed, updates matching row in New (Last 24h), and closes the drawer.
+ *
+ * @param {object} state
+ * @param {'activities' | 'organizers' | 'venues'} entityType
+ * @param {string} docId
+ * @param {object} updatedListing
+ * @returns {object}
+ */
+export function applyListingSaved(state, entityType, docId, updatedListing) {
+  const key = `${entityType}:${docId}`;
+  const nextUnreviewed = (state.unreviewed || []).filter((item) => item.key !== key);
+  const nextReasonFilter = resolveRemainingReasonFilter(
+    nextUnreviewed,
+    state.entityFilter,
+    state.reasonFilter
+  );
+
+  const nextNewLast24h = (state.newLast24h || []).map((item) =>
+    item.key === key ? { ...item, ...updatedListing } : item
+  );
+
+  return {
+    ...state,
+    unreviewed: nextUnreviewed,
+    newLast24h: nextNewLast24h,
+    reasonFilter: nextReasonFilter,
+    savingKeys: updateKeySet(state.savingKeys, key, false),
+    editDrawer: null,
+    actionError: null
   };
 }
 

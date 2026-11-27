@@ -137,6 +137,7 @@ test('public/admin.html includes noindex/nofollow, email display, Sign out butto
   assert.match(adminHtml, /<button[^>]*id="sign-out-btn"[^>]*>Sign out<\/button>/);
   assert.match(adminHtml, /id="admin-curation"/);
   assert.match(adminHtml, /<dialog[^>]*id="admin-delete-dialog"[^>]*aria-labelledby="delete-dialog-title"/);
+  assert.match(adminHtml, /<dialog[^>]*id="admin-edit-dialog"[^>]*aria-labelledby="edit-dialog-title"/);
   assert.doesNotMatch(adminHtml, /role="dialog"|aria-modal/);
   assert.match(adminHtml, /<script\s+type="module"\s+src="\.\/js\/admin\.js"><\/script>/);
 });
@@ -284,4 +285,132 @@ test('createAdminWorkspaceController handles Activity deletion, blocked Venue/Or
   assert.equal(controller.getState().deleteDialog.status, 'confirm');
   await controller.confirmDelete();
   assert.equal(controller.getState().newLast24h.some((item) => item.key === 'venues:v_free'), false);
+});
+
+test('createAdminWorkspaceController handles openEdit, validation errors, saveEdit failure/success, and closeEdit', async () => {
+  const nowMs = Date.UTC(2026, 10, 27, 12, 0, 0);
+  const savedCalls = [];
+  let shouldFailSave = false;
+
+  const rawVenue = {
+    id: 'v1',
+    source: 'google_places',
+    source_id: 'ChIJ_v1',
+    name: 'Langley Park',
+    description: '',
+    address: 'Riverside Dr',
+    region_id: 'perth',
+    category: 'sports',
+    subcategory: 'soccer',
+    subcategories: ['soccer'],
+    coordinates: { lat: -31.9598, lng: 115.8693 },
+    geohash: 'qd66hr9z1',
+    source_url: 'https://perth.wa.gov.au',
+    verified: true,
+    needs_review: true,
+    review_reason: 'crawler_created',
+    curated_fields: ['address'],
+    created_at: '2026-11-27T00:00:00.000Z'
+  };
+
+  const repository = {
+    async fetchUnreviewedListings() {
+      return [
+        {
+          key: 'venues:v1',
+          docId: 'v1',
+          id: 'v1',
+          entityType: 'venues',
+          name: 'Langley Park',
+          needsReview: true,
+          reviewReason: 'crawler_created',
+          createdAtMs: nowMs - 1000,
+          raw: rawVenue
+        }
+      ];
+    },
+    async fetchNewListingsLast24h() {
+      return [
+        {
+          key: 'venues:v1',
+          docId: 'v1',
+          id: 'v1',
+          entityType: 'venues',
+          name: 'Langley Park',
+          needsReview: true,
+          reviewReason: 'crawler_created',
+          createdAtMs: nowMs - 1000,
+          raw: rawVenue
+        }
+      ];
+    },
+    async approveListing() {},
+    async saveListing(entityType, docId, originalDoc, parsedValues) {
+      savedCalls.push({ entityType, docId, parsedValues });
+      if (shouldFailSave) {
+        throw new Error('permission-denied');
+      }
+      return {
+        nextRawDoc: {
+          ...originalDoc,
+          ...parsedValues,
+          coordinates: { lat: parsedValues.lat, lng: parsedValues.lng },
+          geohash: 'qd66hxxxx',
+          needs_review: false,
+          review_reason: null,
+          curated_fields: ['address', 'name', 'source_url', 'verified']
+        }
+      };
+    }
+  };
+
+  const controller = createAdminWorkspaceController({ repository, now: () => nowMs });
+  await controller.loadAll();
+
+  // Open edit drawer
+  controller.openEdit('venues', 'v1');
+  assert.equal(controller.getState().editDrawer.status, 'editing');
+  assert.equal(controller.getState().editDrawer.values.name, 'Langley Park');
+
+  // Validation error keeps drawer open and does not call repository
+  await controller.saveEdit({
+    ...controller.getState().editDrawer.values,
+    name: ''
+  });
+  assert.equal(savedCalls.length, 0);
+  assert.equal(controller.getState().editDrawer.status, 'editing');
+  assert.ok(controller.getState().editDrawer.fieldErrors.name);
+
+  // Repository failure surfaces error in drawer
+  shouldFailSave = true;
+  await controller.saveEdit({
+    ...controller.getState().editDrawer.values,
+    name: 'Langley Park Oval',
+    source_url: '',
+    verified: true
+  });
+  assert.equal(savedCalls.length, 1);
+  assert.equal(savedCalls[0].parsedValues.verified, false);
+  assert.equal(controller.getState().editDrawer.status, 'editing');
+  assert.match(controller.getState().editDrawer.error, /Unable to save/i);
+
+  // Successful save closes drawer, removes from unreviewed, and updates newLast24h
+  shouldFailSave = false;
+  await controller.saveEdit({
+    ...controller.getState().editDrawer.values,
+    name: 'Langley Park Oval',
+    source_url: '',
+    verified: true
+  });
+  assert.equal(controller.getState().editDrawer, null);
+  assert.equal(controller.getState().unreviewed.length, 0);
+  assert.equal(controller.getState().newLast24h[0].name, 'Langley Park Oval');
+  assert.equal(controller.getState().newLast24h[0].needsReview, false);
+  assert.equal(controller.getState().newLast24h[0].verified, false);
+
+  // Close edit drawer cleanly
+  controller.openEdit('venues', 'v1');
+  assert.ok(controller.getState().editDrawer);
+  controller.closeEdit();
+  assert.equal(controller.getState().editDrawer, null);
 });

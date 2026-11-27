@@ -556,3 +556,230 @@ test('renderDeleteDialogHtml renders confirm, blocked, checking, and error state
   assert.match(confirmVenueHtml, /data-action="cancel-delete"[^>]*autofocus|autofocus[^>]*data-action="cancel-delete"/);
   assert.match(confirmVenueHtml, /data-action="confirm-delete"/);
 });
+
+import {
+  openEditDrawer,
+  setEditDrawerState,
+  closeEditDrawer,
+  markSaving,
+  applyListingSaved
+} from '../public/js/admin-state.js';
+import { renderEditDrawerHtml } from '../public/js/admin-ui.js';
+
+test('normalizeListingDoc preserves raw document, sourceId, and curatedFields', () => {
+  const raw = {
+    id: 'venue_1',
+    source: 'google_places',
+    source_id: 'ChIJ_1',
+    name: 'Beatty Park',
+    curated_fields: ['name', 'address']
+  };
+  const normalized = normalizeListingDoc('venues', 'venue_1', raw);
+  assert.equal(normalized.raw, raw);
+  assert.equal(normalized.sourceId, 'ChIJ_1');
+  assert.deepEqual(normalized.curatedFields, ['name', 'address']);
+});
+
+test('createAdminFirestoreRepository.saveListing updates Firestore with curated_fields, derived fields, and auto-approve', async () => {
+  const updateCalls = [];
+  const firestoreSdk = {
+    doc(db, colName, docId) {
+      return { db, colName, docId };
+    },
+    async updateDoc(docRef, payload) {
+      updateCalls.push({ docRef, payload });
+    },
+    deleteField() {
+      return { __type: 'deleteField' };
+    },
+    serverTimestamp() {
+      return { __type: 'serverTimestamp' };
+    },
+    Timestamp: {
+      fromDate(d) {
+        return { __type: 'Timestamp', iso: d.toISOString() };
+      }
+    }
+  };
+
+  const repo = createAdminFirestoreRepository({ db: { name: 'mock-db' }, firestoreSdk });
+  const originalDoc = {
+    id: 'venue_1',
+    source: 'google_places',
+    source_id: 'ChIJ_1',
+    name: 'Beatty Park',
+    description: '',
+    address: '220 Vincent St',
+    region_id: 'perth',
+    category: 'sports',
+    subcategory: 'other',
+    subcategories: ['other'],
+    coordinates: { lat: -31.937, lng: 115.85 },
+    geohash: 'qd66h1234',
+    source_url: 'https://beattypark.com.au',
+    verified: true,
+    needs_review: true,
+    review_reason: 'crawler_created',
+    curated_fields: ['name'],
+    created_at: '2026-11-01T00:00:00.000Z'
+  };
+
+  const result = await repo.saveListing('venues', 'venue_1', originalDoc, {
+    name: 'Beatty Park Leisure Centre',
+    description: 'Pool and gym',
+    address: '220 Vincent St',
+    region_id: 'perth',
+    category: 'sports',
+    subcategory: 'other',
+    subcategories: ['other'],
+    lat: -31.938,
+    lng: 115.851,
+    source_url: null,
+    verified: false
+  });
+
+  assert.equal(updateCalls.length, 1);
+  assert.deepEqual(updateCalls[0].docRef, { db: { name: 'mock-db' }, colName: 'venues', docId: 'venue_1' });
+  assert.equal(updateCalls[0].payload.needs_review, false);
+  assert.equal(updateCalls[0].payload.review_reason, null);
+  assert.equal(updateCalls[0].payload.verified, false);
+  assert.equal(updateCalls[0].payload.source_url, null);
+  assert.equal(Object.hasOwn(updateCalls[0].payload, 'id'), false);
+  assert.equal(Object.hasOwn(updateCalls[0].payload, 'created_at'), false);
+  assert.deepEqual(result.curatedFields, ['name', 'description', 'coordinates', 'source_url', 'verified']);
+});
+
+test('admin-state manages editDrawer lifecycle, markSaving, and applyListingSaved', () => {
+  const nowMs = Date.UTC(2026, 10, 27, 12, 0, 0);
+  let state = {
+    ...createAdminWorkspaceState(),
+    reasonFilter: 'unmatched_venue',
+    unreviewed: [
+      { key: 'activities:a1', docId: 'a1', entityType: 'activities', name: 'Yoga', needsReview: true, reviewReason: 'unmatched_venue' }
+    ],
+    newLast24h: [
+      { key: 'activities:a1', docId: 'a1', entityType: 'activities', name: 'Yoga', needsReview: true, reviewReason: 'unmatched_venue' }
+    ]
+  };
+
+  state = openEditDrawer(state, {
+    entityType: 'activities',
+    docId: 'a1',
+    originalDoc: { id: 'a1', title: 'Yoga' },
+    draft: { readOnly: { id: 'a1' }, values: { title: 'Yoga' } }
+  });
+  assert.equal(state.editDrawer.status, 'editing');
+  assert.equal(state.editDrawer.docId, 'a1');
+
+  state = setEditDrawerState(state, { status: 'saving' });
+  assert.equal(state.editDrawer.status, 'saving');
+
+  state = markSaving(state, 'activities:a1', true);
+  assert.equal(state.savingKeys.has('activities:a1'), true);
+
+  const updatedListing = {
+    key: 'activities:a1',
+    docId: 'a1',
+    entityType: 'activities',
+    name: 'Sunrise Yoga',
+    needsReview: false,
+    reviewReason: null,
+    duplicateCandidateId: null,
+    updatedAtMs: nowMs
+  };
+  state = applyListingSaved(state, 'activities', 'a1', updatedListing);
+  assert.equal(state.editDrawer, null);
+  assert.equal(state.savingKeys.has('activities:a1'), false);
+  assert.equal(state.unreviewed.length, 0);
+  assert.equal(state.reasonFilter, 'all');
+  assert.equal(state.newLast24h[0].name, 'Sunrise Yoga');
+  assert.equal(state.newLast24h[0].needsReview, false);
+
+  state = openEditDrawer(state, {
+    entityType: 'activities',
+    docId: 'a1',
+    originalDoc: {},
+    draft: { readOnly: {}, values: {} }
+  });
+  state = closeEditDrawer(state);
+  assert.equal(state.editDrawer, null);
+});
+
+test('renderWorkspaceHtml renders Edit buttons in both Unreviewed and New (Last 24h) views', () => {
+  const nowMs = Date.UTC(2026, 10, 27, 12, 0, 0);
+  let state = {
+    ...createAdminWorkspaceState(),
+    unreviewed: [
+      { key: 'activities:a1', docId: 'a1', entityType: 'activities', name: 'Social Tennis', reviewReason: 'crawler_created', createdAtMs: nowMs - 1000 }
+    ],
+    newLast24h: [
+      { key: 'venues:v1', docId: 'v1', entityType: 'venues', name: 'Langley Park', needsReview: false, createdAtMs: nowMs - 1000 }
+    ]
+  };
+
+  const unreviewedHtml = renderWorkspaceHtml(state, nowMs);
+  assert.match(unreviewedHtml, /data-action="edit"/);
+  assert.match(unreviewedHtml, /data-doc-id="a1"/);
+
+  state = setActiveView(state, VIEWS.NEW_24H);
+  const new24hHtml = renderWorkspaceHtml(state, nowMs);
+  assert.match(new24hHtml, /data-action="edit"/);
+  assert.match(new24hHtml, /data-doc-id="v1"/);
+});
+
+test('renderEditDrawerHtml renders read-only metadata, mutable fields, source_url/verified coupling, field errors, and XSS escaping', () => {
+  assert.equal(renderEditDrawerHtml(null), '');
+
+  const html = renderEditDrawerHtml({
+    status: 'editing',
+    entityType: 'activities',
+    docId: 'act_1',
+    readOnly: {
+      id: 'act_1',
+      source: 'eventbrite',
+      source_id: '100',
+      created_at: '2026-11-20T00:00:00.000Z',
+      geohash: 'qd66h1234',
+      curated_fields: ['description']
+    },
+    values: {
+      title: 'Twilight <script>alert(1)</script> Soccer',
+      description: 'Friendly games',
+      region_id: 'perth',
+      category: 'sports',
+      subcategory: 'soccer',
+      source_url: '',
+      verified: false,
+      organizer_id: 'org_1',
+      organizer_name: 'Perth FC',
+      venue_id: 'venue_1',
+      venue_name: 'Langley Park',
+      lat: '-31.9598',
+      lng: '115.8693',
+      recurrence: 'none',
+      start_date: '2026-12-01',
+      end_date: '2026-12-01',
+      start_time: '18:00',
+      end_time: '19:30',
+      day_of_week: '2',
+      is_free: true,
+      display_price: 'Free',
+      gender: 'all',
+      age: 'adults'
+    },
+    fieldErrors: {
+      title: 'Title is required.'
+    },
+    error: 'Please fix the highlighted fields.'
+  });
+
+  assert.match(html, /<h1 id="edit-dialog-title"[^>]*>Edit Activity<\/h1>/);
+  assert.match(html, /act_1/);
+  assert.match(html, /eventbrite/);
+  assert.match(html, /id="admin-edit-form"/);
+  assert.match(html, /aria-invalid="true"/);
+  assert.match(html, /Title is required\./);
+  assert.match(html, /name="verified"[^>]*disabled/);
+  assert.doesNotMatch(html, /<script>alert\(1\)<\/script>/);
+  assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+});

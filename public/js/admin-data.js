@@ -10,6 +10,8 @@ import {
   FIREBASE_APP_CDN_URL
 } from './analytics.js';
 import { FIREBASE_AUTH_CONFIG } from './auth-client.js';
+import { normalizeCuratedFields } from '../shared/listing-domain.js';
+import { buildListingSavePayload } from './admin-edit.js';
 
 export const FIREBASE_FIRESTORE_CDN_URL = `https://www.gstatic.com/firebasejs/${FIREBASE_SDK_VERSION}/firebase-firestore.js`;
 
@@ -157,17 +159,20 @@ export function normalizeListingDoc(entityType, docId, data = {}) {
     subcategory: safeData.subcategory || '',
     subcategories: Array.isArray(safeData.subcategories) ? safeData.subcategories : [],
     source: safeData.source || '',
+    sourceId: safeData.source_id || '',
     sourceUrl: safeData.source_url || safeData.website || null,
     verified: Boolean(safeData.verified),
     needsReview: Boolean(safeData.needs_review),
     reviewReason: safeData.review_reason || null,
     duplicateCandidateId: safeData.duplicate_candidate_id || null,
+    curatedFields: normalizeCuratedFields(safeData.curated_fields),
     organizerName: safeData.organizer?.name || '',
     venueName: safeData.venue?.name || '',
     address: safeData.address || '',
     schedule: safeData.schedule || null,
     createdAtMs: toEpochMs(safeData.created_at),
-    updatedAtMs: toEpochMs(safeData.updated_at)
+    updatedAtMs: toEpochMs(safeData.updated_at),
+    raw: safeData
   };
 }
 
@@ -277,6 +282,24 @@ export function createAdminFirestoreRepository({ db, firestoreSdk, now = () => D
       const docRef = firestoreSdk.doc(db, entityType, docId);
       await firestoreSdk.deleteDoc(docRef);
       return { deleted: true, blocked: false, linkedActivities: [] };
+    },
+
+    async saveListing(entityType, docId, originalDoc, parsedValues) {
+      validateEntityAndDocId(entityType, docId);
+
+      const timestampFromDate = typeof firestoreSdk.Timestamp?.fromDate === 'function'
+        ? (d) => firestoreSdk.Timestamp.fromDate(d)
+        : (d) => d;
+
+      const result = buildListingSavePayload(entityType, originalDoc, parsedValues, {
+        timestampFromDate,
+        serverTimestamp: () => firestoreSdk.serverTimestamp(),
+        deleteField: () => firestoreSdk.deleteField()
+      });
+
+      const docRef = firestoreSdk.doc(db, entityType, docId);
+      await firestoreSdk.updateDoc(docRef, result.updatePayload);
+      return result;
     }
   };
 }

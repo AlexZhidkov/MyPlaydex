@@ -14,7 +14,8 @@ import {
 import {
   loadFirebaseFirestoreClient,
   createAdminFirestoreRepository,
-  requiresLinkedActivityCheck
+  requiresLinkedActivityCheck,
+  normalizeListingDoc
 } from './admin-data.js';
 import {
   createAdminWorkspaceState,
@@ -23,13 +24,24 @@ import {
   setReasonFilter,
   markApproving,
   markDeleting,
+  markSaving,
   openDeleteDialog,
   setDeleteDialogState,
   closeDeleteDialog,
+  openEditDrawer,
+  setEditDrawerState,
+  closeEditDrawer,
   applyListingApproved,
-  applyListingDeleted
+  applyListingDeleted,
+  applyListingSaved
 } from './admin-state.js';
-import { renderWorkspaceHtml, renderDeleteDialogHtml } from './admin-ui.js';
+import { createEditDraft, parseEditFormValues } from './admin-edit.js';
+import { isValidHttpUrl } from '../shared/listing-domain.js';
+import {
+  renderWorkspaceHtml,
+  renderDeleteDialogHtml,
+  renderEditDrawerHtml
+} from './admin-ui.js';
 
 /**
  * Executes the /admin session guard and wires the sign-out action.
@@ -260,11 +272,100 @@ export function createAdminWorkspaceController({
           })
         );
       }
+    },
+
+    openEdit(entityType, docId) {
+      const key = `${entityType}:${docId}`;
+      const listing =
+        state.unreviewed.find((item) => item.key === key) ||
+        state.newLast24h.find((item) => item.key === key);
+      if (!listing) return state;
+
+      const originalDoc = listing.raw || listing;
+      const draft = createEditDraft(entityType, listing);
+      return commit(
+        openEditDrawer(state, {
+          entityType,
+          docId,
+          originalDoc,
+          draft
+        })
+      );
+    },
+
+    closeEdit() {
+      return commit(closeEditDrawer(state));
+    },
+
+    async saveEdit(formValues) {
+      const drawer = state.editDrawer;
+      if (!drawer || drawer.status === 'saving') return state;
+
+      const parsed = parseEditFormValues(drawer.entityType, formValues);
+      if (Object.keys(parsed.errors).length > 0) {
+        return commit(
+          setEditDrawerState(state, {
+            status: 'editing',
+            values: formValues,
+            fieldErrors: parsed.errors,
+            error: 'Please fix the highlighted fields.'
+          })
+        );
+      }
+
+      const key = `${drawer.entityType}:${drawer.docId}`;
+      commit(
+        setEditDrawerState(markSaving(state, key, true), {
+          status: 'saving',
+          values: formValues,
+          fieldErrors: {},
+          error: null
+        })
+      );
+
+      try {
+        const result = await repository.saveListing(
+          drawer.entityType,
+          drawer.docId,
+          drawer.originalDoc,
+          parsed.values
+        );
+        const updatedListing = normalizeListingDoc(
+          drawer.entityType,
+          drawer.docId,
+          result.nextRawDoc
+        );
+        return commit(
+          applyListingSaved(state, drawer.entityType, drawer.docId, updatedListing)
+        );
+      } catch {
+        return commit(
+          setEditDrawerState(markSaving(state, key, false), {
+            status: 'editing',
+            values: formValues,
+            fieldErrors: {},
+            error: 'Unable to save this listing right now. Please try again.'
+          })
+        );
+      }
     }
   };
 }
 
-function bindWorkspaceEvents(curationEl, deleteDialogEl, controller) {
+function readFormValues(formEl) {
+  const values = {};
+  for (const el of formEl.elements) {
+    if (!el.name) continue;
+    if (el.type === 'checkbox') {
+      values[el.name] = Boolean(el.checked);
+    } else {
+      values[el.name] = el.value;
+    }
+  }
+  return values;
+}
+
+function bindWorkspaceEvents(curationEl, deleteDialogEl, editDialogEl, controller) {
   curationEl.addEventListener('click', (event) => {
     const target = event.target?.closest?.('[data-action]');
     if (!target) return;
@@ -280,6 +381,8 @@ function bindWorkspaceEvents(curationEl, deleteDialogEl, controller) {
       controller.approve(target.dataset.entityType, target.dataset.docId);
     } else if (action === 'delete') {
       controller.requestDelete(target.dataset.entityType, target.dataset.docId);
+    } else if (action === 'edit') {
+      controller.openEdit(target.dataset.entityType, target.dataset.docId);
     }
   });
 
@@ -310,14 +413,62 @@ function bindWorkspaceEvents(curationEl, deleteDialogEl, controller) {
       }
     });
   }
+
+  if (editDialogEl) {
+    editDialogEl.addEventListener('click', (event) => {
+      const target = event.target?.closest?.('[data-action]');
+      if (!target) return;
+      if (target.dataset.action === 'close-edit') {
+        controller.closeEdit();
+      }
+    });
+
+    editDialogEl.addEventListener('input', (event) => {
+      const target = event.target;
+      if (target?.dataset?.role !== 'source-url') return;
+      const verifiedEl = editDialogEl.querySelector('[data-role="verified-toggle"]');
+      if (!verifiedEl) return;
+      const validUrl = isValidHttpUrl(target.value);
+      verifiedEl.disabled = !validUrl;
+      if (!validUrl) {
+        verifiedEl.checked = false;
+      }
+    });
+
+    editDialogEl.addEventListener('submit', (event) => {
+      const formEl = event.target;
+      if (formEl?.id !== 'admin-edit-form') return;
+      event.preventDefault();
+      controller.saveEdit(readFormValues(formEl));
+    });
+
+    editDialogEl.addEventListener('close', () => {
+      editDialogEl.returnValue = '';
+      if (controller.getState().editDrawer) {
+        controller.closeEdit();
+      }
+    });
+  }
 }
 
-function resetDeleteDialogElement(deleteDialogEl) {
-  if (!deleteDialogEl) return;
-  if (deleteDialogEl.open && typeof deleteDialogEl.close === 'function') {
-    deleteDialogEl.close();
+function resetDialogElement(dialogEl) {
+  if (!dialogEl) return;
+  if (dialogEl.open && typeof dialogEl.close === 'function') {
+    dialogEl.close();
   }
-  deleteDialogEl.innerHTML = '';
+  dialogEl.innerHTML = '';
+}
+
+function syncDialogElement(dialogEl, htmlContent) {
+  if (!dialogEl) return;
+  if (htmlContent) {
+    dialogEl.innerHTML = htmlContent;
+    if (!dialogEl.open && typeof dialogEl.showModal === 'function') {
+      dialogEl.showModal();
+    }
+  } else {
+    resetDialogElement(dialogEl);
+  }
 }
 
 /**
@@ -334,6 +485,7 @@ export async function initAdminPage(options = {}) {
   const signOutBtn = options.signOutBtn ?? doc?.getElementById('sign-out-btn') ?? null;
   const curationEl = options.curationEl ?? doc?.getElementById('admin-curation') ?? null;
   const deleteDialogEl = options.deleteDialogEl ?? doc?.getElementById('admin-delete-dialog') ?? null;
+  const editDialogEl = options.editDialogEl ?? doc?.getElementById('admin-edit-dialog') ?? null;
 
   const setStatus = options.setStatus ?? ((message) => {
     if (statusEl) {
@@ -363,7 +515,8 @@ export async function initAdminPage(options = {}) {
         if (workspaceEl) workspaceEl.hidden = true;
         if (emailEl) emailEl.textContent = '';
         if (curationEl) curationEl.innerHTML = '';
-        resetDeleteDialogElement(deleteDialogEl);
+        resetDialogElement(deleteDialogEl);
+        resetDialogElement(editDialogEl);
       }
     });
 
@@ -383,19 +536,17 @@ export async function initAdminPage(options = {}) {
           repository,
           onStateChange: (nextState) => {
             curationEl.innerHTML = renderWorkspaceHtml(nextState);
-            if (deleteDialogEl) {
-              if (nextState.deleteDialog) {
-                deleteDialogEl.innerHTML = renderDeleteDialogHtml(nextState.deleteDialog);
-                if (!deleteDialogEl.open && typeof deleteDialogEl.showModal === 'function') {
-                  deleteDialogEl.showModal();
-                }
-              } else {
-                resetDeleteDialogElement(deleteDialogEl);
-              }
-            }
+            syncDialogElement(
+              deleteDialogEl,
+              nextState.deleteDialog ? renderDeleteDialogHtml(nextState.deleteDialog) : ''
+            );
+            syncDialogElement(
+              editDialogEl,
+              nextState.editDrawer ? renderEditDrawerHtml(nextState.editDrawer) : ''
+            );
           }
         });
-        bindWorkspaceEvents(curationEl, deleteDialogEl, controller);
+        bindWorkspaceEvents(curationEl, deleteDialogEl, editDialogEl, controller);
         await controller.loadAll();
       }
     }
