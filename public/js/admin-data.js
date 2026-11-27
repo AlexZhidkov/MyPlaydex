@@ -235,6 +235,16 @@ export function createAdminFirestoreRepository({ db, firestoreSdk, now = () => D
       return items.filter((item) => isWithinLast24Hours(item.createdAtMs, nowMs));
     },
 
+    async fetchListingById(entityType, docId) {
+      validateEntityAndDocId(entityType, docId);
+      const docRef = firestoreSdk.doc(db, entityType, docId);
+      const docSnap = await firestoreSdk.getDoc(docRef);
+      const exists = typeof docSnap?.exists === 'function' ? docSnap.exists() : Boolean(docSnap?.exists);
+      if (!exists) return null;
+      const raw = typeof docSnap.data === 'function' ? docSnap.data() : docSnap.data;
+      return normalizeListingDoc(entityType, docSnap.id || docId, raw);
+    },
+
     async approveListing(entityType, docId) {
       validateEntityAndDocId(entityType, docId);
 

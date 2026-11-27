@@ -23,7 +23,8 @@ import {
   getEntityCounts,
   getReviewReasonOptions,
   getVisibleUnreviewedListings,
-  getNewListingsLast24hViewModel
+  getNewListingsLast24hViewModel,
+  shouldClearSurvivorDuplicateFlag
 } from './admin-state.js';
 
 const ENTITY_SINGULAR_LABELS = Object.freeze({
@@ -148,6 +149,16 @@ function renderListingRow(item, { showApprove, approvingKeys, deletingKeys, savi
   const isDeleting = deletingKeys?.has(item.key);
   const isSaving = savingKeys?.has(item.key);
   const isBusy = isApproving || isDeleting || isSaving;
+  const compareButtonHtml = showApprove && item.entityType === 'activities' && item.reviewReason === 'possible_duplicate'
+    ? `<button
+          type="button"
+          class="compare-btn"
+          data-action="review-duplicate"
+          data-entity-type="${escapeHtml(item.entityType)}"
+          data-doc-id="${escapeHtml(item.docId)}"
+          ${isBusy ? 'disabled' : ''}
+        >Compare</button>`
+    : '';
   const editButtonHtml = `<button
         type="button"
         class="edit-btn"
@@ -176,6 +187,7 @@ function renderListingRow(item, { showApprove, approvingKeys, deletingKeys, savi
       >${isDeleting ? 'Deleting...' : 'Delete'}</button>`;
 
   const actionHtml = `<div class="listing-actions">
+        ${compareButtonHtml}
         ${editButtonHtml}
         ${approveButtonHtml}
         ${deleteButtonHtml}
@@ -729,6 +741,181 @@ export function renderEditDrawerHtml(editDrawer) {
     <footer class="edit-drawer-footer">
       <button type="button" class="dialog-cancel-btn" data-action="close-edit"${isSaving ? ' disabled' : ''}>Cancel</button>
       <button type="submit" form="admin-edit-form" class="save-btn"${isSaving ? ' disabled' : ''}>${isSaving ? 'Saving...' : 'Save & Approve'}</button>
+    </footer>
+  </div>`;
+}
+
+function formatActivitySchedule(schedule) {
+  if (!schedule || typeof schedule !== 'object') return 'Not specified';
+  const parts = [];
+  if (schedule.recurrence && schedule.recurrence !== 'none') {
+    const dayLabel = Number.isInteger(schedule.day_of_week) && DAY_NAMES[schedule.day_of_week]
+      ? ` (${DAY_NAMES[schedule.day_of_week]})`
+      : '';
+    parts.push(`${schedule.recurrence}${dayLabel}`);
+  }
+  if (schedule.start_date) {
+    const dateRange = schedule.end_date && schedule.end_date !== schedule.start_date
+      ? `${schedule.start_date} – ${schedule.end_date}`
+      : schedule.start_date;
+    parts.push(dateRange);
+  }
+  if (schedule.start_time) {
+    const timeRange = schedule.end_time
+      ? `${schedule.start_time}–${schedule.end_time}`
+      : schedule.start_time;
+    parts.push(timeRange);
+  }
+  return parts.length > 0 ? parts.join(' · ') : 'Not specified';
+}
+
+function renderDuplicateCard(listing, roleLabel, roleClass) {
+  const safeTitle = escapeHtml(listing.name || listing.docId);
+  const safeId = escapeHtml(listing.id || listing.docId);
+  const scheduleText = escapeHtml(formatActivitySchedule(listing.schedule));
+  const venueText = escapeHtml(listing.venueName || '—');
+  const organizerText = escapeHtml(listing.organizerName || '—');
+  const sourceText = escapeHtml(listing.source ? listing.source.replaceAll('_', ' ') : '—');
+  const safeHref = getSafeHttpUrl(listing.sourceUrl);
+  const linkHtml = safeHref
+    ? `<a class="listing-link" href="${escapeHtml(safeHref)}" target="_blank" rel="noopener noreferrer">${escapeHtml(safeHref)}</a>`
+    : '<span class="duplicate-muted">No link</span>';
+  const statusText = listing.needsReview
+    ? formatReviewReason(listing.reviewReason)
+    : 'Reviewed';
+
+  return `<article class="duplicate-card ${escapeHtml(roleClass)}">
+    <div class="duplicate-card-header">
+      <span class="duplicate-role-badge">${escapeHtml(roleLabel)}</span>
+      <span class="duplicate-status-text">${escapeHtml(statusText)}</span>
+    </div>
+    <h2 class="duplicate-card-title">${safeTitle}</h2>
+    <p class="duplicate-card-id"><code>${safeId}</code></p>
+    <dl class="duplicate-card-fields">
+      <div class="duplicate-field"><dt>Schedule</dt><dd>${scheduleText}</dd></div>
+      <div class="duplicate-field"><dt>Venue</dt><dd>${venueText}</dd></div>
+      <div class="duplicate-field"><dt>Organizer</dt><dd>${organizerText}</dd></div>
+      <div class="duplicate-field"><dt>Source</dt><dd>${sourceText}</dd></div>
+      <div class="duplicate-field"><dt>Link</dt><dd>${linkHtml}</dd></div>
+    </dl>
+  </article>`;
+}
+
+/**
+ * Renders the side-by-side duplicate review modal dialog for a possible_duplicate Activity.
+ *
+ * @param {object | null | undefined} duplicateReview
+ * @returns {string}
+ */
+export function renderDuplicateReviewDialogHtml(duplicateReview) {
+  if (!duplicateReview) return '';
+
+  const {
+    status = 'loading',
+    flagged = null,
+    candidateId = null,
+    candidate = null,
+    confirmDeleteTarget = null,
+    error = null
+  } = duplicateReview;
+
+  const isBusy = status === 'dismissing' || status === 'deleting';
+  const errorHtml = error
+    ? `<p class="workspace-alert" role="alert">${escapeHtml(error)}</p>`
+    : '';
+
+  const headerHtml = `<header class="duplicate-dialog-header">
+    <div>
+      <h1 id="duplicate-dialog-title" class="delete-dialog-title">Compare possible duplicate</h1>
+      <p class="dialog-note">Review both Activities side-by-side to dismiss the flag or delete the duplicate.</p>
+    </div>
+    <button type="button" class="dialog-cancel-btn" data-action="close-duplicate" aria-label="Close duplicate review"${isBusy ? ' disabled' : ''}>Close</button>
+  </header>`;
+
+  if (status === 'loading') {
+    return `<div class="duplicate-dialog-body">
+      ${headerHtml}
+      <p class="dialog-note" role="status">Loading candidate Activity <code>${escapeHtml(candidateId || '—')}</code>...</p>
+    </div>`;
+  }
+
+  if (status === 'error') {
+    return `<div class="duplicate-dialog-body">
+      ${headerHtml}
+      <p class="workspace-alert" role="alert">${escapeHtml(error || 'Unable to load candidate Activity right now.')}</p>
+      <div class="dialog-actions">
+        <button type="button" class="dialog-cancel-btn" data-action="close-duplicate" autofocus>Close</button>
+      </div>
+    </div>`;
+  }
+
+  const flaggedCardHtml = flagged
+    ? renderDuplicateCard(flagged, 'Flagged duplicate', 'is-flagged')
+    : '';
+
+  const candidateCardHtml = candidate
+    ? renderDuplicateCard(candidate, 'Candidate match', 'is-candidate')
+    : `<article class="duplicate-card is-missing">
+        <div class="duplicate-card-header">
+          <span class="duplicate-role-badge">Candidate match</span>
+          <span class="duplicate-status-text">Missing</span>
+        </div>
+        <h2 class="duplicate-card-title">Candidate Activity not found</h2>
+        <p class="dialog-note">
+          Referenced candidate <code>${escapeHtml(candidateId || 'unknown')}</code> no longer exists (it may have already been deleted).
+        </p>
+      </article>`;
+
+  if (status === 'confirm_delete' || status === 'deleting') {
+    const targetRole = confirmDeleteTarget === 'candidate' ? 'candidate' : 'flagged';
+    const targetListing = targetRole === 'candidate' ? candidate : flagged;
+    const targetLabel = targetRole === 'candidate' ? 'candidate Activity' : 'flagged Activity';
+    const survivor = targetRole === 'candidate' ? flagged : candidate;
+    const survivorWillClear = shouldClearSurvivorDuplicateFlag(targetRole, targetListing, survivor);
+    const survivorNote = survivorWillClear
+      ? ` The duplicate flag on <strong>${escapeHtml(survivor.name || survivor.docId)}</strong> will be cleared.`
+      : '';
+    const isDeleting = status === 'deleting';
+
+    return `<div class="duplicate-dialog-body">
+      ${headerHtml}
+      <div class="duplicate-compare-grid">
+        ${flaggedCardHtml}
+        ${candidateCardHtml}
+      </div>
+      ${errorHtml}
+      <div class="duplicate-confirm-box" role="region" aria-label="Confirm deletion">
+        <p class="dialog-note">
+          Permanently delete the ${escapeHtml(targetLabel)} <strong>${escapeHtml(targetListing?.name || targetListing?.docId || '')}</strong>
+          (<code>${escapeHtml(targetListing?.id || targetListing?.docId || '')}</code>)?${survivorNote}
+        </p>
+        <div class="dialog-actions">
+          <button type="button" class="dialog-cancel-btn" data-action="cancel-delete-duplicate" autofocus${isDeleting ? ' disabled' : ''}>Cancel</button>
+          <button type="button" class="dialog-confirm-delete-btn" data-action="confirm-delete-duplicate"${isDeleting ? ' disabled' : ''}>${isDeleting ? 'Deleting...' : 'Confirm delete'}</button>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  const deleteCandidateBtn = candidate
+    ? `<button type="button" class="delete-btn" data-action="prompt-delete-duplicate" data-target="candidate"${isBusy ? ' disabled' : ''}>Delete candidate</button>`
+    : '';
+
+  return `<div class="duplicate-dialog-body">
+    ${headerHtml}
+    ${errorHtml}
+    <div class="duplicate-compare-grid">
+      ${flaggedCardHtml}
+      ${candidateCardHtml}
+    </div>
+    <footer class="duplicate-dialog-footer">
+      <div class="duplicate-delete-actions">
+        <button type="button" class="delete-btn" data-action="prompt-delete-duplicate" data-target="flagged"${isBusy ? ' disabled' : ''}>Delete flagged</button>
+        ${deleteCandidateBtn}
+      </div>
+      <div class="duplicate-resolve-actions">
+        <button type="button" class="approve-btn" data-action="dismiss-duplicate"${isBusy ? ' disabled' : ''}>${status === 'dismissing' ? 'Approving...' : 'Not a duplicate'}</button>
+      </div>
     </footer>
   </div>`;
 }

@@ -289,7 +289,10 @@ import {
   setDeleteDialogState,
   closeDeleteDialog,
   markDeleting,
-  applyListingDeleted
+  applyListingDeleted,
+  openDuplicateReview,
+  setDuplicateReviewState,
+  closeDuplicateReview
 } from '../public/js/admin-state.js';
 
 test('admin-state defaults to Unreviewed Listings and switches views cleanly', () => {
@@ -425,7 +428,7 @@ test('admin-state manages deleteDialog lifecycle, markDeleting, and applyListing
   assert.equal(state.deleteDialog, null);
 });
 
-import { renderWorkspaceHtml, renderDeleteDialogHtml } from '../public/js/admin-ui.js';
+import { renderWorkspaceHtml, renderDeleteDialogHtml, renderDuplicateReviewDialogHtml } from '../public/js/admin-ui.js';
 
 test('renderWorkspaceHtml renders Unreviewed Listings view with entity tabs, reason select, Approve button, and XSS escaping', () => {
   const nowMs = Date.UTC(2026, 10, 27, 12, 0, 0);
@@ -782,4 +785,210 @@ test('renderEditDrawerHtml renders read-only metadata, mutable fields, source_ur
   assert.match(html, /name="verified"[^>]*disabled/);
   assert.doesNotMatch(html, /<script>alert\(1\)<\/script>/);
   assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+});
+
+test('createAdminFirestoreRepository.fetchListingById returns normalized listing when found and null when missing', async () => {
+  const docs = {
+    'activities:cand_1': {
+      exists: () => true,
+      id: 'cand_1',
+      data: () => ({
+        id: 'cand_1',
+        title: 'Social Futsal',
+        source: 'eventbrite',
+        source_url: 'https://eventbrite.com.au/e/123',
+        venue: { id: 'v1', name: 'Loftus Recreation Centre' },
+        organizer: { id: 'o1', name: 'Perth Futsal' },
+        schedule: { recurrence: 'weekly', start_date: '2026-12-01', start_time: '18:30' },
+        needs_review: false
+      })
+    },
+    'activities:missing_1': {
+      exists: () => false,
+      id: 'missing_1',
+      data: () => undefined
+    }
+  };
+
+  const firestoreSdk = {
+    doc(db, colName, docId) {
+      return { db, colName, docId };
+    },
+    async getDoc(docRef) {
+      return docs[`${docRef.colName}:${docRef.docId}`] || { exists: () => false };
+    }
+  };
+
+  const repo = createAdminFirestoreRepository({ db: { name: 'mock-db' }, firestoreSdk });
+
+  const found = await repo.fetchListingById('activities', 'cand_1');
+  assert.equal(found.id, 'cand_1');
+  assert.equal(found.name, 'Social Futsal');
+  assert.equal(found.venueName, 'Loftus Recreation Centre');
+  assert.equal(found.organizerName, 'Perth Futsal');
+  assert.equal(found.source, 'eventbrite');
+  assert.equal(found.sourceUrl, 'https://eventbrite.com.au/e/123');
+
+  const missing = await repo.fetchListingById('activities', 'missing_1');
+  assert.equal(missing, null);
+});
+
+test('admin-state manages duplicateReview lifecycle', () => {
+  let state = createAdminWorkspaceState();
+  assert.equal(state.duplicateReview, null);
+
+  const flagged = {
+    key: 'activities:act_dup',
+    docId: 'act_dup',
+    id: 'act_dup',
+    entityType: 'activities',
+    name: 'Twilight Futsal',
+    reviewReason: 'possible_duplicate',
+    duplicateCandidateId: 'act_orig'
+  };
+
+  state = openDuplicateReview(state, flagged);
+  assert.equal(state.duplicateReview.status, 'loading');
+  assert.equal(state.duplicateReview.flagged.docId, 'act_dup');
+  assert.equal(state.duplicateReview.candidateId, 'act_orig');
+
+  state = setDuplicateReviewState(state, {
+    status: 'ready',
+    candidate: {
+      key: 'activities:act_orig',
+      docId: 'act_orig',
+      id: 'act_orig',
+      entityType: 'activities',
+      name: 'Twilight Social Futsal'
+    }
+  });
+  assert.equal(state.duplicateReview.status, 'ready');
+  assert.equal(state.duplicateReview.candidate.docId, 'act_orig');
+
+  state = closeDuplicateReview(state);
+  assert.equal(state.duplicateReview, null);
+});
+
+test('renderWorkspaceHtml renders Compare action for possible_duplicate Activities', () => {
+  const nowMs = Date.UTC(2026, 10, 27, 12, 0, 0);
+  const state = {
+    ...createAdminWorkspaceState(),
+    unreviewed: [
+      {
+        key: 'activities:dup_1',
+        docId: 'dup_1',
+        id: 'dup_1',
+        entityType: 'activities',
+        name: 'Social Futsal',
+        reviewReason: 'possible_duplicate',
+        duplicateCandidateId: 'orig_1',
+        createdAtMs: nowMs - 1000,
+        updatedAtMs: nowMs - 1000
+      },
+      {
+        key: 'activities:other_1',
+        docId: 'other_1',
+        id: 'other_1',
+        entityType: 'activities',
+        name: 'Morning Yoga',
+        reviewReason: 'unmatched_venue',
+        createdAtMs: nowMs - 2000,
+        updatedAtMs: nowMs - 2000
+      }
+    ]
+  };
+
+  const html = renderWorkspaceHtml(state, nowMs);
+  assert.match(html, /data-action="review-duplicate"/);
+  assert.match(html, /data-doc-id="dup_1"/);
+  assert.match(html, />Compare</);
+});
+
+test('renderDuplicateReviewDialogHtml renders side-by-side cards, missing-candidate fallback, confirm delete, and XSS escaping', () => {
+  assert.equal(renderDuplicateReviewDialogHtml(null), '');
+
+  const flagged = {
+    key: 'activities:dup_1',
+    docId: 'dup_1',
+    id: 'dup_1',
+    entityType: 'activities',
+    name: 'Twilight <script>alert(1)</script> Futsal',
+    schedule: { recurrence: 'weekly', day_of_week: 2, start_date: '2026-12-01', start_time: '18:30', end_time: '19:30' },
+    venueName: 'Loftus Centre',
+    organizerName: 'Perth Futsal Club',
+    source: 'facebook',
+    sourceUrl: 'https://facebook.com/events/111',
+    verified: false,
+    needsReview: true,
+    reviewReason: 'possible_duplicate',
+    duplicateCandidateId: 'orig_1'
+  };
+
+  const candidate = {
+    key: 'activities:orig_1',
+    docId: 'orig_1',
+    id: 'orig_1',
+    entityType: 'activities',
+    name: 'Twilight Social Futsal',
+    schedule: { recurrence: 'weekly', day_of_week: 2, start_date: '2026-12-01', start_time: '18:30', end_time: '20:00' },
+    venueName: 'Loftus Recreation Centre',
+    organizerName: 'Perth Futsal',
+    source: 'eventbrite',
+    sourceUrl: 'https://eventbrite.com.au/e/222',
+    verified: true,
+    needsReview: false,
+    reviewReason: null
+  };
+
+  const readyHtml = renderDuplicateReviewDialogHtml({
+    status: 'ready',
+    flagged,
+    candidateId: 'orig_1',
+    candidate,
+    confirmDeleteTarget: null,
+    error: null
+  });
+
+  assert.match(readyHtml, /id="duplicate-dialog-title"/);
+  assert.match(readyHtml, /Loftus Centre/);
+  assert.match(readyHtml, /Loftus Recreation Centre/);
+  assert.match(readyHtml, /Perth Futsal Club/);
+  assert.match(readyHtml, /Perth Futsal/);
+  assert.match(readyHtml, /facebook/);
+  assert.match(readyHtml, /eventbrite/);
+  assert.match(readyHtml, /https:\/\/facebook\.com\/events\/111/);
+  assert.match(readyHtml, /https:\/\/eventbrite\.com\.au\/e\/222/);
+  assert.match(readyHtml, /18:30/);
+  assert.match(readyHtml, /data-action="dismiss-duplicate"/);
+  assert.match(readyHtml, /Not a duplicate/);
+  assert.match(readyHtml, /data-action="prompt-delete-duplicate"[^>]*data-target="flagged"/);
+  assert.match(readyHtml, /data-action="prompt-delete-duplicate"[^>]*data-target="candidate"/);
+  assert.doesNotMatch(readyHtml, /<script>alert\(1\)<\/script>/);
+  assert.match(readyHtml, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+
+  const missingHtml = renderDuplicateReviewDialogHtml({
+    status: 'missing_candidate',
+    flagged,
+    candidateId: 'orig_1',
+    candidate: null,
+    confirmDeleteTarget: null,
+    error: null
+  });
+  assert.match(missingHtml, /orig_1/);
+  assert.match(missingHtml, /no longer exists|already deleted|not found/i);
+  assert.match(missingHtml, /data-action="dismiss-duplicate"/);
+  assert.match(missingHtml, /data-action="prompt-delete-duplicate"[^>]*data-target="flagged"/);
+  assert.doesNotMatch(missingHtml, /data-target="candidate"/);
+
+  const confirmHtml = renderDuplicateReviewDialogHtml({
+    status: 'confirm_delete',
+    flagged,
+    candidateId: 'orig_1',
+    candidate,
+    confirmDeleteTarget: 'candidate',
+    error: null
+  });
+  assert.match(confirmHtml, /Twilight Social Futsal/);
+  assert.match(confirmHtml, /data-action="confirm-delete-duplicate"/);
+  assert.match(confirmHtml, /data-action="cancel-delete-duplicate"/);
 });

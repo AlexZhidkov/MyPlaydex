@@ -414,3 +414,135 @@ test('createAdminWorkspaceController handles openEdit, validation errors, saveEd
   controller.closeEdit();
   assert.equal(controller.getState().editDrawer, null);
 });
+
+test('createAdminWorkspaceController handles duplicate review: side-by-side load, missing candidate, dismiss, and deleting flagged or candidate', async () => {
+  const nowMs = Date.UTC(2026, 10, 27, 12, 0, 0);
+  const approvedIds = [];
+  const deletedIds = [];
+
+  const candidateDoc = {
+    key: 'activities:cand_1',
+    docId: 'cand_1',
+    id: 'cand_1',
+    entityType: 'activities',
+    name: 'Twilight Social Futsal',
+    needsReview: false,
+    reviewReason: null,
+    duplicateCandidateId: null
+  };
+
+  let unreviewedDocs = [
+    {
+      key: 'activities:dup_1',
+      docId: 'dup_1',
+      id: 'dup_1',
+      entityType: 'activities',
+      name: 'Twilight Futsal',
+      needsReview: true,
+      reviewReason: 'possible_duplicate',
+      duplicateCandidateId: 'cand_1',
+      createdAtMs: nowMs - 1000,
+      updatedAtMs: nowMs - 1000
+    },
+    {
+      key: 'activities:dup_missing',
+      docId: 'dup_missing',
+      id: 'dup_missing',
+      entityType: 'activities',
+      name: 'Orphaned Duplicate',
+      needsReview: true,
+      reviewReason: 'possible_duplicate',
+      duplicateCandidateId: 'gone_1',
+      createdAtMs: nowMs - 2000,
+      updatedAtMs: nowMs - 2000
+    },
+    {
+      key: 'activities:dup_2',
+      docId: 'dup_2',
+      id: 'dup_2',
+      entityType: 'activities',
+      name: 'Sunday Netball',
+      needsReview: true,
+      reviewReason: 'possible_duplicate',
+      duplicateCandidateId: 'cand_2',
+      createdAtMs: nowMs - 3000,
+      updatedAtMs: nowMs - 3000
+    }
+  ];
+
+  const candidatesById = {
+    cand_1: candidateDoc,
+    cand_2: {
+      key: 'activities:cand_2',
+      docId: 'cand_2',
+      id: 'cand_2',
+      entityType: 'activities',
+      name: 'Sunday Social Netball',
+      needsReview: false,
+      reviewReason: null,
+      duplicateCandidateId: null
+    }
+  };
+
+  const repository = {
+    async fetchUnreviewedListings() {
+      return unreviewedDocs;
+    },
+    async fetchNewListingsLast24h() {
+      return unreviewedDocs;
+    },
+    async fetchListingById(entityType, docId) {
+      assert.equal(entityType, 'activities');
+      return candidatesById[docId] || null;
+    },
+    async approveListing(entityType, docId) {
+      assert.equal(entityType, 'activities');
+      approvedIds.push(docId);
+    },
+    async deleteListing(entityType, docId) {
+      assert.equal(entityType, 'activities');
+      deletedIds.push(docId);
+      return { deleted: true, blocked: false, linkedActivities: [] };
+    }
+  };
+
+  const controller = createAdminWorkspaceController({ repository, now: () => nowMs });
+  await controller.loadAll();
+
+  // 1. Open possible_duplicate -> loads candidate side-by-side, then dismiss ("Not a duplicate")
+  await controller.openDuplicateReview('dup_1');
+  assert.equal(controller.getState().duplicateReview.status, 'ready');
+  assert.equal(controller.getState().duplicateReview.candidate.docId, 'cand_1');
+
+  await controller.dismissDuplicateFlag();
+  assert.deepEqual(approvedIds, ['dup_1']);
+  assert.equal(controller.getState().duplicateReview, null);
+  assert.equal(controller.getState().unreviewed.some((item) => item.docId === 'dup_1'), false);
+  assert.equal(controller.getState().newLast24h.find((item) => item.docId === 'dup_1').needsReview, false);
+
+  // 2. Missing candidate fallback
+  await controller.openDuplicateReview('dup_missing');
+  assert.equal(controller.getState().duplicateReview.status, 'missing_candidate');
+  assert.equal(controller.getState().duplicateReview.candidate, null);
+
+  // Delete flagged from missing_candidate state
+  controller.promptDuplicateDelete('flagged');
+  assert.equal(controller.getState().duplicateReview.status, 'confirm_delete');
+  assert.equal(controller.getState().duplicateReview.confirmDeleteTarget, 'flagged');
+  await controller.confirmDuplicateDelete();
+  assert.deepEqual(deletedIds, ['dup_missing']);
+  assert.equal(controller.getState().duplicateReview, null);
+  assert.equal(controller.getState().unreviewed.some((item) => item.docId === 'dup_missing'), false);
+
+  // 3. Delete candidate Activity -> deletes candidate and clears duplicate flag on surviving flagged Activity
+  await controller.openDuplicateReview('dup_2');
+  assert.equal(controller.getState().duplicateReview.status, 'ready');
+  controller.promptDuplicateDelete('candidate');
+  assert.equal(controller.getState().duplicateReview.confirmDeleteTarget, 'candidate');
+  await controller.confirmDuplicateDelete();
+  assert.deepEqual(deletedIds, ['dup_missing', 'cand_2']);
+  assert.deepEqual(approvedIds, ['dup_1', 'dup_2']);
+  assert.equal(controller.getState().duplicateReview, null);
+  assert.equal(controller.getState().unreviewed.some((item) => item.docId === 'dup_2'), false);
+  assert.equal(controller.getState().newLast24h.find((item) => item.docId === 'dup_2').needsReview, false);
+});

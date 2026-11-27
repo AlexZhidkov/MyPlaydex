@@ -31,6 +31,10 @@ import {
   openEditDrawer,
   setEditDrawerState,
   closeEditDrawer,
+  openDuplicateReview,
+  setDuplicateReviewState,
+  closeDuplicateReview,
+  shouldClearSurvivorDuplicateFlag,
   applyListingApproved,
   applyListingDeleted,
   applyListingSaved
@@ -40,7 +44,8 @@ import { isValidHttpUrl } from '../shared/listing-domain.js';
 import {
   renderWorkspaceHtml,
   renderDeleteDialogHtml,
-  renderEditDrawerHtml
+  renderEditDrawerHtml,
+  renderDuplicateReviewDialogHtml
 } from './admin-ui.js';
 
 /**
@@ -348,6 +353,153 @@ export function createAdminWorkspaceController({
           })
         );
       }
+    },
+
+    async openDuplicateReview(docId) {
+      const key = `activities:${docId}`;
+      const flagged =
+        state.unreviewed.find((item) => item.key === key) ||
+        state.newLast24h.find((item) => item.key === key);
+      if (!flagged) return state;
+
+      commit(openDuplicateReview(state, flagged));
+
+      const candidateId = flagged.duplicateCandidateId;
+      if (!candidateId) {
+        return commit(
+          setDuplicateReviewState(state, {
+            status: 'missing_candidate',
+            candidate: null,
+            error: null
+          })
+        );
+      }
+
+      const isActiveForFlagged = () =>
+        state.duplicateReview &&
+        state.duplicateReview.flagged?.docId === docId;
+
+      try {
+        const candidate = await repository.fetchListingById('activities', candidateId);
+        if (!isActiveForFlagged()) return state;
+        return commit(
+          setDuplicateReviewState(state, {
+            status: candidate ? 'ready' : 'missing_candidate',
+            candidate: candidate || null,
+            error: null
+          })
+        );
+      } catch {
+        if (!isActiveForFlagged()) return state;
+        return commit(
+          setDuplicateReviewState(state, {
+            status: 'error',
+            error: 'Unable to load candidate Activity right now. Please try again.'
+          })
+        );
+      }
+    },
+
+    closeDuplicateReview() {
+      return commit(closeDuplicateReview(state));
+    },
+
+    async dismissDuplicateFlag() {
+      const review = state.duplicateReview;
+      if (!review || !review.flagged || review.status === 'dismissing' || review.status === 'deleting') {
+        return state;
+      }
+
+      const fallbackStatus = review.candidate ? 'ready' : 'missing_candidate';
+      commit(setDuplicateReviewState(state, { status: 'dismissing', error: null }));
+
+      try {
+        await repository.approveListing('activities', review.flagged.docId);
+        return commit(
+          closeDuplicateReview(
+            applyListingApproved(state, 'activities', review.flagged.docId, now())
+          )
+        );
+      } catch {
+        return commit(
+          setDuplicateReviewState(state, {
+            status: fallbackStatus,
+            error: 'Unable to dismiss duplicate flag right now. Please try again.'
+          })
+        );
+      }
+    },
+
+    promptDuplicateDelete(target) {
+      const review = state.duplicateReview;
+      if (!review || review.status === 'dismissing' || review.status === 'deleting') {
+        return state;
+      }
+      if (target === 'candidate' && !review.candidate) return state;
+      return commit(
+        setDuplicateReviewState(state, {
+          status: 'confirm_delete',
+          confirmDeleteTarget: target === 'candidate' ? 'candidate' : 'flagged',
+          error: null
+        })
+      );
+    },
+
+    cancelDuplicateDelete() {
+      const review = state.duplicateReview;
+      if (!review || review.status !== 'confirm_delete') return state;
+      return commit(
+        setDuplicateReviewState(state, {
+          status: review.candidate ? 'ready' : 'missing_candidate',
+          confirmDeleteTarget: null,
+          error: null
+        })
+      );
+    },
+
+    async confirmDuplicateDelete() {
+      const review = state.duplicateReview;
+      if (!review || review.status !== 'confirm_delete') return state;
+
+      const targetRole = review.confirmDeleteTarget === 'candidate' ? 'candidate' : 'flagged';
+      const targetListing = targetRole === 'candidate' ? review.candidate : review.flagged;
+      const survivor = targetRole === 'candidate' ? review.flagged : review.candidate;
+      if (!targetListing) return state;
+
+      commit(
+        setDuplicateReviewState(markDeleting(state, targetListing.key, true), {
+          status: 'deleting',
+          error: null
+        })
+      );
+
+      try {
+        await repository.deleteListing('activities', targetListing.docId, {
+          entityId: targetListing.id || targetListing.docId
+        });
+      } catch {
+        return commit(
+          setDuplicateReviewState(markDeleting(state, targetListing.key, false), {
+            status: 'confirm_delete',
+            error: 'Unable to delete this Activity right now. Please try again.'
+          })
+        );
+      }
+
+      let nextState = applyListingDeleted(state, 'activities', targetListing.docId);
+      if (shouldClearSurvivorDuplicateFlag(targetRole, targetListing, survivor)) {
+        try {
+          await repository.approveListing('activities', survivor.docId);
+          nextState = applyListingApproved(nextState, 'activities', survivor.docId, now());
+        } catch {
+          return commit({
+            ...closeDuplicateReview(nextState),
+            actionError: 'Deleted duplicate Activity, but unable to clear the duplicate flag on the surviving Activity.'
+          });
+        }
+      }
+
+      return commit(closeDuplicateReview(nextState));
     }
   };
 }
@@ -365,7 +517,7 @@ function readFormValues(formEl) {
   return values;
 }
 
-function bindWorkspaceEvents(curationEl, deleteDialogEl, editDialogEl, controller) {
+function bindWorkspaceEvents({ curationEl, deleteDialogEl, editDialogEl, duplicateDialogEl, controller }) {
   curationEl.addEventListener('click', (event) => {
     const target = event.target?.closest?.('[data-action]');
     if (!target) return;
@@ -383,6 +535,8 @@ function bindWorkspaceEvents(curationEl, deleteDialogEl, editDialogEl, controlle
       controller.requestDelete(target.dataset.entityType, target.dataset.docId);
     } else if (action === 'edit') {
       controller.openEdit(target.dataset.entityType, target.dataset.docId);
+    } else if (action === 'review-duplicate') {
+      controller.openDuplicateReview(target.dataset.docId);
     }
   });
 
@@ -449,6 +603,33 @@ function bindWorkspaceEvents(curationEl, deleteDialogEl, editDialogEl, controlle
       }
     });
   }
+
+  if (duplicateDialogEl) {
+    duplicateDialogEl.addEventListener('click', (event) => {
+      const target = event.target?.closest?.('[data-action]');
+      if (!target) return;
+
+      const action = target.dataset.action;
+      if (action === 'close-duplicate') {
+        controller.closeDuplicateReview();
+      } else if (action === 'dismiss-duplicate') {
+        controller.dismissDuplicateFlag();
+      } else if (action === 'prompt-delete-duplicate') {
+        controller.promptDuplicateDelete(target.dataset.target);
+      } else if (action === 'cancel-delete-duplicate') {
+        controller.cancelDuplicateDelete();
+      } else if (action === 'confirm-delete-duplicate') {
+        controller.confirmDuplicateDelete();
+      }
+    });
+
+    duplicateDialogEl.addEventListener('close', () => {
+      duplicateDialogEl.returnValue = '';
+      if (controller.getState().duplicateReview) {
+        controller.closeDuplicateReview();
+      }
+    });
+  }
 }
 
 function resetDialogElement(dialogEl) {
@@ -486,6 +667,7 @@ export async function initAdminPage(options = {}) {
   const curationEl = options.curationEl ?? doc?.getElementById('admin-curation') ?? null;
   const deleteDialogEl = options.deleteDialogEl ?? doc?.getElementById('admin-delete-dialog') ?? null;
   const editDialogEl = options.editDialogEl ?? doc?.getElementById('admin-edit-dialog') ?? null;
+  const duplicateDialogEl = options.duplicateDialogEl ?? doc?.getElementById('admin-duplicate-dialog') ?? null;
 
   const setStatus = options.setStatus ?? ((message) => {
     if (statusEl) {
@@ -517,6 +699,7 @@ export async function initAdminPage(options = {}) {
         if (curationEl) curationEl.innerHTML = '';
         resetDialogElement(deleteDialogEl);
         resetDialogElement(editDialogEl);
+        resetDialogElement(duplicateDialogEl);
       }
     });
 
@@ -544,9 +727,13 @@ export async function initAdminPage(options = {}) {
               editDialogEl,
               nextState.editDrawer ? renderEditDrawerHtml(nextState.editDrawer) : ''
             );
+            syncDialogElement(
+              duplicateDialogEl,
+              nextState.duplicateReview ? renderDuplicateReviewDialogHtml(nextState.duplicateReview) : ''
+            );
           }
         });
-        bindWorkspaceEvents(curationEl, deleteDialogEl, editDialogEl, controller);
+        bindWorkspaceEvents({ curationEl, deleteDialogEl, editDialogEl, duplicateDialogEl, controller });
         await controller.loadAll();
       }
     }

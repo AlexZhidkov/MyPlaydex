@@ -37,6 +37,7 @@ export function createAdminWorkspaceState() {
     savingKeys: new Set(),
     deleteDialog: null,
     editDrawer: null,
+    duplicateReview: null,
     lastLoadedAtMs: null
   };
 }
@@ -376,6 +377,79 @@ export function closeEditDrawer(state) {
     ...state,
     editDrawer: null
   };
+}
+
+/**
+ * Opens the side-by-side duplicate review dialog for a possible_duplicate Activity.
+ *
+ * @param {object} state
+ * @param {object} flaggedListing
+ * @returns {object}
+ */
+export function openDuplicateReview(state, flaggedListing) {
+  return {
+    ...state,
+    actionError: null,
+    duplicateReview: {
+      status: 'loading',
+      flagged: flaggedListing,
+      candidateId: flaggedListing?.duplicateCandidateId || null,
+      candidate: null,
+      confirmDeleteTarget: null,
+      error: null
+    }
+  };
+}
+
+/**
+ * Updates fields on the active duplicate review dialog if open.
+ *
+ * @param {object} state
+ * @param {object} patch
+ * @returns {object}
+ */
+export function setDuplicateReviewState(state, patch) {
+  if (!state.duplicateReview) return state;
+  return {
+    ...state,
+    duplicateReview: {
+      ...state.duplicateReview,
+      ...patch
+    }
+  };
+}
+
+/**
+ * Closes the duplicate review dialog.
+ *
+ * @param {object} state
+ * @returns {object}
+ */
+export function closeDuplicateReview(state) {
+  if (!state.duplicateReview) return state;
+  return {
+    ...state,
+    duplicateReview: null
+  };
+}
+
+/**
+ * Returns true if deleting targetRole ('flagged' | 'candidate') should clear
+ * the possible_duplicate flag on the surviving Activity.
+ *
+ * @param {'flagged' | 'candidate'} targetRole
+ * @param {object | null | undefined} targetListing
+ * @param {object | null | undefined} survivor
+ * @returns {boolean}
+ */
+export function shouldClearSurvivorDuplicateFlag(targetRole, targetListing, survivor) {
+  if (!survivor || survivor.reviewReason !== 'possible_duplicate') return false;
+  if (targetRole === 'candidate') return true;
+  if (!targetListing) return false;
+  return (
+    survivor.duplicateCandidateId === targetListing.id ||
+    survivor.duplicateCandidateId === targetListing.docId
+  );
 }
 
 /**
