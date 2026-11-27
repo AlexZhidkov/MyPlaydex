@@ -8,6 +8,7 @@
 
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { calculateDistanceKm } from '../public/shared/discovery-engine.js';
 import { deduplicateActivities } from './activity-deduplicator.js';
 import { resolveCliLogger } from './crawler-reporter.js';
 import {
@@ -51,6 +52,9 @@ export const DEFAULT_VENUE_WEBSITE_CACHE_PATH = path.resolve(
   process.cwd(),
   '.scratch/venue-website-sync-cache.json'
 );
+export const DEFAULT_VENUE_COOLDOWN_DAYS = 2;
+export const DEFAULT_VENUE_COOLDOWN_MS = DEFAULT_VENUE_COOLDOWN_DAYS * 24 * 60 * 60 * 1000;
+export const VENUE_COOLDOWN_KEY_PREFIX = 'venue_sync|';
 
 const SCHEMA_TYPE_TO_CATEGORY = Object.freeze({
   sportsevent: 'sports',
@@ -125,13 +129,20 @@ export function parseCliArgs(argv = process.argv.slice(2), env = process.env) {
     Math.round(DEFAULT_DETAIL_CACHE_TTL_MS / (24 * 60 * 60 * 1000)),
     1
   );
+  const cooldownDays = parseIntArg(
+    getArgValue(argv, 'cooldown-days'),
+    DEFAULT_VENUE_COOLDOWN_DAYS,
+    0
+  );
 
   return {
     dryRun: !apply,
     refresh: argv.includes('--refresh'),
+    force: argv.includes('--force'),
     venue: getArgValue(argv, 'venue'),
     maxDetailScrapes,
     detailCacheTtlMs: detailCacheTtlDays * 24 * 60 * 60 * 1000,
+    venueCooldownMs: cooldownDays * 24 * 60 * 60 * 1000,
     useAdc: argv.includes('--use-adc') || Boolean(env.FIREBASE_USE_ADC),
     project: getArgValue(argv, 'project') || env.FIREBASE_PROJECT_ID || 'myplaydex',
     firecrawlUrl
@@ -368,7 +379,17 @@ function toCanonicalVenue(matched) {
   };
 }
 
-function resolveCanonicalVenueForSeed(venueSeed, venuesCatalog = []) {
+const MAX_SEED_NAME_FALLBACK_KM = 2.0;
+
+/**
+ * Resolves a seeded major Venue to its canonical `/venues` catalog record,
+ * rejecting uncertain neighbor matches and falling back to the seed's verified coordinates.
+ *
+ * @param {object} venueSeed
+ * @param {Array<object>} [venuesCatalog=[]]
+ * @returns {object}
+ */
+export function resolveCanonicalVenueForSeed(venueSeed, venuesCatalog = []) {
   const namesToTry = [venueSeed.name, ...(Array.isArray(venueSeed.aliases) ? venueSeed.aliases : [])];
 
   for (const candidateName of namesToTry) {
@@ -376,12 +397,18 @@ function resolveCanonicalVenueForSeed(venueSeed, venuesCatalog = []) {
       { name: candidateName, coordinates: venueSeed.coordinates },
       venuesCatalog
     );
-    if ((coordMatch.status === 'matched' || coordMatch.status === 'uncertain') && coordMatch.candidate?.coordinates) {
+    if (coordMatch.status === 'matched' && coordMatch.candidate?.coordinates) {
       return toCanonicalVenue(coordMatch.candidate);
     }
+  }
 
+  for (const candidateName of namesToTry) {
     const nameMatch = matchVenueByNameOnly(candidateName, venuesCatalog);
-    if (nameMatch.status === 'matched' && nameMatch.candidate?.coordinates) {
+    if (
+      nameMatch.status === 'matched' &&
+      nameMatch.candidate?.coordinates &&
+      calculateDistanceKm(venueSeed.coordinates, nameMatch.candidate.coordinates) <= MAX_SEED_NAME_FALLBACK_KM
+    ) {
       return toCanonicalVenue(nameMatch.candidate);
     }
   }
@@ -476,12 +503,41 @@ export function ingestVenueActivity(rawActivity, { venueSeed, venuesCatalog = []
   return sanitized;
 }
 
+/**
+ * Returns true if a Venue's last sync checkpoint is still within the configured cooldown window.
+ *
+ * @param {object | null | undefined} checkpoint
+ * @param {object} [params={}]
+ * @returns {boolean}
+ */
+export function isVenueWithinCooldown(checkpoint, {
+  now = new Date(),
+  cooldownMs = DEFAULT_VENUE_COOLDOWN_MS,
+  force = false,
+  refresh = false
+} = {}) {
+  if (force || refresh || !Number.isFinite(cooldownMs) || cooldownMs <= 0) {
+    return false;
+  }
+  const lastSyncedAt = checkpoint?.lastSyncedAt;
+  if (typeof lastSyncedAt !== 'string' || !lastSyncedAt.trim()) {
+    return false;
+  }
+  const lastSyncedMs = Date.parse(lastSyncedAt);
+  const nowMs = now instanceof Date ? now.getTime() : Date.parse(now);
+  if (!Number.isFinite(lastSyncedMs) || !Number.isFinite(nowMs)) {
+    return false;
+  }
+  return (nowMs - lastSyncedMs) < cooldownMs;
+}
+
 function buildSyncSummary(overrides = {}) {
   return {
     firecrawlAvailable: true,
     skippedReason: null,
     dryRun: true,
     selectedVenues: 0,
+    skippedCooldownVenues: 0,
     processedVenues: 0,
     failedVenues: 0,
     llmFallbackCalls: 0,
@@ -508,6 +564,7 @@ export async function runVenueWebsiteSync({
   adapter,
   firecrawlClient = null,
   geminiClient = null,
+  cacheStore = null,
   detailCacheStore = null,
   seeds = MAJOR_VENUE_SEEDS,
   options = {},
@@ -515,13 +572,18 @@ export async function runVenueWebsiteSync({
 } = {}) {
   const dryRun = Boolean(options.dryRun);
   const refresh = Boolean(options.refresh);
+  const force = Boolean(options.force);
   const maxDetailScrapes = Number.isFinite(options.maxDetailScrapes) && options.maxDetailScrapes >= 0
     ? options.maxDetailScrapes
     : DEFAULT_MAX_DETAIL_SCRAPES_PER_RUN;
   const detailCacheTtlMs = Number.isFinite(options.detailCacheTtlMs) && options.detailCacheTtlMs >= 0
     ? options.detailCacheTtlMs
     : DEFAULT_DETAIL_CACHE_TTL_MS;
-  const effectiveDetailCacheStore = detailCacheStore ?? options.detailCacheStore ?? null;
+  const venueCooldownMs = Number.isFinite(options.venueCooldownMs) && options.venueCooldownMs >= 0
+    ? options.venueCooldownMs
+    : DEFAULT_VENUE_COOLDOWN_MS;
+  const effectiveCacheStore = cacheStore ?? options.cacheStore ?? detailCacheStore ?? options.detailCacheStore ?? null;
+  const effectiveDetailCacheStore = detailCacheStore ?? options.detailCacheStore ?? effectiveCacheStore;
   const now = options.now instanceof Date ? options.now : (options.now ? new Date(options.now) : new Date());
 
   if (!firecrawlClient) {
@@ -549,6 +611,7 @@ export async function runVenueWebsiteSync({
       : (adapter?.scanActivities ? adapter.scanActivities() : [])
   ]);
 
+  let skippedCooldownVenues = 0;
   let processedVenues = 0;
   let failedVenues = 0;
   let llmFallbackCalls = 0;
@@ -566,12 +629,21 @@ export async function runVenueWebsiteSync({
 
   try {
     for (const venueSeed of selectedSeeds) {
+      const cooldownKey = `${VENUE_COOLDOWN_KEY_PREFIX}${venueSeed.slug}`;
+      const checkpoint = effectiveCacheStore ? await effectiveCacheStore.read(cooldownKey) : null;
+      if (isVenueWithinCooldown(checkpoint, { now, cooldownMs: venueCooldownMs, force, refresh })) {
+        skippedCooldownVenues += 1;
+        logger?.log?.(`[Venue Website Sync] Skipping ${venueSeed.name} (within refresh cooldown; last synced ${checkpoint.lastSyncedAt}).`);
+        continue;
+      }
+
       processedVenues += 1;
+      const shouldRefreshIndex = refresh || force || Boolean(checkpoint?.lastSyncedAt);
       try {
         const scraped = await firecrawlClient.scrape(venueSeed.whatsOnUrl, {
           formats: ['html', 'markdown'],
           onlyMainContent: false,
-          refresh
+          refresh: shouldRefreshIndex
         });
 
         let rawActivities = extractVenueJsonLdActivities(scraped?.html || '', {
@@ -634,6 +706,16 @@ export async function runVenueWebsiteSync({
             validActivities.push(ingested);
           }
         }
+
+        if (!dryRun && effectiveCacheStore) {
+          await effectiveCacheStore.write(cooldownKey, {
+            slug: venueSeed.slug,
+            name: venueSeed.name,
+            whatsOnUrl: venueSeed.whatsOnUrl,
+            lastSyncedAt: now.toISOString(),
+            extractedCount: rawActivities.length
+          });
+        }
       } catch (err) {
         failedVenues += 1;
         logger?.warn?.(`[Venue Website Sync] Scrape failed for ${venueSeed.name} (${venueSeed.whatsOnUrl}): ${err.message}`);
@@ -642,6 +724,9 @@ export async function runVenueWebsiteSync({
   } finally {
     await firecrawlClient?.flushCache?.();
     await effectiveDetailCacheStore?.flush?.();
+    if (effectiveCacheStore && effectiveCacheStore !== effectiveDetailCacheStore) {
+      await effectiveCacheStore.flush?.();
+    }
   }
 
   const dedupedActivities = validActivities.length > 0
@@ -655,12 +740,13 @@ export async function runVenueWebsiteSync({
   }
 
   logger?.log?.(
-    `[Venue Website Sync] Venues: ${processedVenues}/${selectedSeeds.length}, Failed: ${failedVenues}, LLM Fallbacks: ${llmFallbackCalls}, Detail Scrapes: ${detailStats.detailScrapesAttempted} (hits=${detailStats.detailCacheHits}, capped=${detailStats.detailScrapesCapped}, failed=${detailStats.detailScrapesFailed}), Extracted: ${extractedCount}, Valid: ${validActivities.length}, Upserted: ${upsertedCount} (dryRun=${dryRun})`
+    `[Venue Website Sync] Venues: ${processedVenues}/${selectedSeeds.length} (cooldownSkipped=${skippedCooldownVenues}), Failed: ${failedVenues}, LLM Fallbacks: ${llmFallbackCalls}, Detail Scrapes: ${detailStats.detailScrapesAttempted} (hits=${detailStats.detailCacheHits}, capped=${detailStats.detailScrapesCapped}, failed=${detailStats.detailScrapesFailed}), Extracted: ${extractedCount}, Valid: ${validActivities.length}, Upserted: ${upsertedCount} (dryRun=${dryRun})`
   );
 
   return buildSyncSummary({
     dryRun,
     selectedVenues: selectedSeeds.length,
+    skippedCooldownVenues,
     processedVenues,
     failedVenues,
     llmFallbackCalls,
@@ -696,6 +782,7 @@ export async function main(argv = process.argv.slice(2), env = process.env, opti
         ? createFirecrawlClientFromEnv(env, {
             baseUrl: parsedArgs.firecrawlUrl,
             cacheStore: sharedCacheStore,
+            cacheTtlMs: parsedArgs.venueCooldownMs,
             fetchFn: options.fetchFn,
             logger
           })
@@ -705,6 +792,7 @@ export async function main(argv = process.argv.slice(2), env = process.env, opti
     return runVenueWebsiteSync({
       adapter: options.adapter || null,
       firecrawlClient: null,
+      cacheStore: sharedCacheStore,
       detailCacheStore,
       options: parsedArgs,
       logger
@@ -738,6 +826,7 @@ export async function main(argv = process.argv.slice(2), env = process.env, opti
     adapter,
     firecrawlClient,
     geminiClient,
+    cacheStore: sharedCacheStore,
     detailCacheStore,
     options: {
       ...parsedArgs,

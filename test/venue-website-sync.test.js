@@ -6,17 +6,22 @@ import path from 'node:path';
 import { createFileCacheStore } from '../src/file-cache.js';
 import { createFirestoreAdapter } from '../src/firestore-adapter.js';
 import { CANONICAL_CATEGORIES } from '../src/sanitizer.js';
+import { PERTH_SUBURB_CENTROIDS } from '../public/shared/perth-centroids.js';
 import { isWithinPerthRadius } from '../src/venue-resolver.js';
 import {
   MAJOR_VENUE_SEEDS,
   findMajorVenueSeed
 } from '../src/major-venue-seeds.js';
 import {
+  DEFAULT_VENUE_COOLDOWN_MS,
+  VENUE_COOLDOWN_KEY_PREFIX,
   VENUE_WEBSITE_SOURCE,
   extractVenueJsonLdActivities,
   ingestVenueActivity,
+  isVenueWithinCooldown,
   main,
   parseCliArgs,
+  resolveCanonicalVenueForSeed,
   runVenueWebsiteSync,
   selectVenueSeeds
 } from '../src/venue-website-sync.js';
@@ -732,6 +737,375 @@ describe('Major-Venue Calendar Sync (Issue #62)', () => {
       assert.equal(summary2.detailScrapesCapped, 0);
       assert.equal(detailScrapesRun2.length, 2);
       assert.equal(summary2.validCount, 4);
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Major-Venue Seed Expansion & Refresh Cooldown (Issue #64)', () => {
+  it('Seam 1: MAJOR_VENUE_SEEDS covers 15 Greater Perth major Venues with verified URLs and non-centroid coordinates', () => {
+    assert.equal(MAJOR_VENUE_SEEDS.length, 15);
+
+    const expectedSlugs = [
+      'optus-stadium',
+      'rac-arena',
+      'crown-perth',
+      'perth-concert-hall',
+      'pcec',
+      'hbf-park',
+      'hbf-stadium',
+      'hbf-arena',
+      'mandurah-pac',
+      'his-majestys-theatre',
+      'state-theatre-centre',
+      'astor-theatre',
+      'fremantle-arts-centre',
+      'subiaco-arts-centre',
+      'the-rechabite'
+    ];
+    for (const slug of expectedSlugs) {
+      assert.ok(MAJOR_VENUE_SEEDS.some(s => s.slug === slug), `Missing expected seed: ${slug}`);
+    }
+
+    const slugs = new Set();
+    const names = new Set();
+    const urls = new Set();
+    const categories = new Set();
+
+    for (const seed of MAJOR_VENUE_SEEDS) {
+      assert.ok(!slugs.has(seed.slug), `Duplicate slug: ${seed.slug}`);
+      slugs.add(seed.slug);
+
+      assert.ok(!names.has(seed.name), `Duplicate name: ${seed.name}`);
+      names.add(seed.name);
+
+      assert.match(seed.whatsOnUrl, /^https:\/\//);
+      assert.ok(!urls.has(seed.whatsOnUrl), `Duplicate whatsOnUrl: ${seed.whatsOnUrl}`);
+      urls.add(seed.whatsOnUrl);
+
+      assert.equal(typeof seed.address, 'string');
+      assert.ok(seed.address.trim().length > 0);
+      assert.equal(typeof seed.suburb, 'string');
+      assert.ok(seed.suburb.trim().length > 0);
+      assert.equal(seed.regionId, 'perth');
+      assert.ok(CANONICAL_CATEGORIES.includes(seed.defaultCategory), `Invalid category: ${seed.defaultCategory}`);
+      categories.add(seed.defaultCategory);
+
+      assert.ok(isWithinPerthRadius(seed.coordinates), `Seed ${seed.slug} outside Greater Perth`);
+
+      const matchesCentroid = PERTH_SUBURB_CENTROIDS.some(
+        c => Math.abs(c.lat - seed.coordinates.lat) < 1e-6 && Math.abs(c.lng - seed.coordinates.lng) < 1e-6
+      );
+      assert.equal(matchesCentroid, false, `Seed ${seed.slug} coordinates match a suburb centroid`);
+    }
+
+    for (const expectedCategory of ['sports', 'music', 'arts', 'community']) {
+      assert.ok(categories.has(expectedCategory), `Missing category coverage: ${expectedCategory}`);
+    }
+
+    assert.equal(findMajorVenueSeed('Perth HPC')?.slug, 'hbf-stadium');
+    assert.equal(findMajorVenueSeed('Perth High Performance Centre')?.slug, 'hbf-stadium');
+    assert.equal(findMajorVenueSeed('Arena Joondalup')?.slug, 'hbf-arena');
+    assert.equal(findMajorVenueSeed('Walyalup Fremantle Arts Centre')?.slug, 'fremantle-arts-centre');
+    assert.equal(findMajorVenueSeed('Subiaco Arts Centre')?.slug, 'subiaco-arts-centre');
+    assert.equal(findMajorVenueSeed('SAC')?.slug, 'subiaco-arts-centre');
+    assert.equal(findMajorVenueSeed('The Rechabite')?.slug, 'the-rechabite');
+  });
+
+  it('Seam 2: resolveCanonicalVenueForSeed rejects uncertain neighbor matches, resolves aliases, and anchors every seed without suburb-centroid fallback', () => {
+    const venuesCatalog = [
+      {
+        id: 'venue_duxton_hotel_perth_qd66hw',
+        name: 'Duxton Hotel Perth',
+        coordinates: { lat: -31.9579762, lng: 115.8649443 },
+        geohash: 'qd66hw123'
+      },
+      {
+        id: 'venue_hbf_arena_outdoor_netball_qd676p',
+        name: 'HBF Arena Outdoor Netball',
+        coordinates: { lat: -31.7334397, lng: 115.7601996 },
+        geohash: 'qd676p123'
+      },
+      {
+        id: 'venue_arena_joondalup_qd676n',
+        name: 'Arena Joondalup',
+        coordinates: { lat: -31.7346458, lng: 115.760704 },
+        geohash: 'qd676n456'
+      },
+      {
+        id: 'venue_perth_hpc_qd664x',
+        name: 'Perth HPC',
+        coordinates: { lat: -31.9524891, lng: 115.782189 },
+        geohash: 'qd664x789'
+      },
+      {
+        id: 'venue_astor_theatre_perth_qd66kd',
+        name: 'Astor Theatre Perth',
+        coordinates: { lat: -31.934086, lng: 115.872059 },
+        geohash: 'qd66kd111'
+      },
+      {
+        id: 'venue_walyalup_fremantle_arts_centre_qd63dj',
+        name: 'Walyalup Fremantle Arts Centre',
+        coordinates: { lat: -32.0476894, lng: 115.7540023 },
+        geohash: 'qd63dj222'
+      }
+    ];
+
+    const concertHall = resolveCanonicalVenueForSeed(findMajorVenueSeed('perth-concert-hall'), venuesCatalog);
+    assert.notEqual(concertHall.id, 'venue_duxton_hotel_perth_qd66hw');
+    assert.equal(concertHall.name, 'Perth Concert Hall');
+    assert.deepEqual(concertHall.coordinates, findMajorVenueSeed('perth-concert-hall').coordinates);
+
+    const hbfArena = resolveCanonicalVenueForSeed(findMajorVenueSeed('hbf-arena'), venuesCatalog);
+    assert.equal(hbfArena.id, 'venue_arena_joondalup_qd676n');
+    assert.equal(hbfArena.name, 'Arena Joondalup');
+
+    const hbfStadium = resolveCanonicalVenueForSeed(findMajorVenueSeed('hbf-stadium'), venuesCatalog);
+    assert.equal(hbfStadium.id, 'venue_perth_hpc_qd664x');
+    assert.equal(hbfStadium.name, 'Perth HPC');
+
+    const astor = resolveCanonicalVenueForSeed(findMajorVenueSeed('astor-theatre'), venuesCatalog);
+    assert.equal(astor.id, 'venue_astor_theatre_perth_qd66kd');
+
+    const fac = resolveCanonicalVenueForSeed(findMajorVenueSeed('fremantle-arts-centre'), venuesCatalog);
+    assert.equal(fac.id, 'venue_walyalup_fremantle_arts_centre_qd63dj');
+
+    for (const seed of MAJOR_VENUE_SEEDS) {
+      const ingested = ingestVenueActivity(
+        {
+          source_id: `test_${seed.slug}`,
+          source_url: seed.whatsOnUrl,
+          title: `Test Show at ${seed.name}`,
+          category: seed.defaultCategory,
+          start_date: '2027-02-01T19:30:00+08:00',
+          schedule: { recurrence: 'none', start_date: '2027-02-01', start_time: '19:30' }
+        },
+        { venueSeed: seed, venuesCatalog }
+      );
+      assert.ok(ingested, `ingestVenueActivity returned null for ${seed.slug}`);
+      assert.equal(ingested.needs_review, false, `Unexpected needs_review for ${seed.slug}`);
+      assert.equal(ingested.review_reason, null, `Unexpected review_reason for ${seed.slug}`);
+      assert.equal(typeof ingested.venue.coordinates.lat, 'number');
+      assert.equal(typeof ingested.venue.coordinates.lng, 'number');
+    }
+  });
+
+  it('Seam 3: parseCliArgs and isVenueWithinCooldown enforce per-venue 2-3 day cooldown with --force/--refresh overrides', () => {
+    const defaultArgs = parseCliArgs([], {});
+    assert.equal(defaultArgs.force, false);
+    assert.equal(defaultArgs.refresh, false);
+    assert.equal(defaultArgs.venueCooldownMs, DEFAULT_VENUE_COOLDOWN_MS);
+    assert.equal(defaultArgs.venueCooldownMs, 2 * 24 * 60 * 60 * 1000);
+
+    const forceArgs = parseCliArgs(['--force', '--cooldown-days=3'], {});
+    assert.equal(forceArgs.force, true);
+    assert.equal(forceArgs.venueCooldownMs, 3 * 24 * 60 * 60 * 1000);
+
+    const zeroCooldownArgs = parseCliArgs(['--refresh', '--cooldown-days', '0'], {});
+    assert.equal(zeroCooldownArgs.refresh, true);
+    assert.equal(zeroCooldownArgs.venueCooldownMs, 0);
+
+    const baseMs = Date.parse('2026-11-27T10:00:00+08:00');
+    const twoDaysMs = 2 * 24 * 60 * 60 * 1000;
+    const checkpoint = { lastSyncedAt: new Date(baseMs).toISOString() };
+
+    assert.equal(
+      isVenueWithinCooldown(checkpoint, { now: new Date(baseMs + 24 * 60 * 60 * 1000), cooldownMs: twoDaysMs }),
+      true
+    );
+    assert.equal(
+      isVenueWithinCooldown(checkpoint, { now: new Date(baseMs + twoDaysMs), cooldownMs: twoDaysMs }),
+      false
+    );
+    assert.equal(
+      isVenueWithinCooldown(checkpoint, { now: new Date(baseMs + twoDaysMs + 1000), cooldownMs: twoDaysMs }),
+      false
+    );
+    assert.equal(
+      isVenueWithinCooldown(checkpoint, { now: new Date(baseMs + 1000), cooldownMs: twoDaysMs, force: true }),
+      false
+    );
+    assert.equal(
+      isVenueWithinCooldown(checkpoint, { now: new Date(baseMs + 1000), cooldownMs: twoDaysMs, refresh: true }),
+      false
+    );
+    assert.equal(
+      isVenueWithinCooldown(checkpoint, { now: new Date(baseMs + 1000), cooldownMs: 0 }),
+      false
+    );
+    assert.equal(
+      isVenueWithinCooldown(null, { now: new Date(baseMs), cooldownMs: twoDaysMs }),
+      false
+    );
+    assert.equal(
+      isVenueWithinCooldown({ lastSyncedAt: 'invalid-date' }, { now: new Date(baseMs), cooldownMs: twoDaysMs }),
+      false
+    );
+  });
+
+  it('Seam 4: runVenueWebsiteSync skips recently synced Venues within cooldown, honors --force/--refresh, refreshes expired index, and skips checkpointing on failure or dry-run', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'myplaydex-venue-cooldown-'));
+    const cachePath = path.join(tempDir, 'venue-sync-cache.json');
+    const logger = createSilentLogger();
+    const t0 = new Date('2026-11-27T10:00:00+08:00');
+    const racSeed = findMajorVenueSeed('rac-arena');
+    const detailUrl = 'https://www.racarena.com.au/whats-on/perth-symphony';
+
+    try {
+      const scrapeCalls = [];
+      let failIndex = false;
+      const fakeFirecrawl = {
+        async scrape(url, opts = {}) {
+          scrapeCalls.push({ url, refresh: Boolean(opts.refresh) });
+          if (failIndex && url === racSeed.whatsOnUrl) {
+            throw new Error('Upstream 503');
+          }
+          if (url === racSeed.whatsOnUrl) {
+            return {
+              url,
+              html: `<script type="application/ld+json">${JSON.stringify({
+                '@type': 'MusicEvent',
+                name: 'Perth Symphony',
+                startDate: '2027-01-15',
+                url: detailUrl
+              })}</script>`,
+              markdown: '',
+              links: []
+            };
+          }
+          return {
+            url,
+            html: `<script type="application/ld+json">${JSON.stringify({
+              '@type': 'MusicEvent',
+              name: 'Perth Symphony',
+              startDate: '2027-01-15T19:30:00+08:00',
+              offers: { url: 'https://premier.ticketek.com.au/shows/show.aspx?sh=SYMPHONY27' }
+            })}</script>`,
+            markdown: '',
+            links: []
+          };
+        },
+        async flushCache() {}
+      };
+
+      // 7. Failed index scrape does NOT write a cooldown checkpoint
+      failIndex = true;
+      const cacheStoreFail = createFileCacheStore(cachePath, { flushEvery: 5 });
+      const failSummary = await runVenueWebsiteSync({
+        adapter: createMemoryAdapter(),
+        firecrawlClient: fakeFirecrawl,
+        cacheStore: cacheStoreFail,
+        options: { venue: 'rac-arena', dryRun: false, now: t0 },
+        logger
+      });
+      assert.equal(failSummary.failedVenues, 1);
+      assert.equal(await cacheStoreFail.read(`${VENUE_COOLDOWN_KEY_PREFIX}rac-arena`), null);
+      failIndex = false;
+
+      // 6. dryRun: true does NOT write a cooldown checkpoint
+      const dryCachePath = path.join(tempDir, 'dry-venue-sync-cache.json');
+      const cacheStoreDry = createFileCacheStore(dryCachePath, { flushEvery: 5 });
+      const drySummary0 = await runVenueWebsiteSync({
+        adapter: createMemoryAdapter(),
+        firecrawlClient: fakeFirecrawl,
+        cacheStore: cacheStoreDry,
+        options: { venue: 'rac-arena', dryRun: true, now: t0 },
+        logger
+      });
+      assert.equal(drySummary0.processedVenues, 1);
+      assert.equal(await cacheStoreDry.read(`${VENUE_COOLDOWN_KEY_PREFIX}rac-arena`), null);
+
+      // 1. Apply run writes venue_sync|<slug> checkpoint with lastSyncedAt
+      scrapeCalls.length = 0;
+      const cacheStore1 = createFileCacheStore(cachePath, { flushEvery: 5 });
+      const applySummary = await runVenueWebsiteSync({
+        adapter: createMemoryAdapter(),
+        firecrawlClient: fakeFirecrawl,
+        cacheStore: cacheStore1,
+        options: { venue: 'rac-arena', dryRun: false, now: t0 },
+        logger
+      });
+      assert.equal(applySummary.processedVenues, 1);
+      assert.equal(applySummary.skippedCooldownVenues, 0);
+      assert.equal(scrapeCalls.length, 2);
+      const savedCheckpoint = await cacheStore1.read(`${VENUE_COOLDOWN_KEY_PREFIX}rac-arena`);
+      assert.equal(savedCheckpoint?.lastSyncedAt, t0.toISOString());
+
+      // 2. Second run +24h later skips venue (both apply and dry-run respect cooldown)
+      const t24h = new Date(t0.getTime() + 24 * 60 * 60 * 1000);
+      scrapeCalls.length = 0;
+      const cacheStore2 = createFileCacheStore(cachePath, { flushEvery: 5 });
+      const skippedApply = await runVenueWebsiteSync({
+        adapter: createMemoryAdapter(),
+        firecrawlClient: fakeFirecrawl,
+        cacheStore: cacheStore2,
+        options: { venue: 'rac-arena', dryRun: false, now: t24h },
+        logger
+      });
+      assert.equal(skippedApply.skippedCooldownVenues, 1);
+      assert.equal(skippedApply.processedVenues, 0);
+      assert.equal(scrapeCalls.length, 0);
+
+      const skippedDry = await runVenueWebsiteSync({
+        adapter: createMemoryAdapter(),
+        firecrawlClient: fakeFirecrawl,
+        cacheStore: cacheStore2,
+        options: { venue: 'rac-arena', dryRun: true, now: t24h },
+        logger
+      });
+      assert.equal(skippedDry.skippedCooldownVenues, 1);
+      assert.equal(skippedDry.processedVenues, 0);
+      assert.equal(scrapeCalls.length, 0);
+
+      // 3. Run +24h later with force: true overrides cooldown and passes refresh: true to index scrape
+      scrapeCalls.length = 0;
+      const cacheStore3 = createFileCacheStore(cachePath, { flushEvery: 5 });
+      const forceSummary = await runVenueWebsiteSync({
+        adapter: createMemoryAdapter(),
+        firecrawlClient: fakeFirecrawl,
+        cacheStore: cacheStore3,
+        options: { venue: 'rac-arena', dryRun: false, force: true, now: t24h },
+        logger
+      });
+      assert.equal(forceSummary.skippedCooldownVenues, 0);
+      assert.equal(forceSummary.processedVenues, 1);
+      assert.equal(scrapeCalls.length, 1); // detail page hits cache!
+      assert.deepEqual(scrapeCalls[0], { url: racSeed.whatsOnUrl, refresh: true });
+
+      // 4. Run +24h later with refresh: true overrides cooldown and passes refresh: true to index and detail fan-out
+      scrapeCalls.length = 0;
+      const cacheStore4 = createFileCacheStore(cachePath, { flushEvery: 5 });
+      const refreshSummary = await runVenueWebsiteSync({
+        adapter: createMemoryAdapter(),
+        firecrawlClient: fakeFirecrawl,
+        cacheStore: cacheStore4,
+        options: { venue: 'rac-arena', dryRun: false, refresh: true, now: t24h },
+        logger
+      });
+      assert.equal(refreshSummary.skippedCooldownVenues, 0);
+      assert.equal(refreshSummary.processedVenues, 1);
+      assert.equal(scrapeCalls.length, 2);
+      assert.deepEqual(scrapeCalls[0], { url: racSeed.whatsOnUrl, refresh: true });
+      assert.deepEqual(scrapeCalls[1], { url: detailUrl, refresh: true });
+
+      // 5. Run +49h later (cooldown expired) scrapes index with refresh: true while preserving detail cache
+      const t73h = new Date(t24h.getTime() + 49 * 60 * 60 * 1000);
+      scrapeCalls.length = 0;
+      const cacheStore5 = createFileCacheStore(cachePath, { flushEvery: 5 });
+      const expiredSummary = await runVenueWebsiteSync({
+        adapter: createMemoryAdapter(),
+        firecrawlClient: fakeFirecrawl,
+        cacheStore: cacheStore5,
+        options: { venue: 'rac-arena', dryRun: false, now: t73h },
+        logger
+      });
+      assert.equal(expiredSummary.skippedCooldownVenues, 0);
+      assert.equal(expiredSummary.processedVenues, 1);
+      assert.equal(expiredSummary.detailCacheHits, 1);
+      assert.equal(scrapeCalls.length, 1);
+      assert.deepEqual(scrapeCalls[0], { url: racSeed.whatsOnUrl, refresh: true });
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
