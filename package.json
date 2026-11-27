@@ -19,6 +19,7 @@
     "sync:local-councils": "node src/crawler-runner.js --crawler=local-councils",
     "enrich:organizers": "node src/organizer-enricher.js",
     "sync:organizer-websites": "node src/organizer-website-sync.js",
+    "sync:venues": "node src/venue-website-sync.js",
     "admin:claim": "node src/admin-claim-cli.js",
     "deploy:hosting": "npx -y firebase-tools@latest deploy --only hosting",
     "deploy:rules": "npx -y firebase-tools@latest deploy --only firestore:rules",
