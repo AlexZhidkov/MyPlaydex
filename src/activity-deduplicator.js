@@ -11,9 +11,10 @@ import { PERTH_SUBURB_CENTROIDS } from '../public/shared/perth-centroids.js';
 import { mergeActivityDocuments, slugify } from './sanitizer.js';
 
 const SOURCE_PRIORITY = {
-  eventbrite: 5,
-  humanitix: 5,
-  meetup: 4,
+  eventbrite: 6,
+  humanitix: 6,
+  meetup: 5,
+  venue_website: 4,
   council: 3,
   organizer_website: 2,
   facebook: 1
@@ -23,7 +24,7 @@ const CENTROID_EPSILON_DEG = 0.0001;
 const INVALID_ORGANIZER_REVIEW_REASONS = new Set(['unmatched_organizer', 'uncertain_organizer_match']);
 
 /**
- * Returns deterministic source precedence rank (`eventbrite = humanitix > meetup > council > organizer_website > facebook`).
+ * Returns deterministic source precedence rank (`eventbrite = humanitix > meetup > venue_website > council > organizer_website > facebook`).
  *
  * @param {string} [source]
  * @returns {number}

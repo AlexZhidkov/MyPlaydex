@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto';
 import { normalizeSport, parseSchedule } from './sanitizer.js';
 
 export const MAX_HORIZON_MS = 183 * 24 * 60 * 60 * 1000;
+export const DEFAULT_WEBSITE_SOURCE = 'organizer_website';
 
 const WEEKDAY_NAME_TO_INT = Object.freeze({
   sunday: 0,
@@ -91,15 +92,76 @@ export function buildDeterministicSourceId(scrapedUrl, title, scheduleKey) {
     .slice(0, 16);
 }
 
-export function buildOrganizerWebsiteSourceRef(sourceId, scrapedUrl) {
+function normalizeWebsiteSource(source) {
+  if (typeof source !== 'string') return DEFAULT_WEBSITE_SOURCE;
+  const cleaned = source.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+  return cleaned || DEFAULT_WEBSITE_SOURCE;
+}
+
+/**
+ * Resolves a preferred outbound Activity URL from a candidate direct ticketing URL,
+ * upgrading `http://` to `https://` and resolving root-relative paths against `scrapedUrl`.
+ * Falls back to `scrapedUrl` when `ticketUrl` is missing, non-HTTP(S), or prose.
+ *
+ * @param {string | null | undefined} ticketUrl
+ * @param {string} scrapedUrl
+ * @returns {string}
+ */
+export function resolvePreferredActivityUrl(ticketUrl, scrapedUrl) {
+  if (typeof ticketUrl !== 'string') return scrapedUrl;
+  const cleaned = ticketUrl.trim().replace(/^["'<(\[]+|[>"')\]]+$/g, '').trim();
+  if (!cleaned) return scrapedUrl;
+
+  let candidate = null;
+  if (/^https:\/\//i.test(cleaned)) {
+    candidate = cleaned;
+  } else if (/^http:\/\//i.test(cleaned)) {
+    candidate = cleaned.replace(/^http:\/\//i, 'https://');
+  } else if (/^\/\//.test(cleaned)) {
+    candidate = `https:${cleaned}`;
+  } else if (cleaned.startsWith('/')) {
+    try {
+      candidate = new URL(cleaned, scrapedUrl).href;
+    } catch {
+      return scrapedUrl;
+    }
+  } else {
+    return scrapedUrl;
+  }
+
+  try {
+    const parsed = new URL(candidate);
+    if ((parsed.protocol === 'https:' || parsed.protocol === 'http:') && parsed.hostname.includes('.')) {
+      return parsed.href;
+    }
+  } catch {
+    return scrapedUrl;
+  }
+  return scrapedUrl;
+}
+
+/**
+ * Builds a single `verified: true` Source Reference for a scraped website Activity.
+ *
+ * @param {string} sourceId
+ * @param {string} targetUrl
+ * @param {string} [source=DEFAULT_WEBSITE_SOURCE]
+ * @returns {object}
+ */
+export function buildWebsiteSourceRef(sourceId, targetUrl, source = DEFAULT_WEBSITE_SOURCE) {
+  const normalizedSource = normalizeWebsiteSource(source);
   return {
-    source: 'organizer_website',
+    source: normalizedSource,
     source_id: sourceId,
-    source_key: `organizer_website_${sourceId}`,
-    source_url: scrapedUrl,
-    raw_source_url: scrapedUrl,
+    source_key: `${normalizedSource}_${sourceId}`,
+    source_url: targetUrl,
+    raw_source_url: targetUrl,
     verified: true
   };
+}
+
+export function buildOrganizerWebsiteSourceRef(sourceId, scrapedUrl) {
+  return buildWebsiteSourceRef(sourceId, scrapedUrl, DEFAULT_WEBSITE_SOURCE);
 }
 
 function isLowConfidence(confidence) {
@@ -116,7 +178,7 @@ function isLowConfidence(confidence) {
  */
 export function filterAndNormalizeGeminiActivities(
   rawItems = [],
-  { scrapedUrl, organizer = null, now = new Date() } = {}
+  { scrapedUrl, organizer = null, source = DEFAULT_WEBSITE_SOURCE, now = new Date() } = {}
 ) {
   if (!Array.isArray(rawItems) || !scrapedUrl) {
     return [];
@@ -184,9 +246,13 @@ export function filterAndNormalizeGeminiActivities(
     const costDescription = typeof item.cost_description === 'string' ? item.cost_description.trim() : '';
     const isFree = item.is_free === true || /^free$/i.test(costDescription);
     const sourceId = buildDeterministicSourceId(scrapedUrl, title, scheduleKey);
+    const preferredUrl = resolvePreferredActivityUrl(item.ticket_url, scrapedUrl);
+    const sourceRef = buildWebsiteSourceRef(sourceId, preferredUrl, source);
 
     results.push({
-      ...buildOrganizerWebsiteSourceRef(sourceId, scrapedUrl),
+      ...sourceRef,
+      sources: [sourceRef],
+      source_keys: [sourceRef.source_key],
       title,
       description,
       category: typeof item.category === 'string' ? item.category.trim().toLowerCase() : undefined,
@@ -219,6 +285,8 @@ export async function extractMarkdownActivities({
   markdown = '',
   scrapedUrl,
   organizer = null,
+  venueName = '',
+  source = DEFAULT_WEBSITE_SOURCE,
   geminiClient = null,
   now = new Date(),
   logger = console,
@@ -236,11 +304,13 @@ export async function extractMarkdownActivities({
       markdown,
       sourceUrl: scrapedUrl,
       organizerName: organizer?.name || '',
+      venueName,
       todayAwst
     });
     return filterAndNormalizeGeminiActivities(response?.activities || [], {
       scrapedUrl,
       organizer,
+      source,
       now
     });
   } catch (err) {

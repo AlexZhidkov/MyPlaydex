@@ -125,4 +125,70 @@ describe('Gemini Flash Client (Issue #54)', () => {
     });
     assert.deepEqual(parsed.activities, []);
   });
+
+  it('Seam 3 (Issue #61): schema includes nullable ticket_url and prompt forwards optional venueName and ticketing rule', async () => {
+    const ticketUrlProp = ACTIVITY_EXTRACTION_RESPONSE_SCHEMA.properties.activities.items.properties.ticket_url;
+    assert.deepEqual(ticketUrlProp, { type: 'STRING', nullable: true });
+    assert.equal(ACTIVITY_EXTRACTION_RESPONSE_SCHEMA.properties.activities.items.required.includes('ticket_url'), false);
+
+    const requests = [];
+    const mockFetch = async (url, init) => {
+      requests.push(JSON.parse(init.body));
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            candidates: [
+              {
+                content: {
+                  parts: [
+                    {
+                      text: JSON.stringify({
+                        activities: [
+                          {
+                            title: 'Swan Lake Ballet',
+                            category: 'arts',
+                            start_date: '2026-12-10',
+                            start_time: '19:30',
+                            venue_name: 'His Majesty\'s Theatre',
+                            ticket_url: 'https://premier.ticketek.com.au/shows/show.aspx?sh=SWANLAKE',
+                            is_noise: false,
+                            confidence: 'high'
+                          }
+                        ]
+                      })
+                    }
+                  ]
+                }
+              }
+            ]
+          };
+        }
+      };
+    };
+
+    const client = createGeminiFlashClient({ apiKey: 'test-key', fetchFn: mockFetch });
+    const withVenue = await client.extractActivitiesFromMarkdown({
+      markdown: '# Swan Lake\n[Buy Tickets](https://premier.ticketek.com.au/shows/show.aspx?sh=SWANLAKE)',
+      sourceUrl: 'https://www.artsculturetrust.wa.gov.au/whats-on/swan-lake',
+      venueName: 'His Majesty\'s Theatre',
+      todayAwst: '2026-11-27'
+    });
+
+    assert.equal(withVenue.activities.length, 1);
+    assert.equal(withVenue.activities[0].ticket_url, 'https://premier.ticketek.com.au/shows/show.aspx?sh=SWANLAKE');
+
+    const promptWithVenue = requests[0].contents[0].parts[0].text;
+    assert.ok(promptWithVenue.includes('Venue: His Majesty\'s Theatre'));
+    assert.ok(promptWithVenue.includes('ticket_url'));
+
+    await client.extractActivitiesFromMarkdown({
+      markdown: '# Community Yoga',
+      sourceUrl: 'https://club.org.au/yoga',
+      todayAwst: '2026-11-27'
+    });
+    const promptWithoutVenue = requests[1].contents[0].parts[0].text;
+    assert.equal(promptWithoutVenue.includes('Venue:'), false);
+  });
 });

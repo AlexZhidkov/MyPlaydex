@@ -35,6 +35,7 @@ export const ACTIVITY_EXTRACTION_RESPONSE_SCHEMA = {
           address: { type: 'STRING', nullable: true },
           cost_description: { type: 'STRING', nullable: true },
           is_free: { type: 'BOOLEAN', nullable: true },
+          ticket_url: { type: 'STRING', nullable: true },
           is_noise: { type: 'BOOLEAN' },
           noise_reason: { type: 'STRING', nullable: true },
           confidence: { type: 'STRING', enum: ['high', 'medium', 'low'] }
@@ -46,7 +47,7 @@ export const ACTIVITY_EXTRACTION_RESPONSE_SCHEMA = {
   required: ['activities']
 };
 
-function buildExtractionPrompt({ markdown, sourceUrl, organizerName, todayAwst }) {
+function buildExtractionPrompt({ markdown, sourceUrl, organizerName, venueName, todayAwst }) {
   const truncated = markdown.length > DEFAULT_MAX_MARKDOWN_CHARS
     ? markdown.slice(0, DEFAULT_MAX_MARKDOWN_CHARS)
     : markdown;
@@ -56,6 +57,7 @@ function buildExtractionPrompt({ markdown, sourceUrl, organizerName, todayAwst }
     `Today (AWST): ${todayAwst || 'unknown'}`,
     `Source URL: ${sourceUrl || 'unknown'}`,
     organizerName ? `Organizer: ${organizerName}` : null,
+    venueName ? `Venue: ${venueName}` : null,
     '',
     'Rules:',
     '- Only extract real, scheduled in-person activities with either an explicit calendar date (start_date as YYYY-MM-DD) OR a recurring weekly weekday (weekday as Sunday..Saturday with start_date null).',
@@ -63,6 +65,7 @@ function buildExtractionPrompt({ markdown, sourceUrl, organizerName, todayAwst }
     '- For multi-row weekly timetables (tables or grouped-by-day class schedules), emit one separate activity entry per class session row with its specific weekday, start_time, end_time, and venue/studio name.',
     '- For dated Activities, set start_date (and end_date if multi-day) as YYYY-MM-DD in AWST.',
     '- Format start_time and end_time as 24-hour HH:mm when known, or null if missing.',
+    '- When the page includes a direct ticketing or booking checkout URL for an Activity (e.g. Ticketek, Ticketmaster, Moshtix, Eventbrite, Humanitix, Oztix, TryBooking), set ticket_url to that exact URL; otherwise set ticket_url to null.',
     '- Mark is_noise: true (or omit) for AGMs, committee notices, job ads, volunteer recruitment, generic "contact us for private lessons" enquiries, or news articles without a scheduled session.',
     '- Set confidence to "high", "medium", or "low" based on how clearly the schedule and venue are stated.',
     '',
@@ -98,6 +101,7 @@ export function createGeminiFlashClient({
     markdown = '',
     sourceUrl = '',
     organizerName = '',
+    venueName = '',
     todayAwst = ''
   } = {}) {
     if (typeof markdown !== 'string' || !markdown.trim()) {
@@ -124,7 +128,7 @@ export function createGeminiFlashClient({
               role: 'user',
               parts: [
                 {
-                  text: buildExtractionPrompt({ markdown, sourceUrl, organizerName, todayAwst })
+                  text: buildExtractionPrompt({ markdown, sourceUrl, organizerName, venueName, todayAwst })
                 }
               ]
             }

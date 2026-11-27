@@ -695,8 +695,8 @@ test('Slice 9 (Issue #52): organizer_website precedence ranks above facebook and
   }
 });
 
-test('Humanitix source priority equals Eventbrite (5) and outranks Meetup/Facebook', () => {
-  assert.equal(getSourcePriority('humanitix'), 5);
+test('Humanitix source priority equals Eventbrite (6) and outranks Meetup/Facebook', () => {
+  assert.equal(getSourcePriority('humanitix'), 6);
   assert.equal(getSourcePriority('humanitix'), getSourcePriority('eventbrite'));
   assert.ok(getSourcePriority('humanitix') > getSourcePriority('meetup'));
 
@@ -721,6 +721,92 @@ test('Humanitix source priority equals Eventbrite (5) and outranks Meetup/Facebo
   assert.equal(res.activitiesToUpsert.length, 1);
   assert.equal(res.activitiesToUpsert[0].id, 'meetup_801');
   assert.equal(res.activitiesToUpsert[0].source_url, 'https://events.humanitix.com/perth-social-basketball');
+});
+
+test('Issue #61: venue_website ranks above council/visit_perth/organizer_website/facebook and below meetup/eventbrite/humanitix', () => {
+  assert.equal(getSourcePriority('eventbrite'), getSourcePriority('humanitix'));
+  assert.ok(getSourcePriority('eventbrite') > getSourcePriority('meetup'));
+  assert.ok(getSourcePriority('meetup') > getSourcePriority('venue_website'));
+  assert.ok(getSourcePriority('venue_website') > getSourcePriority('council'));
+  assert.ok(getSourcePriority('venue_website') > getSourcePriority('visit_perth'));
+  assert.ok(getSourcePriority('council') > getSourcePriority('organizer_website'));
+  assert.ok(getSourcePriority('organizer_website') > getSourcePriority('facebook'));
+
+  // 1. Incoming venue_website with direct Ticketek URL outranks existing visit_perth aggregator blurb
+  const existingVisitPerth = makeActivity({
+    id: 'visit_perth_901',
+    source: 'visit_perth',
+    source_id: '901',
+    source_url: 'https://visitperth.com/events/big-bash-derby',
+    raw_source_url: 'https://visitperth.com/events/big-bash-derby',
+    verified: true,
+    description: 'Short Visit Perth blurb',
+    cost: { is_free: false, display_price: '' }
+  });
+
+  const incomingVenueWebsite = makeActivity({
+    id: 'venue_website_optus_1',
+    source: 'venue_website',
+    source_id: 'optus_1',
+    source_url: 'https://premier.ticketek.com.au/shows/show.aspx?sh=BBLDERBY',
+    raw_source_url: 'https://premier.ticketek.com.au/shows/show.aspx?sh=BBLDERBY',
+    verified: true,
+    description: 'Official Optus Stadium matchday details and gates schedule.',
+    cost: { is_free: false, display_price: 'From $29' }
+  });
+
+  const venueOverAggregator = deduplicateActivities([incomingVenueWebsite], [existingVisitPerth]);
+  assert.equal(venueOverAggregator.activitiesToUpsert.length, 1);
+  const promoted = venueOverAggregator.activitiesToUpsert[0];
+  assert.equal(promoted.id, 'visit_perth_901');
+  assert.equal(promoted.source_url, 'https://premier.ticketek.com.au/shows/show.aspx?sh=BBLDERBY');
+  assert.equal(promoted.description, 'Official Optus Stadium matchday details and gates schedule.');
+  assert.equal(promoted.cost.display_price, 'From $29');
+  assert.deepEqual(promoted.source_keys, ['venue_website_optus_1', 'visit_perth_901']);
+
+  // 2. Incoming meetup / eventbrite / humanitix outrank existing venue_website while retaining venue_website ref
+  for (const higher of [
+    {
+      id: 'meetup_902',
+      source: 'meetup',
+      source_id: '902',
+      source_url: 'https://www.meetup.com/perth-sports/events/902/'
+    },
+    {
+      id: 'eventbrite_903',
+      source: 'eventbrite',
+      source_id: '903',
+      source_url: 'https://www.eventbrite.com.au/e/big-bash-derby-903'
+    },
+    {
+      id: 'humanitix_904',
+      source: 'humanitix',
+      source_id: '904',
+      source_url: 'https://events.humanitix.com/big-bash-derby-904'
+    }
+  ]) {
+    const existingVenue = makeActivity({
+      id: 'venue_website_optus_1',
+      source: 'venue_website',
+      source_id: 'optus_1',
+      source_url: 'https://premier.ticketek.com.au/shows/show.aspx?sh=BBLDERBY',
+      raw_source_url: 'https://premier.ticketek.com.au/shows/show.aspx?sh=BBLDERBY',
+      verified: true
+    });
+    const incomingHigher = makeActivity({
+      ...higher,
+      raw_source_url: higher.source_url,
+      verified: true
+    });
+
+    const res = deduplicateActivities([incomingHigher], [existingVenue]);
+    assert.equal(res.activitiesToUpsert.length, 1);
+    const merged = res.activitiesToUpsert[0];
+    assert.equal(merged.id, 'venue_website_optus_1');
+    assert.equal(merged.source_url, higher.source_url);
+    assert.ok(merged.source_keys.includes('venue_website_optus_1'));
+    assert.ok(merged.source_keys.includes(`${higher.source}_${higher.source_id}`));
+  }
 });
 
 
