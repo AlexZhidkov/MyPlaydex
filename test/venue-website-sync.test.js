@@ -1,5 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { createFileCacheStore } from '../src/file-cache.js';
 import { createFirestoreAdapter } from '../src/firestore-adapter.js';
 import { CANONICAL_CATEGORIES } from '../src/sanitizer.js';
 import { isWithinPerthRadius } from '../src/venue-resolver.js';
@@ -577,5 +581,159 @@ describe('Major-Venue Calendar Sync (Issue #62)', () => {
     const reMerged = rerunAdapter.upsertedBatches[0][0];
     assert.equal(reMerged.id, 'council_existing_concert_1');
     assert.equal(reMerged.sources.length, 2);
+  });
+
+  it('Seam 7 (Issue #63): parseCliArgs parses detail fan-out flags and runVenueWebsiteSync caps new detail scrapes per run with incremental cache checkpointing', async () => {
+    const defaultArgs = parseCliArgs([], {});
+    assert.equal(defaultArgs.maxDetailScrapes, 25);
+    assert.equal(defaultArgs.detailCacheTtlMs, 10 * 24 * 60 * 60 * 1000);
+
+    const customArgs = parseCliArgs([
+      '--max-detail-scrapes=15',
+      '--detail-cache-ttl-days',
+      '14'
+    ], {});
+    assert.equal(customArgs.maxDetailScrapes, 15);
+    assert.equal(customArgs.detailCacheTtlMs, 14 * 24 * 60 * 60 * 1000);
+
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'myplaydex-venue-sync-'));
+    const cachePath = path.join(tempDir, 'venue-sync-cache.json');
+    const logger = createSilentLogger();
+    const now = new Date('2026-11-27T10:00:00+08:00');
+    const crownSeed = findMajorVenueSeed('crown-perth');
+
+    try {
+      const indexHtml = `<script type="application/ld+json">${JSON.stringify([
+        {
+          '@type': 'TheaterEvent',
+          name: 'Show One',
+          startDate: '2027-01-10',
+          url: 'https://www.crownperth.com.au/entertainment/live-theatre/show-1'
+        },
+        {
+          '@type': 'TheaterEvent',
+          name: 'Show Two',
+          startDate: '2027-01-11',
+          url: 'https://www.crownperth.com.au/entertainment/live-theatre/show-2'
+        },
+        {
+          '@type': 'TheaterEvent',
+          name: 'Show Three',
+          startDate: '2027-01-12',
+          url: 'https://www.crownperth.com.au/entertainment/live-theatre/show-3'
+        },
+        {
+          '@type': 'TheaterEvent',
+          name: 'Show Four',
+          startDate: '2027-01-13',
+          url: 'https://www.crownperth.com.au/entertainment/live-theatre/show-4'
+        },
+        {
+          '@type': 'TheaterEvent',
+          name: 'Show One Duplicate Link',
+          startDate: '2027-01-14',
+          url: 'https://www.crownperth.com.au/entertainment/live-theatre/show-1'
+        }
+      ])}</script>`;
+
+      const detailScrapesRun1 = [];
+      const fakeFirecrawl = {
+        async scrape(url) {
+          if (url === crownSeed.whatsOnUrl) {
+            return { url, html: indexHtml, markdown: '', links: [] };
+          }
+          detailScrapesRun1.push(url);
+          if (url.endsWith('/show-3')) {
+            throw new Error('Transient 503');
+          }
+          const num = url.slice(-1);
+          return {
+            url,
+            html: `<script type="application/ld+json">${JSON.stringify({
+              '@type': 'TheaterEvent',
+              name: `Show ${num}`,
+              startDate: `2027-01-1${num}T19:30:00+08:00`,
+              offers: { url: `https://premier.ticketek.com.au/shows/show.aspx?sh=SHOW${num}` }
+            })}</script>`,
+            markdown: '',
+            links: []
+          };
+        },
+        async flushCache() {}
+      };
+
+      // Run 1: cap at 2 detail scrapes -> Show 1 & Show 2 scraped, Show 3/4/dup capped or deduped
+      const cacheStore1 = createFileCacheStore(cachePath, { flushEvery: 10 });
+      const summary1 = await runVenueWebsiteSync({
+        adapter: createMemoryAdapter(),
+        firecrawlClient: fakeFirecrawl,
+        detailCacheStore: cacheStore1,
+        options: {
+          venue: 'crown-perth',
+          dryRun: true,
+          maxDetailScrapes: 2,
+          now
+        },
+        logger
+      });
+
+      assert.equal(summary1.detailScrapesAttempted, 2);
+      assert.equal(summary1.detailScrapesCapped, 2);
+      assert.equal(summary1.detailCacheHits, 0);
+      assert.equal(detailScrapesRun1.length, 2);
+      assert.equal(summary1.validCount, 4);
+
+      // Verify checkpoint was flushed to disk even though flushEvery was 10
+      const diskJson = JSON.parse(await fs.readFile(cachePath, 'utf8'));
+      assert.ok(diskJson['venue_detail|https://www.crownperth.com.au/entertainment/live-theatre/show-1']);
+      assert.ok(diskJson['venue_detail|https://www.crownperth.com.au/entertainment/live-theatre/show-2']);
+
+      // Run 2: Show 1 & Show 2 hit cache, Show 3 fails gracefully, Show 4 is scraped
+      const detailScrapesRun2 = [];
+      const cacheStore2 = createFileCacheStore(cachePath, { flushEvery: 10 });
+      const summary2 = await runVenueWebsiteSync({
+        adapter: createMemoryAdapter(),
+        firecrawlClient: {
+          async scrape(url) {
+            if (url === crownSeed.whatsOnUrl) {
+              return { url, html: indexHtml, markdown: '', links: [] };
+            }
+            detailScrapesRun2.push(url);
+            if (url.endsWith('/show-3')) {
+              throw new Error('Transient 503');
+            }
+            return {
+              url,
+              html: `<script type="application/ld+json">${JSON.stringify({
+                '@type': 'TheaterEvent',
+                name: 'Show Four',
+                startDate: '2027-01-13T19:30:00+08:00',
+                offers: { url: 'https://premier.ticketek.com.au/shows/show.aspx?sh=SHOW4' }
+              })}</script>`,
+              markdown: '',
+              links: []
+            };
+          },
+          async flushCache() {}
+        },
+        detailCacheStore: cacheStore2,
+        options: {
+          venue: 'crown-perth',
+          dryRun: true,
+          maxDetailScrapes: 2,
+          now
+        },
+        logger
+      });
+
+      assert.equal(summary2.detailCacheHits, 2);
+      assert.equal(summary2.detailScrapesAttempted, 2);
+      assert.equal(summary2.detailScrapesFailed, 1);
+      assert.equal(summary2.detailScrapesCapped, 0);
+      assert.equal(detailScrapesRun2.length, 2);
+      assert.equal(summary2.validCount, 4);
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
   });
 });

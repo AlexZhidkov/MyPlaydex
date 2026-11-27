@@ -29,6 +29,12 @@ import {
   extractMarkdownActivities,
   resolvePreferredActivityUrl
 } from './markdown-activity-extractor.js';
+import {
+  DEFAULT_DETAIL_CACHE_TTL_MS,
+  DEFAULT_MAX_DETAIL_SCRAPES_PER_RUN,
+  expandVenueActivitiesWithDetailFanOut,
+  isDirectTicketingUrl
+} from './venue-detail-fanout.js';
 import { loadDotEnv } from './places-sync.js';
 import {
   CANONICAL_CATEGORIES,
@@ -88,6 +94,12 @@ function getArgValue(argv, flag) {
   return undefined;
 }
 
+function parseIntArg(rawValue, fallback, min = 0) {
+  if (rawValue === undefined) return fallback;
+  const parsed = parseInt(rawValue, 10);
+  return Number.isFinite(parsed) && parsed >= min ? parsed : fallback;
+}
+
 /**
  * Parses CLI arguments for the major-venue calendar sync CLI.
  * Defaults to dry-run unless `--apply` is passed without `--dry-run`.
@@ -103,10 +115,23 @@ export function parseCliArgs(argv = process.argv.slice(2), env = process.env) {
     ? null
     : (getArgValue(argv, 'firecrawl-url') || env.FIRECRAWL_LOCAL_URL || null);
 
+  const maxDetailScrapes = parseIntArg(
+    getArgValue(argv, 'max-detail-scrapes'),
+    DEFAULT_MAX_DETAIL_SCRAPES_PER_RUN,
+    0
+  );
+  const detailCacheTtlDays = parseIntArg(
+    getArgValue(argv, 'detail-cache-ttl-days'),
+    Math.round(DEFAULT_DETAIL_CACHE_TTL_MS / (24 * 60 * 60 * 1000)),
+    1
+  );
+
   return {
     dryRun: !apply,
     refresh: argv.includes('--refresh'),
     venue: getArgValue(argv, 'venue'),
+    maxDetailScrapes,
+    detailCacheTtlMs: detailCacheTtlDays * 24 * 60 * 60 * 1000,
     useAdc: argv.includes('--use-adc') || Boolean(env.FIREBASE_USE_ADC),
     project: getArgValue(argv, 'project') || env.FIREBASE_PROJECT_ID || 'myplaydex',
     firecrawlUrl
@@ -196,13 +221,50 @@ function pickVenueOutboundUrl(item = {}, scrapedUrl) {
     candidates.push(item.url);
   }
 
+  const resolvedCandidates = [];
   for (const candidate of candidates) {
     const resolved = resolvePreferredActivityUrl(candidate, scrapedUrl);
     if (resolved && resolved !== scrapedUrl) {
-      return resolved;
+      resolvedCandidates.push(resolved);
     }
   }
-  return scrapedUrl;
+
+  const directTicket = resolvedCandidates.find(url => isDirectTicketingUrl(url, scrapedUrl));
+  if (directTicket) {
+    return directTicket;
+  }
+
+  return resolvedCandidates[0] || scrapedUrl;
+}
+
+function flattenVenueJsonLdItems(jsonLdActivities = []) {
+  const flattened = [];
+  for (const item of jsonLdActivities) {
+    if (!item || typeof item !== 'object') continue;
+    const subEvents = Array.isArray(item.subEvent)
+      ? item.subEvent
+      : (item.subEvent && typeof item.subEvent === 'object' ? [item.subEvent] : []);
+
+    if (subEvents.length > 0) {
+      for (const sub of subEvents) {
+        if (!sub || typeof sub !== 'object') continue;
+        flattened.push({
+          ...sub,
+          '@type': sub['@type'] || item['@type'],
+          name: sub.name || item.name,
+          description: sub.description ?? item.description,
+          category: sub.category ?? item.category,
+          url: sub.url || item.url,
+          offers: sub.offers || item.offers,
+          eventAttendanceMode: sub.eventAttendanceMode || item.eventAttendanceMode,
+          location: sub.location || item.location
+        });
+      }
+    } else {
+      flattened.push(item);
+    }
+  }
+  return flattened;
 }
 
 /**
@@ -221,7 +283,7 @@ export function extractVenueJsonLdActivities(html = '', { scrapedUrl, venueSeed 
   const nowMs = now instanceof Date ? now.getTime() : Date.parse(now);
   const nowIso = new Date(nowMs).toISOString();
   const maxFutureMs = nowMs + MAX_HORIZON_MS;
-  const jsonLdActivities = extractJsonLdActivities(html);
+  const jsonLdActivities = flattenVenueJsonLdItems(extractJsonLdActivities(html));
   const results = [];
 
   for (const item of jsonLdActivities) {
@@ -264,6 +326,12 @@ export function extractVenueJsonLdActivities(html = '', { scrapedUrl, venueSeed 
     const pricing = parseActivityCost({ jsonLd: item });
     const sourceId = buildDeterministicSourceId(scrapedUrl, title, startDate);
     const outboundUrl = pickVenueOutboundUrl(item, scrapedUrl);
+    const resolvedItemUrl = typeof item.url === 'string'
+      ? resolvePreferredActivityUrl(item.url, scrapedUrl)
+      : null;
+    const detailUrl = resolvedItemUrl && resolvedItemUrl !== scrapedUrl
+      ? resolvedItemUrl
+      : undefined;
     const sourceRef = buildWebsiteSourceRef(sourceId, outboundUrl, VENUE_WEBSITE_SOURCE);
     const hasStartTime = /T\d{2}:\d{2}/.test(startDate);
 
@@ -282,6 +350,7 @@ export function extractVenueJsonLdActivities(html = '', { scrapedUrl, venueSeed 
       venue_address: venueSeed?.address || undefined,
       is_free: pricing.isFree,
       cost_description: pricing.displayPrice,
+      ...(detailUrl ? { _detailUrl: detailUrl } : {}),
       _missingStartTime: !hasStartTime
     });
   }
@@ -416,6 +485,12 @@ function buildSyncSummary(overrides = {}) {
     processedVenues: 0,
     failedVenues: 0,
     llmFallbackCalls: 0,
+    detailCandidates: 0,
+    detailCacheHits: 0,
+    detailScrapesAttempted: 0,
+    detailScrapesFailed: 0,
+    detailScrapesCapped: 0,
+    detailExpandedCount: 0,
     extractedCount: 0,
     validCount: 0,
     upsertedCount: 0,
@@ -433,12 +508,20 @@ export async function runVenueWebsiteSync({
   adapter,
   firecrawlClient = null,
   geminiClient = null,
+  detailCacheStore = null,
   seeds = MAJOR_VENUE_SEEDS,
   options = {},
   logger = console
 } = {}) {
   const dryRun = Boolean(options.dryRun);
   const refresh = Boolean(options.refresh);
+  const maxDetailScrapes = Number.isFinite(options.maxDetailScrapes) && options.maxDetailScrapes >= 0
+    ? options.maxDetailScrapes
+    : DEFAULT_MAX_DETAIL_SCRAPES_PER_RUN;
+  const detailCacheTtlMs = Number.isFinite(options.detailCacheTtlMs) && options.detailCacheTtlMs >= 0
+    ? options.detailCacheTtlMs
+    : DEFAULT_DETAIL_CACHE_TTL_MS;
+  const effectiveDetailCacheStore = detailCacheStore ?? options.detailCacheStore ?? null;
   const now = options.now instanceof Date ? options.now : (options.now ? new Date(options.now) : new Date());
 
   if (!firecrawlClient) {
@@ -469,8 +552,17 @@ export async function runVenueWebsiteSync({
   let processedVenues = 0;
   let failedVenues = 0;
   let llmFallbackCalls = 0;
+  const detailStats = {
+    detailCandidates: 0,
+    detailCacheHits: 0,
+    detailScrapesAttempted: 0,
+    detailScrapesFailed: 0,
+    detailScrapesCapped: 0,
+    detailExpandedCount: 0
+  };
   let extractedCount = 0;
   const validActivities = [];
+  const fanOutState = { scrapesUsed: 0, inRunCache: new Map() };
 
   try {
     for (const venueSeed of selectedSeeds) {
@@ -513,6 +605,27 @@ export async function runVenueWebsiteSync({
             }));
         }
 
+        const fanOutResult = await expandVenueActivitiesWithDetailFanOut({
+          rawActivities,
+          venueSeed,
+          firecrawlClient,
+          geminiClient,
+          detailCacheStore: effectiveDetailCacheStore,
+          extractVenueJsonLdActivities,
+          now,
+          refresh,
+          maxDetailScrapes,
+          detailCacheTtlMs,
+          state: fanOutState,
+          logger
+        });
+
+        rawActivities = fanOutResult.activities;
+        llmFallbackCalls += fanOutResult.stats.llmFallbackCalls;
+        for (const key of Object.keys(detailStats)) {
+          detailStats[key] += fanOutResult.stats[key] || 0;
+        }
+
         extractedCount += rawActivities.length;
 
         for (const rawActivity of rawActivities) {
@@ -528,6 +641,7 @@ export async function runVenueWebsiteSync({
     }
   } finally {
     await firecrawlClient?.flushCache?.();
+    await effectiveDetailCacheStore?.flush?.();
   }
 
   const dedupedActivities = validActivities.length > 0
@@ -541,7 +655,7 @@ export async function runVenueWebsiteSync({
   }
 
   logger?.log?.(
-    `[Venue Website Sync] Venues: ${processedVenues}/${selectedSeeds.length}, Failed: ${failedVenues}, LLM Fallbacks: ${llmFallbackCalls}, Extracted: ${extractedCount}, Valid: ${validActivities.length}, Upserted: ${upsertedCount} (dryRun=${dryRun})`
+    `[Venue Website Sync] Venues: ${processedVenues}/${selectedSeeds.length}, Failed: ${failedVenues}, LLM Fallbacks: ${llmFallbackCalls}, Detail Scrapes: ${detailStats.detailScrapesAttempted} (hits=${detailStats.detailCacheHits}, capped=${detailStats.detailScrapesCapped}, failed=${detailStats.detailScrapesFailed}), Extracted: ${extractedCount}, Valid: ${validActivities.length}, Upserted: ${upsertedCount} (dryRun=${dryRun})`
   );
 
   return buildSyncSummary({
@@ -550,6 +664,7 @@ export async function runVenueWebsiteSync({
     processedVenues,
     failedVenues,
     llmFallbackCalls,
+    ...detailStats,
     extractedCount,
     validCount: validActivities.length,
     upsertedCount
@@ -572,12 +687,15 @@ export async function main(argv = process.argv.slice(2), env = process.env, opti
   const parsedArgs = parseCliArgs(argv, env);
   const logger = resolveCliLogger('venue-website-sync.log', argv, options, env);
 
+  const sharedCacheStore = options.cacheStore || createFileCacheStore(DEFAULT_VENUE_WEBSITE_CACHE_PATH, { flushEvery: 5 });
+  const detailCacheStore = options.detailCacheStore !== undefined ? options.detailCacheStore : sharedCacheStore;
+
   const firecrawlClient = options.firecrawlClient !== undefined
     ? options.firecrawlClient
     : (parsedArgs.firecrawlUrl
         ? createFirecrawlClientFromEnv(env, {
             baseUrl: parsedArgs.firecrawlUrl,
-            cacheStore: options.cacheStore || createFileCacheStore(DEFAULT_VENUE_WEBSITE_CACHE_PATH, { flushEvery: 10 }),
+            cacheStore: sharedCacheStore,
             fetchFn: options.fetchFn,
             logger
           })
@@ -587,6 +705,7 @@ export async function main(argv = process.argv.slice(2), env = process.env, opti
     return runVenueWebsiteSync({
       adapter: options.adapter || null,
       firecrawlClient: null,
+      detailCacheStore,
       options: parsedArgs,
       logger
     });
@@ -619,6 +738,7 @@ export async function main(argv = process.argv.slice(2), env = process.env, opti
     adapter,
     firecrawlClient,
     geminiClient,
+    detailCacheStore,
     options: {
       ...parsedArgs,
       dryRun: effectiveDryRun

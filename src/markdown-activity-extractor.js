@@ -247,6 +247,12 @@ export function filterAndNormalizeGeminiActivities(
     const isFree = item.is_free === true || /^free$/i.test(costDescription);
     const sourceId = buildDeterministicSourceId(scrapedUrl, title, scheduleKey);
     const preferredUrl = resolvePreferredActivityUrl(item.ticket_url, scrapedUrl);
+    const resolvedDetailUrl = item.detail_url
+      ? resolvePreferredActivityUrl(item.detail_url, scrapedUrl)
+      : null;
+    const detailUrl = resolvedDetailUrl && resolvedDetailUrl !== scrapedUrl
+      ? resolvedDetailUrl
+      : undefined;
     const sourceRef = buildWebsiteSourceRef(sourceId, preferredUrl, source);
 
     results.push({
@@ -265,6 +271,7 @@ export function filterAndNormalizeGeminiActivities(
       location_text: venueAddress || venueName || undefined,
       is_free: isFree,
       cost_description: costDescription || (isFree ? 'Free' : ''),
+      ...(detailUrl ? { _detailUrl: detailUrl } : {}),
       ...(organizer ? { organizer: { id: organizer.id, name: organizer.name } } : {}),
       _missingStartTime: !schedule.start_time,
       _lowConfidence: isLowConfidence(item.confidence)
