@@ -727,6 +727,132 @@ function applyApprovedCurationPreservation(prevDoc, nextDoc, merged) {
   return preserved;
 }
 
+const BLOCKED_CURATED_PATH_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype']);
+const COUPLED_DERIVED_CURATED_FIELDS = {
+  coordinates: ['geohash'],
+  schedule: ['expire_at']
+};
+
+/**
+ * Normalizes a `curated_fields` list into a deduplicated array of non-empty field paths.
+ *
+ * @param {unknown} value
+ * @returns {Array<string>}
+ */
+function normalizeCuratedFields(value) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  const normalized = [];
+  for (const entry of value) {
+    if (typeof entry !== 'string') continue;
+    const trimmed = entry.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  }
+  return normalized;
+}
+
+/**
+ * Safely reads a nested property value along `segments`, returning `undefined` if missing.
+ *
+ * @param {unknown} obj
+ * @param {Array<string>} segments
+ * @returns {unknown}
+ */
+function getNestedFieldValue(obj, segments) {
+  let cursor = obj;
+  for (const segment of segments) {
+    if (!cursor || typeof cursor !== 'object' || !Object.prototype.hasOwnProperty.call(cursor, segment)) {
+      return undefined;
+    }
+    cursor = cursor[segment];
+  }
+  return cursor;
+}
+
+/**
+ * Safely writes a nested property value along `segments` with shallow cloning per level.
+ *
+ * @param {Record<string, any>} target
+ * @param {Array<string>} segments
+ * @param {unknown} value
+ */
+function setNestedFieldValue(target, segments, value) {
+  if (segments.length === 1) {
+    target[segments[0]] = value;
+    return;
+  }
+
+  let cursor = target;
+  for (let i = 0; i < segments.length - 1; i++) {
+    const segment = segments[i];
+    const currentChild = cursor[segment];
+    const clonedChild = currentChild && typeof currentChild === 'object' && !Array.isArray(currentChild)
+      ? { ...currentChild }
+      : {};
+    cursor[segment] = clonedChild;
+    cursor = clonedChild;
+  }
+  cursor[segments[segments.length - 1]] = value;
+}
+
+/**
+ * Preserves every field listed in `prevDoc.curated_fields` across automated merges
+ * and Google Places re-syncs, including cleared values and coupled derived fields.
+ *
+ * @param {object} prevDoc
+ * @param {object} nextDoc
+ * @param {object} merged
+ * @returns {object}
+ */
+function applyCuratedFieldsPreservation(prevDoc, nextDoc, merged) {
+  const prevCurated = normalizeCuratedFields(prevDoc?.curated_fields);
+  const nextCurated = normalizeCuratedFields(nextDoc?.curated_fields);
+  const combinedCurated = normalizeCuratedFields([...prevCurated, ...nextCurated]);
+
+  if (combinedCurated.length === 0) {
+    return merged;
+  }
+
+  const preserved = {
+    ...merged,
+    curated_fields: combinedCurated
+  };
+
+  if (prevCurated.length === 0) {
+    return preserved;
+  }
+
+  if (prevDoc?.needs_review === false) {
+    preserved.needs_review = false;
+    preserved.review_reason = null;
+  }
+
+  for (const fieldPath of prevCurated) {
+    const segments = fieldPath.split('.').map(s => s.trim()).filter(Boolean);
+    if (segments.length === 0 || segments.some(s => BLOCKED_CURATED_PATH_SEGMENTS.has(s))) {
+      continue;
+    }
+
+    const prevValue = getNestedFieldValue(prevDoc, segments);
+    if (prevValue !== undefined) {
+      setNestedFieldValue(preserved, segments, prevValue);
+    }
+
+    if (segments.length === 1) {
+      const derivedFields = COUPLED_DERIVED_CURATED_FIELDS[segments[0]] || [];
+      for (const derivedField of derivedFields) {
+        if (Object.prototype.hasOwnProperty.call(prevDoc, derivedField) && prevDoc[derivedField] !== undefined) {
+          preserved[derivedField] = prevDoc[derivedField];
+        }
+      }
+    }
+  }
+
+  return preserved;
+}
+
 /**
  * Merges a previous Activity document with a newly crawled Activity document,
  * preserving `created_at` and human-approved curation when `prevDoc.needs_review === false`.
@@ -760,7 +886,11 @@ export function mergeActivityDocuments(prevDoc, nextDoc) {
     merged.source_keys = Array.from(new Set([...(prevDoc.source_keys || []), ...(nextDoc.source_keys || [])])).sort();
   }
 
-  return applyApprovedCurationPreservation(prevDoc, nextDoc, merged);
+  return applyCuratedFieldsPreservation(
+    prevDoc,
+    nextDoc,
+    applyApprovedCurationPreservation(prevDoc, nextDoc, merged)
+  );
 }
 
 /**
@@ -815,7 +945,11 @@ export function mergeEntityDocuments(prevDoc, nextDoc) {
     };
   }
 
-  return applyApprovedCurationPreservation(prevDoc, nextDoc, merged);
+  return applyCuratedFieldsPreservation(
+    prevDoc,
+    nextDoc,
+    applyApprovedCurationPreservation(prevDoc, nextDoc, merged)
+  );
 }
 
 /**

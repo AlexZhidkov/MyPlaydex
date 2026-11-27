@@ -9,6 +9,7 @@ import {
   normalizeSport,
   normalizeSubcategories,
   extractCanonicalEntities,
+  mergeActivityDocuments,
   mergeEntityDocuments
 } from '../src/sanitizer.js';
 
@@ -751,4 +752,178 @@ test('parseSchedule does not misclassify weekday names containing "T" (Tuesday/T
   assert.equal(thursdayActivity.schedule.start_date, '2026-11-26');
   assert.equal(thursdayActivity.schedule.start_time, '18:00');
   assert.equal(thursdayActivity.schedule.end_time, '20:00');
+});
+
+test('Issue #66: mergeActivityDocuments preserves curated_fields (including cleared values, dot paths, and coupled derived fields) while merging untouched fields and sources', () => {
+  const curatedSchedule = {
+    start_date: '2026-12-01',
+    end_date: '2026-12-01',
+    start_time: '18:30',
+    end_time: '20:00',
+    recurrence: 'none',
+    day_of_week: 2
+  };
+  const curatedExpireAt = '2026-12-03T16:00:00.000Z';
+
+  const prevActivity = {
+    id: 'stirling_curated_66',
+    source: 'stirling',
+    source_id: 'curated_66',
+    title: 'Curated Volleyball Social',
+    description: 'Admin-edited description',
+    category: 'sports',
+    subcategory: 'volleyball',
+    source_url: null,
+    verified: false,
+    cost: { is_free: true, display_price: 'Free' },
+    schedule: curatedSchedule,
+    expire_at: curatedExpireAt,
+    demographics: { gender: 'all', age: 'adults' },
+    sources: [{ source: 'stirling', source_id: 'curated_66', source_key: 'stirling_curated_66', source_url: null, verified: false }],
+    source_keys: ['stirling_curated_66'],
+    needs_review: false,
+    review_reason: null,
+    curated_fields: ['description', 'cost', 'schedule', 'source_url', 'verified', 'demographics.age']
+  };
+
+  const nextActivity = {
+    id: 'stirling_curated_66',
+    source: 'stirling',
+    source_id: 'curated_66',
+    title: 'Curated Volleyball Social',
+    description: 'Crawler-overwritten description',
+    category: 'community',
+    subcategory: 'volleyball',
+    source_url: 'https://stirling.wa.gov.au/events/66',
+    verified: true,
+    cost: { is_free: false, display_price: '$25' },
+    schedule: {
+      start_date: '2026-12-05',
+      end_date: '2026-12-05',
+      start_time: '10:00',
+      end_time: '12:00',
+      recurrence: 'none',
+      day_of_week: 6
+    },
+    expire_at: '2026-12-07T16:00:00.000Z',
+    demographics: { gender: 'women', age: 'youth' },
+    sources: [{ source: 'eventbrite', source_id: 'eb_66', source_key: 'eventbrite_eb_66', source_url: 'https://eventbrite.com.au/e/66', verified: true }],
+    source_keys: ['eventbrite_eb_66'],
+    needs_review: true,
+    review_reason: 'crawler_created'
+  };
+
+  const merged = mergeActivityDocuments(prevActivity, nextActivity);
+  assert.equal(merged.description, 'Admin-edited description');
+  assert.deepEqual(merged.cost, { is_free: true, display_price: 'Free' });
+  assert.deepEqual(merged.schedule, curatedSchedule);
+  assert.equal(merged.expire_at, curatedExpireAt);
+  assert.equal(merged.source_url, null);
+  assert.equal(merged.verified, false);
+  assert.equal(merged.demographics.age, 'adults');
+  // Untouched fields and Source References still update
+  assert.equal(merged.category, 'community');
+  assert.equal(merged.demographics.gender, 'women');
+  assert.deepEqual(merged.source_keys, ['eventbrite_eb_66', 'stirling_curated_66']);
+  assert.deepEqual(merged.curated_fields, ['description', 'cost', 'schedule', 'source_url', 'verified', 'demographics.age']);
+  assert.equal(merged.needs_review, false);
+  assert.equal(merged.review_reason, null);
+});
+
+test('Issue #66: mergeEntityDocuments preserves curated_fields on Organizers and Venues across Google Places re-syncs without regressing uncurated updates', () => {
+  const prevVenue = {
+    id: 'venue_curated_arena_qd66d1',
+    name: 'Curated Arena Name',
+    description: 'Admin-curated venue description',
+    address: '100 Admin St, Perth WA 6000',
+    coordinates: { lat: -31.9501, lng: 115.8601 },
+    geohash: 'qd66hr9z1',
+    category: 'sports',
+    subcategory: 'basketball',
+    subcategories: ['basketball'],
+    google_place_id: 'ChIJ_venue_66',
+    needs_review: false,
+    review_reason: null,
+    curated_fields: ['name', 'coordinates', 'category']
+  };
+
+  const googlePlacesVenueUpdate = {
+    id: 'venue_curated_arena_qd66d1',
+    source: 'google_places',
+    name: 'Google Places Raw Name',
+    description: 'Google Places description',
+    address: '100 Updated Google Rd, Perth WA 6000',
+    coordinates: { lat: -31.96, lng: 115.87 },
+    geohash: 'qd66hxxxx',
+    category: 'community',
+    subcategory: 'volleyball',
+    subcategories: ['volleyball'],
+    google_place_id: 'ChIJ_venue_66',
+    needs_review: true,
+    review_reason: 'crawler_created'
+  };
+
+  const mergedVenue = mergeEntityDocuments(prevVenue, googlePlacesVenueUpdate);
+  assert.equal(mergedVenue.name, 'Curated Arena Name');
+  assert.deepEqual(mergedVenue.coordinates, { lat: -31.9501, lng: 115.8601 });
+  assert.equal(mergedVenue.geohash, 'qd66hr9z1');
+  assert.equal(mergedVenue.category, 'sports');
+  // Untouched fields and subcategories still update
+  assert.equal(mergedVenue.address, '100 Updated Google Rd, Perth WA 6000');
+  assert.equal(mergedVenue.description, 'Google Places description');
+  assert.deepEqual(mergedVenue.subcategories, ['basketball', 'volleyball']);
+  assert.deepEqual(mergedVenue.curated_fields, ['name', 'coordinates', 'category']);
+  assert.equal(mergedVenue.needs_review, false);
+  assert.equal(mergedVenue.review_reason, null);
+
+  // Uncurated Venue from Google Places (no curated_fields) still receives updates
+  const uncuratedVenue = {
+    id: 'venue_uncurated_qd66d1',
+    name: 'Old Venue',
+    address: 'Old Address',
+    category: 'community',
+    subcategory: 'basketball',
+    subcategories: ['basketball'],
+    needs_review: false,
+    review_reason: null
+  };
+  const updatedUncuratedVenue = mergeEntityDocuments(uncuratedVenue, googlePlacesVenueUpdate);
+  assert.equal(updatedUncuratedVenue.name, 'Google Places Raw Name');
+  assert.equal(updatedUncuratedVenue.category, 'community');
+  assert.equal(updatedUncuratedVenue.curated_fields, undefined);
+
+  // Curated Organizer preserves curated_fields across Google Places re-sync
+  const prevOrg = {
+    id: 'org_curated_club_66',
+    name: 'Curated Perth Club',
+    website: 'https://curated-club.org.au',
+    contact: { email: 'admin@curated-club.org.au', phone: null, facebook: null },
+    address: 'Old Club Address',
+    category: 'sports',
+    subcategory: 'tennis',
+    subcategories: ['tennis'],
+    needs_review: false,
+    review_reason: null,
+    curated_fields: ['name', 'website', 'contact']
+  };
+  const nextOrg = {
+    id: 'org_curated_club_66',
+    source: 'google_places',
+    name: 'Google Places Club',
+    website: 'https://places.example.com',
+    contact: { email: 'places@example.com', phone: '08 9000 0000', facebook: null },
+    address: '123 New Place Rd, Perth WA 6000',
+    category: 'sports',
+    subcategory: 'pickleball',
+    subcategories: ['pickleball'],
+    needs_review: false,
+    review_reason: null
+  };
+  const mergedOrg = mergeEntityDocuments(prevOrg, nextOrg);
+  assert.equal(mergedOrg.name, 'Curated Perth Club');
+  assert.equal(mergedOrg.website, 'https://curated-club.org.au');
+  assert.deepEqual(mergedOrg.contact, { email: 'admin@curated-club.org.au', phone: null, facebook: null });
+  assert.equal(mergedOrg.address, '123 New Place Rd, Perth WA 6000');
+  assert.deepEqual(mergedOrg.subcategories, ['tennis', 'pickleball']);
+  assert.deepEqual(mergedOrg.curated_fields, ['name', 'website', 'contact']);
 });

@@ -41,5 +41,5 @@ An external platform listing (such as an Eventbrite, Humanitix, Meetup, Facebook
 _Avoid_: Mirror, Alias, External Copy, Child Listing
 
 **Admin**:
-An authenticated platform operator authorized to verify, edit, and remove published Listings.
+An authenticated platform operator authorized to review, verify, edit, and remove published Listings.
 _Avoid_: Curator, Moderator, Staff

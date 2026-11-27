@@ -1396,6 +1396,203 @@ test('batchApplyActivityDeduplication coerces ISO expire_at and Timestamp-like c
   assert.match(res.errors[0].message, /Batch 2 write failed/);
 });
 
+test('Issue #66: batchUpsertVenues, batchUpsertOrganizers, and batchUpsertActivities preserve curated_fields across Google Places and crawler re-syncs', async () => {
+  const store = {
+    venues: new Map([
+      ['venue_curated_arena_qd66d1', {
+        id: 'venue_curated_arena_qd66d1',
+        name: 'Curated Arena Name',
+        address: '100 Admin Way, Perth WA 6000',
+        coordinates: { lat: -31.9501, lng: 115.8601 },
+        geohash: 'qd66hr9z1',
+        google_place_id: 'ChIJ_venue_curated_66',
+        category: 'sports',
+        subcategory: 'basketball',
+        subcategories: ['basketball'],
+        needs_review: false,
+        review_reason: null,
+        curated_fields: ['name', 'coordinates']
+      }]
+    ]),
+    organizers: new Map([
+      ['org_curated_club_66', {
+        id: 'org_curated_club_66',
+        name: 'Curated Club Name',
+        description: 'Admin-curated club bio',
+        address: '10 Old Club Rd, Perth WA 6000',
+        website: 'https://curated-club.org.au',
+        contact: { email: 'admin@curated-club.org.au', phone: null, facebook: null },
+        google_place_id: 'ChIJ_org_curated_66',
+        category: 'sports',
+        subcategory: 'tennis',
+        subcategories: ['tennis'],
+        needs_review: false,
+        review_reason: null,
+        curated_fields: ['name', 'description', 'website', 'contact']
+      }]
+    ]),
+    activities: new Map([
+      ['stirling_curated_act_66', {
+        id: 'stirling_curated_act_66',
+        region_id: 'perth',
+        source: 'stirling',
+        source_id: 'curated_act_66',
+        title: 'Curated Social Tennis',
+        description: 'Admin-curated activity description',
+        cost: { is_free: true, display_price: 'Free' },
+        source_url: null,
+        verified: false,
+        category: 'sports',
+        subcategory: 'tennis',
+        subcategories: ['tennis'],
+        sources: [{ source: 'stirling', source_id: 'curated_act_66', source_key: 'stirling_curated_act_66', source_url: null, verified: false }],
+        source_keys: ['stirling_curated_act_66'],
+        needs_review: false,
+        review_reason: null,
+        curated_fields: ['description', 'cost', 'source_url', 'verified']
+      }]
+    ]),
+    regions: new Map()
+  };
+
+  const mockDb = {
+    collection(colName) {
+      return {
+        doc(id) {
+          return { id, colName, path: `${colName}/${id}` };
+        },
+        where(field, op, value) {
+          return {
+            async get() {
+              const colMap = store[colName] || new Map();
+              const matched = [];
+              for (const [docId, data] of colMap.entries()) {
+                if (op === '==' && data[field] === value) {
+                  matched.push({ id: docId, exists: true, data: () => ({ ...data }) });
+                } else if (op === 'in' && Array.isArray(value) && value.includes(data[field])) {
+                  matched.push({ id: docId, exists: true, data: () => ({ ...data }) });
+                }
+              }
+              return { docs: matched };
+            }
+          };
+        }
+      };
+    },
+    async getAll(...docRefs) {
+      return docRefs.map(ref => {
+        const data = store[ref.colName]?.get(ref.id);
+        return data
+          ? { id: ref.id, exists: true, data: () => ({ ...data }) }
+          : { id: ref.id, exists: false, data: () => undefined };
+      });
+    },
+    batch() {
+      const ops = [];
+      return {
+        set(docRef, data) {
+          ops.push({ docRef, data });
+        },
+        async commit() {
+          for (const op of ops) {
+            store[op.docRef.colName]?.set(op.docRef.id, op.data);
+          }
+        }
+      };
+    }
+  };
+
+  const adapter = createFirestoreAdapter({ db: mockDb, dryRun: false });
+
+  await adapter.batchUpsertVenues([
+    {
+      id: 'venue_google_places_renamed_qd66d9',
+      source: 'google_places',
+      name: 'Google Places Venue Name',
+      address: '200 Updated Google Ave, Perth WA 6000',
+      coordinates: { lat: -31.99, lng: 115.99 },
+      geohash: 'qd66zzzzz',
+      google_place_id: 'ChIJ_venue_curated_66',
+      primary_type: 'sports_complex',
+      category: 'sports',
+      subcategory: 'volleyball',
+      subcategories: ['volleyball'],
+      needs_review: true,
+      review_reason: 'crawler_created'
+    }
+  ]);
+
+  await adapter.batchUpsertOrganizers([
+    {
+      id: 'org_google_places_renamed',
+      source: 'google_places',
+      name: 'Google Places Club Name',
+      description: 'Google Places bio',
+      address: '20 Updated Place Rd, Perth WA 6000',
+      website: 'https://places.example.com',
+      contact: { email: 'places@example.com', phone: '08 9111 2222', facebook: null },
+      google_place_id: 'ChIJ_org_curated_66',
+      primary_type: 'sports_club',
+      category: 'sports',
+      subcategory: 'pickleball',
+      subcategories: ['pickleball'],
+      needs_review: false,
+      review_reason: null
+    }
+  ]);
+
+  await adapter.batchUpsertActivities([
+    {
+      id: 'stirling_curated_act_66',
+      region_id: 'perth',
+      source: 'stirling',
+      source_id: 'curated_act_66',
+      title: 'Updated Crawler Title',
+      description: 'Crawler-overwritten description',
+      cost: { is_free: false, display_price: '$30' },
+      source_url: 'https://stirling.wa.gov.au/events/66',
+      verified: true,
+      category: 'community',
+      subcategory: 'tennis',
+      subcategories: ['tennis'],
+      sources: [{ source: 'eventbrite', source_id: 'eb_66', source_key: 'eventbrite_eb_66', source_url: 'https://eventbrite.com.au/e/66', verified: true }],
+      source_keys: ['eventbrite_eb_66'],
+      needs_review: true,
+      review_reason: 'crawler_created'
+    }
+  ]);
+
+  const savedVenue = store.venues.get('venue_curated_arena_qd66d1');
+  assert.equal(savedVenue.name, 'Curated Arena Name');
+  assert.deepEqual(savedVenue.coordinates, { lat: -31.9501, lng: 115.8601 });
+  assert.equal(savedVenue.geohash, 'qd66hr9z1');
+  assert.equal(savedVenue.address, '200 Updated Google Ave, Perth WA 6000');
+  assert.equal(savedVenue.primary_type, 'sports_complex');
+  assert.deepEqual(savedVenue.subcategories, ['basketball', 'volleyball']);
+  assert.deepEqual(savedVenue.curated_fields, ['name', 'coordinates']);
+  assert.equal(savedVenue.needs_review, false);
+
+  const savedOrg = store.organizers.get('org_curated_club_66');
+  assert.equal(savedOrg.name, 'Curated Club Name');
+  assert.equal(savedOrg.description, 'Admin-curated club bio');
+  assert.equal(savedOrg.website, 'https://curated-club.org.au');
+  assert.deepEqual(savedOrg.contact, { email: 'admin@curated-club.org.au', phone: null, facebook: null });
+  assert.equal(savedOrg.address, '20 Updated Place Rd, Perth WA 6000');
+  assert.equal(savedOrg.primary_type, 'sports_club');
+  assert.deepEqual(savedOrg.subcategories, ['tennis', 'pickleball']);
+  assert.deepEqual(savedOrg.curated_fields, ['name', 'description', 'website', 'contact']);
+
+  const savedAct = store.activities.get('stirling_curated_act_66');
+  assert.equal(savedAct.description, 'Admin-curated activity description');
+  assert.deepEqual(savedAct.cost, { is_free: true, display_price: 'Free' });
+  assert.equal(savedAct.source_url, null);
+  assert.equal(savedAct.verified, false);
+  assert.equal(savedAct.category, 'community');
+  assert.deepEqual(savedAct.source_keys, ['eventbrite_eb_66', 'stirling_curated_act_66']);
+  assert.deepEqual(savedAct.curated_fields, ['description', 'cost', 'source_url', 'verified']);
+  assert.equal(savedAct.needs_review, false);
+});
+
 
 
 

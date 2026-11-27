@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { deduplicateActivities, getSourcePriority } from '../src/activity-deduplicator.js';
+import { deduplicateActivities, getSourcePriority, planActivityDeduplication } from '../src/activity-deduplicator.js';
 import { runCrawlerHarness } from '../src/crawler-runner.js';
 import { runFacebookSync } from '../src/facebook-sync.js';
 
@@ -807,6 +807,126 @@ test('Issue #61: venue_website ranks above council/visit_perth/organizer_website
     assert.ok(merged.source_keys.includes('venue_website_optus_1'));
     assert.ok(merged.source_keys.includes(`${higher.source}_${higher.source_id}`));
   }
+});
+
+test('Issue #66: deduplicateActivities preserves curated_fields and suppresses organizer overwrite while merging new Source References', () => {
+  const curatedSchedule = {
+    start_date: '2026-12-10',
+    end_date: '2026-12-10',
+    start_time: '18:00',
+    end_time: '19:30',
+    recurrence: 'none',
+    day_of_week: 4
+  };
+  const curatedExisting = makeActivity({
+    id: 'facebook_curated_66',
+    source: 'facebook',
+    source_id: 'curated_66',
+    source_url: null,
+    raw_source_url: 'https://www.facebook.com/events/curated_66/',
+    verified: false,
+    title: 'Perth Social Basketball',
+    description: 'Admin-curated description',
+    cost: { is_free: true, display_price: 'Free' },
+    schedule: curatedSchedule,
+    expire_at: '2026-12-12T16:00:00.000Z',
+    demographics: { gender: 'all', age: 'adults' },
+    organizer: { id: 'org_curated_hoops', name: 'Curated Hoops' },
+    needs_review: true,
+    review_reason: 'crawler_created',
+    curated_fields: ['description', 'cost', 'source_url', 'verified', 'schedule', 'organizer']
+  });
+
+  const incomingEventbrite = makeActivity({
+    id: 'eventbrite_6601',
+    source: 'eventbrite',
+    source_id: '6601',
+    source_url: 'https://www.eventbrite.com.au/e/perth-social-basketball-6601',
+    raw_source_url: 'https://www.eventbrite.com.au/e/perth-social-basketball-6601',
+    verified: true,
+    title: 'Perth Social Basketball',
+    description: 'Eventbrite description',
+    cost: { is_free: false, display_price: '$15' },
+    schedule: {
+      start_date: '2026-12-10',
+      end_date: '2026-12-10',
+      start_time: '18:15',
+      end_time: '20:00',
+      recurrence: 'none',
+      day_of_week: 4
+    },
+    expire_at: '2026-12-13T16:00:00.000Z',
+    demographics: { gender: 'women', age: 'adults' },
+    organizer: { id: 'org_eb_hoops', name: 'Eventbrite Hoops' }
+  });
+  Object.defineProperty(incomingEventbrite, '_canonicalEntities', {
+    value: {
+      activity: incomingEventbrite,
+      organizer: { id: 'org_eb_hoops', name: 'Eventbrite Hoops' }
+    },
+    enumerable: false,
+    configurable: true,
+    writable: true
+  });
+
+  const res = deduplicateActivities([incomingEventbrite], [curatedExisting]);
+  assert.equal(res.activitiesToUpsert.length, 1);
+  const merged = res.activitiesToUpsert[0];
+
+  assert.equal(merged.id, 'facebook_curated_66');
+  assert.equal(merged.description, 'Admin-curated description');
+  assert.deepEqual(merged.cost, { is_free: true, display_price: 'Free' });
+  assert.equal(merged.source_url, null);
+  assert.equal(merged.verified, false);
+  assert.deepEqual(merged.schedule, curatedSchedule);
+  assert.equal(merged.expire_at, '2026-12-12T16:00:00.000Z');
+  assert.deepEqual(merged.organizer, { id: 'org_curated_hoops', name: 'Curated Hoops' });
+  assert.equal(merged._canonicalEntities.organizer, null);
+  // Untouched fields and Source References still merge
+  assert.equal(merged.demographics.gender, 'women');
+  assert.deepEqual(merged.source_keys, ['eventbrite_6601', 'facebook_curated_66']);
+  assert.deepEqual(merged.curated_fields, ['description', 'cost', 'source_url', 'verified', 'schedule', 'organizer']);
+});
+
+test('Issue #66: planActivityDeduplication preserves curated_fields when a newer duplicate has curated_fields and older survivor does not', () => {
+  const olderSurvivor = makeActivity({
+    id: 'facebook_older_66',
+    source: 'facebook',
+    source_id: 'older_66',
+    title: 'Perth Social Basketball',
+    description: 'Older uncurated description',
+    cost: { is_free: false, display_price: '$10' },
+    needs_review: false,
+    review_reason: null,
+    created_at: '2026-11-01T00:00:00.000Z'
+  });
+
+  const newerCurated = makeActivity({
+    id: 'eventbrite_newer_66',
+    source: 'eventbrite',
+    source_id: 'newer_66',
+    source_url: 'https://www.eventbrite.com.au/e/newer-66',
+    raw_source_url: 'https://www.eventbrite.com.au/e/newer-66',
+    verified: true,
+    title: 'Perth Social Basketball',
+    description: 'Admin-curated newer description',
+    cost: { is_free: true, display_price: 'Free' },
+    needs_review: false,
+    review_reason: null,
+    curated_fields: ['description', 'cost'],
+    created_at: '2026-11-05T00:00:00.000Z'
+  });
+
+  const plan = planActivityDeduplication([olderSurvivor, newerCurated]);
+  assert.equal(plan.activitiesToUpdate.length, 1);
+  assert.deepEqual(plan.activityIdsToDelete, ['eventbrite_newer_66']);
+  const updated = plan.activitiesToUpdate[0];
+  assert.equal(updated.id, 'facebook_older_66');
+  assert.equal(updated.created_at, '2026-11-01T00:00:00.000Z');
+  assert.equal(updated.description, 'Admin-curated newer description');
+  assert.deepEqual(updated.cost, { is_free: true, display_price: 'Free' });
+  assert.deepEqual(updated.curated_fields, ['description', 'cost']);
+  assert.deepEqual(updated.source_keys, ['eventbrite_newer_66', 'facebook_older_66']);
 });
 
 

@@ -651,7 +651,10 @@ export function deduplicateActivities(incomingActivities = [], existingActivitie
           ...incoming._canonicalEntities,
           activity: merged
         };
-        if (catalog[bestMergeIndex].needs_review === false) {
+        const existingCurated = Array.isArray(catalog[bestMergeIndex].curated_fields)
+          ? catalog[bestMergeIndex].curated_fields
+          : [];
+        if (catalog[bestMergeIndex].needs_review === false || existingCurated.includes('organizer')) {
           preservedEntities.organizer = null;
         }
         Object.defineProperty(merged, '_canonicalEntities', {
@@ -735,8 +738,14 @@ function flagBorderlineDoc(doc, candidate, dirtyIds, borderlinePairs) {
 }
 
 function mergeClusterPair(survivor, doc) {
-  if (survivor.needs_review !== false && doc.needs_review === false) {
-    // Keep the first-seen survivor identity/created_at and both Source References while preserving approved curation
+  const survivorCuratedCount = Array.isArray(survivor.curated_fields) ? survivor.curated_fields.length : 0;
+  const docCuratedCount = Array.isArray(doc.curated_fields) ? doc.curated_fields.length : 0;
+  const preferDocAsCuratedAnchor =
+    (survivor.needs_review !== false && doc.needs_review === false) ||
+    (survivorCuratedCount === 0 && docCuratedCount > 0);
+
+  if (preferDocAsCuratedAnchor) {
+    // Keep the first-seen survivor identity/created_at and both Source References while preserving approved/field-level curation
     const combinedRefs = [
       ...extractSourceReferences(survivor),
       ...extractSourceReferences(doc)
