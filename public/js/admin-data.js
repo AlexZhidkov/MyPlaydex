@@ -21,6 +21,30 @@ export const ENTITY_LABELS = Object.freeze({
   venues: 'Venues'
 });
 
+const LINKED_ACTIVITY_FIELD_BY_ENTITY = Object.freeze({
+  venues: 'venue.id',
+  organizers: 'organizer.id'
+});
+
+/**
+ * Returns true if deleting this entity type requires checking for linked Activities.
+ *
+ * @param {string} entityType
+ * @returns {boolean}
+ */
+export function requiresLinkedActivityCheck(entityType) {
+  return Object.hasOwn(LINKED_ACTIVITY_FIELD_BY_ENTITY, entityType);
+}
+
+function validateEntityAndDocId(entityType, docId) {
+  if (!ENTITY_TYPES.includes(entityType)) {
+    throw new Error(`Invalid entityType: ${entityType}`);
+  }
+  if (typeof docId !== 'string' || !docId.trim()) {
+    throw new Error('docId is required');
+  }
+}
+
 export const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
 
 export const REVIEW_REASON_LABELS = Object.freeze({
@@ -207,12 +231,7 @@ export function createAdminFirestoreRepository({ db, firestoreSdk, now = () => D
     },
 
     async approveListing(entityType, docId) {
-      if (!ENTITY_TYPES.includes(entityType)) {
-        throw new Error(`Invalid entityType: ${entityType}`);
-      }
-      if (typeof docId !== 'string' || !docId.trim()) {
-        throw new Error('docId is required');
-      }
+      validateEntityAndDocId(entityType, docId);
 
       const docRef = firestoreSdk.doc(db, entityType, docId);
       await firestoreSdk.updateDoc(docRef, {
@@ -221,6 +240,43 @@ export function createAdminFirestoreRepository({ db, firestoreSdk, now = () => D
         duplicate_candidate_id: firestoreSdk.deleteField(),
         updated_at: firestoreSdk.serverTimestamp()
       });
+    },
+
+    async findLinkedActivities(entityType, entityId) {
+      validateEntityAndDocId(entityType, entityId);
+      const linkedField = LINKED_ACTIVITY_FIELD_BY_ENTITY[entityType];
+      if (!linkedField) return [];
+
+      const colRef = firestoreSdk.collection(db, 'activities');
+      const q = firestoreSdk.query(colRef, firestoreSdk.where(linkedField, '==', entityId));
+      const snap = await firestoreSdk.getDocs(q);
+
+      return (snap?.docs || [])
+        .map((docSnap) => {
+          const raw = typeof docSnap.data === 'function' ? docSnap.data() : docSnap.data;
+          const safeData = raw && typeof raw === 'object' ? raw : {};
+          return {
+            id: safeData.id || docSnap.id,
+            docId: docSnap.id,
+            title: safeData.title || docSnap.id
+          };
+        })
+        .sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
+    },
+
+    async deleteListing(entityType, docId, { entityId = docId } = {}) {
+      validateEntityAndDocId(entityType, docId);
+
+      if (requiresLinkedActivityCheck(entityType)) {
+        const linkedActivities = await this.findLinkedActivities(entityType, entityId);
+        if (linkedActivities.length > 0) {
+          return { deleted: false, blocked: true, linkedActivities };
+        }
+      }
+
+      const docRef = firestoreSdk.doc(db, entityType, docId);
+      await firestoreSdk.deleteDoc(docRef);
+      return { deleted: true, blocked: false, linkedActivities: [] };
     }
   };
 }

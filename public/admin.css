@@ -183,6 +183,9 @@ body {
 .segmented-btn:focus-visible,
 .reason-select:focus-visible,
 .approve-btn:focus-visible,
+.delete-btn:focus-visible,
+.dialog-cancel-btn:focus-visible,
+.dialog-confirm-delete-btn:focus-visible,
 .listing-link:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 2px;
@@ -190,7 +193,10 @@ body {
 
 .sign-out-btn:disabled,
 .refresh-btn:disabled,
-.approve-btn:disabled {
+.approve-btn:disabled,
+.delete-btn:disabled,
+.dialog-cancel-btn:disabled,
+.dialog-confirm-delete-btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }
@@ -428,6 +434,9 @@ body {
 }
 
 .listing-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
   flex-shrink: 0;
 }
 
@@ -449,6 +458,143 @@ body {
 .approve-btn:hover:not(:disabled) {
   background: var(--primary-hover);
   border-color: var(--primary-hover);
+}
+
+.delete-btn,
+.dialog-confirm-delete-btn {
+  padding: 0.45rem 0.9rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent-danger-border);
+  background: var(--accent-danger-bg);
+  color: var(--accent-danger);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+.delete-btn:hover:not(:disabled),
+.dialog-confirm-delete-btn:hover:not(:disabled) {
+  border-color: var(--accent-danger);
+}
+
+.dialog-confirm-delete-btn {
+  background: var(--accent-danger);
+  border-color: var(--accent-danger);
+  color: #ffffff;
+}
+
+.dialog-cancel-btn {
+  padding: 0.45rem 0.9rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+.dialog-cancel-btn:hover:not(:disabled) {
+  background: var(--surface-subtle);
+}
+
+dialog:modal {
+  overscroll-behavior: contain;
+}
+
+dialog::backdrop {
+  overflow: hidden;
+  overscroll-behavior: contain;
+  background: rgba(15, 23, 42, 0.55);
+}
+
+.admin-dialog {
+  width: min(100% - 2rem, 520px);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.2);
+}
+
+.delete-dialog-body {
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.delete-dialog-title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  color: var(--text);
+}
+
+.dialog-note {
+  margin: 0;
+  font-size: var(--text-base);
+  color: var(--text-muted);
+}
+
+.dialog-note code,
+.linked-activity-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: var(--text-sm);
+  color: var(--text);
+  background: var(--surface-subtle);
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+}
+
+.linked-activities-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+}
+
+.linked-activity-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem 0.75rem;
+  padding: 0.55rem 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.linked-activity-item:first-child {
+  border-top: 0;
+}
+
+.linked-activity-title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
 }
 
 @media (max-width: 640px) {
@@ -486,8 +632,13 @@ body {
     gap: 0.7rem;
   }
 
-  .approve-btn {
+  .listing-actions {
     width: 100%;
+  }
+
+  .approve-btn,
+  .delete-btn {
+    flex: 1;
   }
 }
 
@@ -495,7 +646,10 @@ body {
   .sign-out-btn,
   .refresh-btn,
   .segmented-btn,
-  .approve-btn {
+  .approve-btn,
+  .delete-btn,
+  .dialog-cancel-btn,
+  .dialog-confirm-delete-btn {
     transition: none;
   }
 }

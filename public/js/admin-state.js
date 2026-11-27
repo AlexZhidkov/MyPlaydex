@@ -33,6 +33,8 @@ export function createAdminWorkspaceState() {
     error: null,
     actionError: null,
     approvingKeys: new Set(),
+    deletingKeys: new Set(),
+    deleteDialog: null,
     lastLoadedAtMs: null
   };
 }
@@ -201,6 +203,22 @@ export function getNewListingsLast24hViewModel(state, nowMs = Date.now()) {
   return { counts, groups };
 }
 
+function updateKeySet(keySet, key, shouldAdd) {
+  const nextKeys = new Set(keySet);
+  if (shouldAdd) {
+    nextKeys.add(key);
+  } else {
+    nextKeys.delete(key);
+  }
+  return nextKeys;
+}
+
+function resolveRemainingReasonFilter(unreviewed, entityFilter, reasonFilter) {
+  if (reasonFilter === 'all') return 'all';
+  const remainingOptions = getReviewReasonOptions(unreviewed, entityFilter);
+  return remainingOptions.some((opt) => opt.value === reasonFilter) ? reasonFilter : 'all';
+}
+
 /**
  * Marks a listing key as currently approving (or clears it).
  *
@@ -210,15 +228,80 @@ export function getNewListingsLast24hViewModel(state, nowMs = Date.now()) {
  * @returns {object}
  */
 export function markApproving(state, key, isApproving) {
-  const nextKeys = new Set(state.approvingKeys);
-  if (isApproving) {
-    nextKeys.add(key);
-  } else {
-    nextKeys.delete(key);
-  }
   return {
     ...state,
-    approvingKeys: nextKeys
+    approvingKeys: updateKeySet(state.approvingKeys, key, isApproving)
+  };
+}
+
+/**
+ * Marks a listing key as currently deleting (or clears it).
+ *
+ * @param {object} state
+ * @param {string} key
+ * @param {boolean} isDeleting
+ * @returns {object}
+ */
+export function markDeleting(state, key, isDeleting) {
+  return {
+    ...state,
+    deletingKeys: updateKeySet(state.deletingKeys, key, isDeleting)
+  };
+}
+
+/**
+ * Opens the delete confirmation / linked-Activity protection dialog.
+ *
+ * @param {object} state
+ * @param {{ entityType: string, docId: string, entityId?: string, name?: string }} target
+ * @param {'checking' | 'confirm' | 'blocked' | 'deleting' | 'error'} [status='confirm']
+ * @returns {object}
+ */
+export function openDeleteDialog(state, { entityType, docId, entityId = docId, name = docId }, status = 'confirm') {
+  return {
+    ...state,
+    actionError: null,
+    deleteDialog: {
+      status,
+      entityType,
+      docId,
+      entityId,
+      name,
+      linkedActivities: [],
+      error: null
+    }
+  };
+}
+
+/**
+ * Updates fields on the active delete dialog if open.
+ *
+ * @param {object} state
+ * @param {object} patch
+ * @returns {object}
+ */
+export function setDeleteDialogState(state, patch) {
+  if (!state.deleteDialog) return state;
+  return {
+    ...state,
+    deleteDialog: {
+      ...state.deleteDialog,
+      ...patch
+    }
+  };
+}
+
+/**
+ * Closes the delete dialog.
+ *
+ * @param {object} state
+ * @returns {object}
+ */
+export function closeDeleteDialog(state) {
+  if (!state.deleteDialog) return state;
+  return {
+    ...state,
+    deleteDialog: null
   };
 }
 
@@ -234,17 +317,14 @@ export function markApproving(state, key, isApproving) {
  */
 export function applyListingApproved(state, entityType, docId, nowMs = Date.now()) {
   const key = `${entityType}:${docId}`;
-  const nextKeys = new Set(state.approvingKeys);
-  nextKeys.delete(key);
+  const nextKeys = updateKeySet(state.approvingKeys, key, false);
 
   const nextUnreviewed = (state.unreviewed || []).filter((item) => item.key !== key);
-  let nextReasonFilter = state.reasonFilter;
-  if (nextReasonFilter !== 'all') {
-    const remainingOptions = getReviewReasonOptions(nextUnreviewed, state.entityFilter);
-    if (!remainingOptions.some((opt) => opt.value === nextReasonFilter)) {
-      nextReasonFilter = 'all';
-    }
-  }
+  const nextReasonFilter = resolveRemainingReasonFilter(
+    nextUnreviewed,
+    state.entityFilter,
+    state.reasonFilter
+  );
 
   const nextNewLast24h = (state.newLast24h || []).map((item) => {
     if (item.key !== key) return item;
@@ -263,6 +343,37 @@ export function applyListingApproved(state, entityType, docId, nowMs = Date.now(
     newLast24h: nextNewLast24h,
     reasonFilter: nextReasonFilter,
     approvingKeys: nextKeys,
+    actionError: null
+  };
+}
+
+/**
+ * Applies a successful Listing deletion to local state:
+ * removes the row from both Unreviewed and New (Last 24h) and closes the dialog.
+ *
+ * @param {object} state
+ * @param {'activities' | 'organizers' | 'venues'} entityType
+ * @param {string} docId
+ * @returns {object}
+ */
+export function applyListingDeleted(state, entityType, docId) {
+  const key = `${entityType}:${docId}`;
+  const nextUnreviewed = (state.unreviewed || []).filter((item) => item.key !== key);
+  const nextNewLast24h = (state.newLast24h || []).filter((item) => item.key !== key);
+  const nextReasonFilter = resolveRemainingReasonFilter(
+    nextUnreviewed,
+    state.entityFilter,
+    state.reasonFilter
+  );
+
+  return {
+    ...state,
+    unreviewed: nextUnreviewed,
+    newLast24h: nextNewLast24h,
+    reasonFilter: nextReasonFilter,
+    approvingKeys: updateKeySet(state.approvingKeys, key, false),
+    deletingKeys: updateKeySet(state.deletingKeys, key, false),
+    deleteDialog: null,
     actionError: null
   };
 }

@@ -136,6 +136,8 @@ test('public/admin.html includes noindex/nofollow, email display, Sign out butto
   assert.match(adminHtml, /id="admin-email"/);
   assert.match(adminHtml, /<button[^>]*id="sign-out-btn"[^>]*>Sign out<\/button>/);
   assert.match(adminHtml, /id="admin-curation"/);
+  assert.match(adminHtml, /<dialog[^>]*id="admin-delete-dialog"[^>]*aria-labelledby="delete-dialog-title"/);
+  assert.doesNotMatch(adminHtml, /role="dialog"|aria-modal/);
   assert.match(adminHtml, /<script\s+type="module"\s+src="\.\/js\/admin\.js"><\/script>/);
 });
 
@@ -191,4 +193,95 @@ test('createAdminWorkspaceController hydrates both views, switches without reloa
   assert.equal(controller.getState().newLast24h[0].needsReview, false);
   assert.equal(approvedCalls.length, 2);
   assert.ok(snapshots.length >= 4);
+});
+
+test('createAdminWorkspaceController handles Activity deletion, blocked Venue/Organizer deletion, unreferenced deletion, and errors', async () => {
+  const nowMs = Date.UTC(2026, 10, 27, 12, 0, 0);
+  const deletedCalls = [];
+  let linkedByEntity = {
+    'venues:v_ref': [{ id: 'a1', docId: 'a1', title: 'Social Netball' }],
+    'venues:v_free': [],
+    'organizers:o_ref': [{ id: 'a1', docId: 'a1', title: 'Social Netball' }],
+    'organizers:o_free': []
+  };
+  let shouldFailLinkedQuery = false;
+  let shouldFailDelete = false;
+
+  const repository = {
+    async fetchUnreviewedListings() {
+      return [
+        { key: 'activities:a1', docId: 'a1', id: 'a1', entityType: 'activities', name: 'Social Netball', needsReview: true, createdAtMs: nowMs - 1000 },
+        { key: 'venues:v_ref', docId: 'v_ref', id: 'v_ref', entityType: 'venues', name: 'Referenced Venue', needsReview: true, createdAtMs: nowMs - 2000 },
+        { key: 'organizers:o_free', docId: 'o_free', id: 'o_free', entityType: 'organizers', name: 'Empty Club', needsReview: true, createdAtMs: nowMs - 3000 }
+      ];
+    },
+    async fetchNewListingsLast24h() {
+      return [
+        { key: 'activities:a1', docId: 'a1', id: 'a1', entityType: 'activities', name: 'Social Netball', createdAtMs: nowMs - 1000 },
+        { key: 'venues:v_free', docId: 'v_free', id: 'v_free', entityType: 'venues', name: 'Unused Venue', createdAtMs: nowMs - 1500 },
+        { key: 'organizers:o_ref', docId: 'o_ref', id: 'o_ref', entityType: 'organizers', name: 'Busy Club', createdAtMs: nowMs - 2500 }
+      ];
+    },
+    async approveListing() {},
+    async findLinkedActivities(entityType, entityId) {
+      if (shouldFailLinkedQuery) throw new Error('network-error');
+      return linkedByEntity[`${entityType}:${entityId}`] || [];
+    },
+    async deleteListing(entityType, docId) {
+      deletedCalls.push({ entityType, docId });
+      if (shouldFailDelete) throw new Error('permission-denied');
+      return { deleted: true, blocked: false, linkedActivities: [] };
+    }
+  };
+
+  const controller = createAdminWorkspaceController({ repository, now: () => nowMs });
+  await controller.loadAll();
+
+  // 1. Referenced Venue is blocked with linked activities
+  await controller.requestDelete('venues', 'v_ref');
+  assert.equal(controller.getState().deleteDialog.status, 'blocked');
+  assert.equal(controller.getState().deleteDialog.linkedActivities.length, 1);
+  assert.equal(deletedCalls.length, 0);
+  controller.cancelDelete();
+  assert.equal(controller.getState().deleteDialog, null);
+
+  // 2. Referenced Organizer is blocked with linked activities
+  await controller.requestDelete('organizers', 'o_ref');
+  assert.equal(controller.getState().deleteDialog.status, 'blocked');
+  assert.equal(controller.getState().deleteDialog.linkedActivities[0].id, 'a1');
+  controller.cancelDelete();
+
+  // 3. Linked-activity query failure surfaces error state
+  shouldFailLinkedQuery = true;
+  await controller.requestDelete('venues', 'v_free');
+  assert.equal(controller.getState().deleteDialog.status, 'error');
+  controller.cancelDelete();
+  shouldFailLinkedQuery = false;
+
+  // 4. Activity deletion: confirm -> fail once -> succeed and remove from both lists
+  await controller.requestDelete('activities', 'a1');
+  assert.equal(controller.getState().deleteDialog.status, 'confirm');
+
+  shouldFailDelete = true;
+  await controller.confirmDelete();
+  assert.equal(controller.getState().deleteDialog.status, 'confirm');
+  assert.match(controller.getState().deleteDialog.error, /Unable to delete/i);
+  assert.equal(controller.getState().unreviewed.some((item) => item.key === 'activities:a1'), true);
+
+  shouldFailDelete = false;
+  await controller.confirmDelete();
+  assert.equal(controller.getState().deleteDialog, null);
+  assert.equal(controller.getState().unreviewed.some((item) => item.key === 'activities:a1'), false);
+  assert.equal(controller.getState().newLast24h.some((item) => item.key === 'activities:a1'), false);
+
+  // 5. Unreferenced Organizer and Venue can be deleted after confirmation
+  await controller.requestDelete('organizers', 'o_free');
+  assert.equal(controller.getState().deleteDialog.status, 'confirm');
+  await controller.confirmDelete();
+  assert.equal(controller.getState().unreviewed.some((item) => item.key === 'organizers:o_free'), false);
+
+  await controller.requestDelete('venues', 'v_free');
+  assert.equal(controller.getState().deleteDialog.status, 'confirm');
+  await controller.confirmDelete();
+  assert.equal(controller.getState().newLast24h.some((item) => item.key === 'venues:v_free'), false);
 });

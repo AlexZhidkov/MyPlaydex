@@ -13,7 +13,8 @@ import {
 } from './auth-client.js';
 import {
   loadFirebaseFirestoreClient,
-  createAdminFirestoreRepository
+  createAdminFirestoreRepository,
+  requiresLinkedActivityCheck
 } from './admin-data.js';
 import {
   createAdminWorkspaceState,
@@ -21,9 +22,14 @@ import {
   setEntityFilter,
   setReasonFilter,
   markApproving,
-  applyListingApproved
+  markDeleting,
+  openDeleteDialog,
+  setDeleteDialogState,
+  closeDeleteDialog,
+  applyListingApproved,
+  applyListingDeleted
 } from './admin-state.js';
-import { renderWorkspaceHtml } from './admin-ui.js';
+import { renderWorkspaceHtml, renderDeleteDialogHtml } from './admin-ui.js';
 
 /**
  * Executes the /admin session guard and wires the sign-out action.
@@ -148,7 +154,7 @@ export function createAdminWorkspaceController({
 
     async approve(entityType, docId) {
       const key = `${entityType}:${docId}`;
-      if (state.approvingKeys.has(key)) return state;
+      if (state.approvingKeys.has(key) || state.deletingKeys.has(key)) return state;
 
       commit({ ...markApproving(state, key, true), actionError: null });
       try {
@@ -160,11 +166,105 @@ export function createAdminWorkspaceController({
           actionError: 'Unable to approve this listing right now. Please try again.'
         });
       }
+    },
+
+    async requestDelete(entityType, docId) {
+      const key = `${entityType}:${docId}`;
+      const listing =
+        state.unreviewed.find((item) => item.key === key) ||
+        state.newLast24h.find((item) => item.key === key) ||
+        { entityType, docId, id: docId, name: docId };
+
+      const target = {
+        entityType,
+        docId,
+        entityId: listing.id || docId,
+        name: listing.name || docId
+      };
+
+      if (!requiresLinkedActivityCheck(entityType)) {
+        return commit(openDeleteDialog(state, target, 'confirm'));
+      }
+
+      const isActiveDialogForTarget = () =>
+        state.deleteDialog &&
+        state.deleteDialog.entityType === entityType &&
+        state.deleteDialog.docId === docId;
+
+      commit(openDeleteDialog(state, target, 'checking'));
+      try {
+        const linkedActivities = await repository.findLinkedActivities(entityType, target.entityId);
+        if (!isActiveDialogForTarget()) return state;
+        if (linkedActivities.length > 0) {
+          return commit(
+            setDeleteDialogState(state, {
+              status: 'blocked',
+              linkedActivities,
+              error: null
+            })
+          );
+        }
+        return commit(
+          setDeleteDialogState(state, {
+            status: 'confirm',
+            linkedActivities: [],
+            error: null
+          })
+        );
+      } catch {
+        if (!isActiveDialogForTarget()) return state;
+        return commit(
+          setDeleteDialogState(state, {
+            status: 'error',
+            error: 'Unable to check linked Activities right now. Please try again.'
+          })
+        );
+      }
+    },
+
+    cancelDelete() {
+      return commit(closeDeleteDialog(state));
+    },
+
+    async confirmDelete() {
+      const dialog = state.deleteDialog;
+      if (!dialog || dialog.status !== 'confirm') return state;
+
+      const key = `${dialog.entityType}:${dialog.docId}`;
+      commit(
+        setDeleteDialogState(markDeleting(state, key, true), {
+          status: 'deleting',
+          error: null
+        })
+      );
+
+      try {
+        const result = await repository.deleteListing(dialog.entityType, dialog.docId, {
+          entityId: dialog.entityId
+        });
+        if (result?.blocked) {
+          return commit(
+            setDeleteDialogState(markDeleting(state, key, false), {
+              status: 'blocked',
+              linkedActivities: result.linkedActivities || [],
+              error: null
+            })
+          );
+        }
+        return commit(applyListingDeleted(state, dialog.entityType, dialog.docId));
+      } catch {
+        return commit(
+          setDeleteDialogState(markDeleting(state, key, false), {
+            status: 'confirm',
+            error: 'Unable to delete this listing right now. Please try again.'
+          })
+        );
+      }
     }
   };
 }
 
-function bindWorkspaceEvents(curationEl, controller) {
+function bindWorkspaceEvents(curationEl, deleteDialogEl, controller) {
   curationEl.addEventListener('click', (event) => {
     const target = event.target?.closest?.('[data-action]');
     if (!target) return;
@@ -178,6 +278,8 @@ function bindWorkspaceEvents(curationEl, controller) {
       controller.loadAll();
     } else if (action === 'approve') {
       controller.approve(target.dataset.entityType, target.dataset.docId);
+    } else if (action === 'delete') {
+      controller.requestDelete(target.dataset.entityType, target.dataset.docId);
     }
   });
 
@@ -187,6 +289,35 @@ function bindWorkspaceEvents(curationEl, controller) {
       controller.selectReasonFilter(target.value);
     }
   });
+
+  if (deleteDialogEl) {
+    deleteDialogEl.addEventListener('click', (event) => {
+      const target = event.target?.closest?.('[data-action]');
+      if (!target) return;
+
+      const action = target.dataset.action;
+      if (action === 'cancel-delete') {
+        controller.cancelDelete();
+      } else if (action === 'confirm-delete') {
+        controller.confirmDelete();
+      }
+    });
+
+    deleteDialogEl.addEventListener('close', () => {
+      deleteDialogEl.returnValue = '';
+      if (controller.getState().deleteDialog) {
+        controller.cancelDelete();
+      }
+    });
+  }
+}
+
+function resetDeleteDialogElement(deleteDialogEl) {
+  if (!deleteDialogEl) return;
+  if (deleteDialogEl.open && typeof deleteDialogEl.close === 'function') {
+    deleteDialogEl.close();
+  }
+  deleteDialogEl.innerHTML = '';
 }
 
 /**
@@ -202,6 +333,7 @@ export async function initAdminPage(options = {}) {
   const emailEl = options.emailEl ?? doc?.getElementById('admin-email') ?? null;
   const signOutBtn = options.signOutBtn ?? doc?.getElementById('sign-out-btn') ?? null;
   const curationEl = options.curationEl ?? doc?.getElementById('admin-curation') ?? null;
+  const deleteDialogEl = options.deleteDialogEl ?? doc?.getElementById('admin-delete-dialog') ?? null;
 
   const setStatus = options.setStatus ?? ((message) => {
     if (statusEl) {
@@ -231,6 +363,7 @@ export async function initAdminPage(options = {}) {
         if (workspaceEl) workspaceEl.hidden = true;
         if (emailEl) emailEl.textContent = '';
         if (curationEl) curationEl.innerHTML = '';
+        resetDeleteDialogElement(deleteDialogEl);
       }
     });
 
@@ -250,9 +383,19 @@ export async function initAdminPage(options = {}) {
           repository,
           onStateChange: (nextState) => {
             curationEl.innerHTML = renderWorkspaceHtml(nextState);
+            if (deleteDialogEl) {
+              if (nextState.deleteDialog) {
+                deleteDialogEl.innerHTML = renderDeleteDialogHtml(nextState.deleteDialog);
+                if (!deleteDialogEl.open && typeof deleteDialogEl.showModal === 'function') {
+                  deleteDialogEl.showModal();
+                }
+              } else {
+                resetDeleteDialogElement(deleteDialogEl);
+              }
+            }
           }
         });
-        bindWorkspaceEvents(curationEl, controller);
+        bindWorkspaceEvents(curationEl, deleteDialogEl, controller);
         await controller.loadAll();
       }
     }

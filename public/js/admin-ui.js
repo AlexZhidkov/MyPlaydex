@@ -6,7 +6,8 @@
 import {
   ENTITY_TYPES,
   ENTITY_LABELS,
-  formatReviewReason
+  formatReviewReason,
+  requiresLinkedActivityCheck
 } from './admin-data.js';
 import {
   VIEWS,
@@ -113,7 +114,7 @@ function buildMetadataParts(item, nowMs) {
   return parts;
 }
 
-function renderListingRow(item, { showApprove, approvingKeys, nowMs }) {
+function renderListingRow(item, { showApprove, approvingKeys, deletingKeys, nowMs }) {
   const safeName = escapeHtml(item.name);
   const safeHref = getSafeHttpUrl(item.sourceUrl);
   const titleHtml = safeHref
@@ -135,18 +136,31 @@ function renderListingRow(item, { showApprove, approvingKeys, nowMs }) {
   }
 
   const isApproving = approvingKeys?.has(item.key);
-  const actionHtml = showApprove
-    ? `<div class="listing-actions">
-        <button
+  const isDeleting = deletingKeys?.has(item.key);
+  const isBusy = isApproving || isDeleting;
+  const approveButtonHtml = showApprove
+    ? `<button
           type="button"
           class="approve-btn"
           data-action="approve"
           data-entity-type="${escapeHtml(item.entityType)}"
           data-doc-id="${escapeHtml(item.docId)}"
-          ${isApproving ? 'disabled' : ''}
-        >${isApproving ? 'Approving...' : 'Approve'}</button>
-      </div>`
+          ${isBusy ? 'disabled' : ''}
+        >${isApproving ? 'Approving...' : 'Approve'}</button>`
     : '';
+  const deleteButtonHtml = `<button
+        type="button"
+        class="delete-btn"
+        data-action="delete"
+        data-entity-type="${escapeHtml(item.entityType)}"
+        data-doc-id="${escapeHtml(item.docId)}"
+        ${isBusy ? 'disabled' : ''}
+      >${isDeleting ? 'Deleting...' : 'Delete'}</button>`;
+
+  const actionHtml = `<div class="listing-actions">
+        ${approveButtonHtml}
+        ${deleteButtonHtml}
+      </div>`;
 
   return `<li class="listing-row">
     <div class="listing-main">
@@ -275,6 +289,7 @@ export function renderWorkspaceHtml(state, nowMs = state.lastLoadedAtMs ?? Date.
             renderListingRow(item, {
               showApprove: true,
               approvingKeys: state.approvingKeys,
+              deletingKeys: state.deletingKeys,
               nowMs
             })
           )
@@ -302,6 +317,7 @@ export function renderWorkspaceHtml(state, nowMs = state.lastLoadedAtMs ?? Date.
               renderListingRow(item, {
                 showApprove: false,
                 approvingKeys: state.approvingKeys,
+                deletingKeys: state.deletingKeys,
                 nowMs
               })
             )
@@ -321,4 +337,92 @@ export function renderWorkspaceHtml(state, nowMs = state.lastLoadedAtMs ?? Date.
     ${actionErrorHtml}
     ${filterBarHtml}
     <div class="groups-stack">${groupsHtml}</div>`;
+}
+
+function wrapDeleteDialogBody(title, contentHtml) {
+  return `<div class="delete-dialog-body">
+    <h1 id="delete-dialog-title" class="delete-dialog-title">${escapeHtml(title)}</h1>
+    ${contentHtml}
+  </div>`;
+}
+
+function renderDialogCancelButton(label, { disabled = false } = {}) {
+  return `<button type="button" class="dialog-cancel-btn" data-action="cancel-delete" autofocus${disabled ? ' disabled' : ''}>${escapeHtml(label)}</button>`;
+}
+
+/**
+ * Renders the modal dialog content for Listing deletion and linked-Activity protection.
+ *
+ * @param {object | null | undefined} deleteDialog
+ * @returns {string}
+ */
+export function renderDeleteDialogHtml(deleteDialog) {
+  if (!deleteDialog) return '';
+
+  const entitySingular = ENTITY_SINGULAR_LABELS[deleteDialog.entityType] || 'Listing';
+  const safeName = escapeHtml(deleteDialog.name || deleteDialog.docId);
+  const safeId = escapeHtml(deleteDialog.entityId || deleteDialog.docId);
+
+  if (deleteDialog.status === 'checking') {
+    return wrapDeleteDialogBody(
+      'Checking linked Activities...',
+      `<p class="dialog-note">Checking whether any Activities reference <strong>${safeName}</strong> (<code>${safeId}</code>).</p>
+      <div class="dialog-actions">${renderDialogCancelButton('Cancel')}</div>`
+    );
+  }
+
+  if (deleteDialog.status === 'blocked') {
+    const linked = Array.isArray(deleteDialog.linkedActivities) ? deleteDialog.linkedActivities : [];
+    const count = linked.length;
+    const activityNoun = count === 1 ? 'Activity' : 'Activities';
+    const itemsHtml = linked
+      .map(
+        (act) => `<li class="linked-activity-item">
+          <span class="linked-activity-title">${escapeHtml(act.title || act.id)}</span>
+          <code class="linked-activity-id">${escapeHtml(act.id)}</code>
+        </li>`
+      )
+      .join('');
+
+    return wrapDeleteDialogBody(
+      `Cannot delete ${entitySingular}`,
+      `<p class="dialog-note">
+        <strong>${safeName}</strong> (<code>${safeId}</code>) is referenced by
+        <strong>${count} ${activityNoun}</strong>. Re-link or delete those Activities first.
+      </p>
+      <ul class="linked-activities-list" aria-label="Linked Activities">${itemsHtml}</ul>
+      <form method="dialog" class="dialog-actions">
+        <button type="submit" value="cancel" class="dialog-cancel-btn" data-action="cancel-delete" autofocus>Close</button>
+      </form>`
+    );
+  }
+
+  if (deleteDialog.status === 'error') {
+    return wrapDeleteDialogBody(
+      `Unable to delete ${entitySingular}`,
+      `<p class="workspace-alert" role="alert">${escapeHtml(deleteDialog.error || 'Unable to check linked Activities right now.')}</p>
+      <div class="dialog-actions">${renderDialogCancelButton('Close')}</div>`
+    );
+  }
+
+  const isDeleting = deleteDialog.status === 'deleting';
+  const unreferencedNote = requiresLinkedActivityCheck(deleteDialog.entityType)
+    ? `<p class="dialog-note">No linked Activities reference this ${escapeHtml(entitySingular.toLowerCase())}.</p>`
+    : '';
+  const errorHtml = deleteDialog.error
+    ? `<p class="workspace-alert" role="alert">${escapeHtml(deleteDialog.error)}</p>`
+    : '';
+
+  return wrapDeleteDialogBody(
+    `Delete ${entitySingular}?`,
+    `<p class="dialog-note">
+      This permanently removes <strong>${safeName}</strong> (<code>${safeId}</code>) from Firestore.
+    </p>
+    ${unreferencedNote}
+    ${errorHtml}
+    <div class="dialog-actions">
+      ${renderDialogCancelButton('Cancel', { disabled: isDeleting })}
+      <button type="button" class="dialog-confirm-delete-btn" data-action="confirm-delete"${isDeleting ? ' disabled' : ''}>${isDeleting ? 'Deleting...' : `Delete ${escapeHtml(entitySingular)}`}</button>
+    </div>`
+  );
 }

@@ -179,6 +179,100 @@ test('createAdminFirestoreRepository runs single-field queries and 1-click Appro
   });
 });
 
+test('createAdminFirestoreRepository.findLinkedActivities queries venue.id and organizer.id deterministically', async () => {
+  const calls = { wheres: [] };
+  const activitiesDocs = [
+    { id: 'act_b', data: () => ({ id: 'act_b', title: 'Zumba Class' }) },
+    { id: 'act_a', data: () => ({ id: 'act_a', title: 'Aqua Aerobics' }) }
+  ];
+
+  const firestoreSdk = {
+    collection(db, name) {
+      return { db, name };
+    },
+    where(field, op, value) {
+      const w = { field, op, value };
+      calls.wheres.push(w);
+      return w;
+    },
+    query(colRef, ...constraints) {
+      assert.equal(constraints.length, 1);
+      return { colRef, constraints };
+    },
+    async getDocs(q) {
+      assert.equal(q.colRef.name, 'activities');
+      return { docs: activitiesDocs };
+    }
+  };
+
+  const repo = createAdminFirestoreRepository({ db: { name: 'mock-db' }, firestoreSdk });
+
+  assert.deepEqual(await repo.findLinkedActivities('activities', 'act_a'), []);
+
+  const venueLinked = await repo.findLinkedActivities('venues', 'venue_beatty');
+  assert.deepEqual(calls.wheres[0], { field: 'venue.id', op: '==', value: 'venue_beatty' });
+  assert.deepEqual(venueLinked, [
+    { id: 'act_a', docId: 'act_a', title: 'Aqua Aerobics' },
+    { id: 'act_b', docId: 'act_b', title: 'Zumba Class' }
+  ]);
+
+  const orgLinked = await repo.findLinkedActivities('organizers', 'org_perth');
+  assert.deepEqual(calls.wheres[1], { field: 'organizer.id', op: '==', value: 'org_perth' });
+  assert.equal(orgLinked.length, 2);
+});
+
+test('createAdminFirestoreRepository.deleteListing deletes Activities, blocks referenced Venues/Organizers, and deletes unreferenced ones', async () => {
+  const deletedRefs = [];
+  let linkedByField = {
+    'venue.id': [{ id: 'act_1', data: () => ({ id: 'act_1', title: 'Saturday Futsal' }) }],
+    'organizer.id': []
+  };
+
+  const firestoreSdk = {
+    collection(db, name) {
+      return { db, name };
+    },
+    where(field, op, value) {
+      return { field, op, value };
+    },
+    query(colRef, constraint) {
+      return { colRef, constraint };
+    },
+    async getDocs(q) {
+      return { docs: linkedByField[q.constraint.field] || [] };
+    },
+    doc(db, colName, docId) {
+      return { db, colName, docId };
+    },
+    async deleteDoc(docRef) {
+      deletedRefs.push(docRef);
+    }
+  };
+
+  const repo = createAdminFirestoreRepository({ db: { name: 'mock-db' }, firestoreSdk });
+
+  // Activity deletes directly without querying linked activities
+  const actResult = await repo.deleteListing('activities', 'act_1');
+  assert.deepEqual(actResult, { deleted: true, blocked: false, linkedActivities: [] });
+  assert.equal(deletedRefs.length, 1);
+  assert.deepEqual(deletedRefs[0], { db: { name: 'mock-db' }, colName: 'activities', docId: 'act_1' });
+
+  // Referenced Venue is blocked and deleteDoc is not called
+  const blockedVenue = await repo.deleteListing('venues', 'venue_1');
+  assert.equal(blockedVenue.deleted, false);
+  assert.equal(blockedVenue.blocked, true);
+  assert.deepEqual(blockedVenue.linkedActivities, [
+    { id: 'act_1', docId: 'act_1', title: 'Saturday Futsal' }
+  ]);
+  assert.equal(deletedRefs.length, 1);
+
+  // Unreferenced Organizer deletes cleanly
+  const orgResult = await repo.deleteListing('organizers', 'org_1');
+  assert.deepEqual(orgResult, { deleted: true, blocked: false, linkedActivities: [] });
+  assert.equal(deletedRefs.length, 2);
+  assert.deepEqual(deletedRefs[1], { db: { name: 'mock-db' }, colName: 'organizers', docId: 'org_1' });
+});
+
 import {
   VIEWS,
   createAdminWorkspaceState,
@@ -190,7 +284,12 @@ import {
   getVisibleUnreviewedListings,
   getNewListingsLast24hViewModel,
   markApproving,
-  applyListingApproved
+  applyListingApproved,
+  openDeleteDialog,
+  setDeleteDialogState,
+  closeDeleteDialog,
+  markDeleting,
+  applyListingDeleted
 } from '../public/js/admin-state.js';
 
 test('admin-state defaults to Unreviewed Listings and switches views cleanly', () => {
@@ -279,7 +378,54 @@ test('applyListingApproved removes row from unreviewed and updates matching row 
   assert.equal(state.newLast24h[0].updatedAtMs, nowMs);
 });
 
-import { renderWorkspaceHtml } from '../public/js/admin-ui.js';
+test('admin-state manages deleteDialog lifecycle, markDeleting, and applyListingDeleted', () => {
+  let state = {
+    ...createAdminWorkspaceState(),
+    reasonFilter: 'unmatched_venue',
+    unreviewed: [
+      { key: 'activities:a1', docId: 'a1', entityType: 'activities', name: 'Yoga', reviewReason: 'unmatched_venue' }
+    ],
+    newLast24h: [
+      { key: 'activities:a1', docId: 'a1', entityType: 'activities', name: 'Yoga' },
+      { key: 'venues:v1', docId: 'v1', entityType: 'venues', name: 'Beatty Park' }
+    ]
+  };
+
+  assert.equal(state.deleteDialog, null);
+  assert.equal(state.deletingKeys.size, 0);
+
+  state = openDeleteDialog(state, { entityType: 'activities', docId: 'a1', entityId: 'a1', name: 'Yoga' }, 'confirm');
+  assert.deepEqual(state.deleteDialog, {
+    status: 'confirm',
+    entityType: 'activities',
+    docId: 'a1',
+    entityId: 'a1',
+    name: 'Yoga',
+    linkedActivities: [],
+    error: null
+  });
+
+  state = setDeleteDialogState(state, { status: 'deleting' });
+  assert.equal(state.deleteDialog.status, 'deleting');
+
+  state = markDeleting(state, 'activities:a1', true);
+  assert.equal(state.deletingKeys.has('activities:a1'), true);
+
+  state = applyListingDeleted(state, 'activities', 'a1');
+  assert.equal(state.unreviewed.length, 0);
+  assert.equal(state.newLast24h.length, 1);
+  assert.equal(state.newLast24h[0].key, 'venues:v1');
+  assert.equal(state.reasonFilter, 'all');
+  assert.equal(state.deletingKeys.has('activities:a1'), false);
+  assert.equal(state.deleteDialog, null);
+  assert.equal(state.actionError, null);
+
+  state = openDeleteDialog(state, { entityType: 'venues', docId: 'v1', entityId: 'v1', name: 'Beatty Park' }, 'checking');
+  state = closeDeleteDialog(state);
+  assert.equal(state.deleteDialog, null);
+});
+
+import { renderWorkspaceHtml, renderDeleteDialogHtml } from '../public/js/admin-ui.js';
 
 test('renderWorkspaceHtml renders Unreviewed Listings view with entity tabs, reason select, Approve button, and XSS escaping', () => {
   const nowMs = Date.UTC(2026, 10, 27, 12, 0, 0);
@@ -341,4 +487,72 @@ test('renderWorkspaceHtml renders New (Last 24h) view grouped by Activities, Org
   assert.doesNotMatch(html, /Last 7 days|Last 48 hours|Last 12 hours/i);
   assert.match(html, /Needs review/);
   assert.match(html, /Reviewed/);
+  assert.match(html, /data-action="delete"/);
+});
+
+test('renderDeleteDialogHtml renders confirm, blocked, checking, and error states with XSS escaping', () => {
+  assert.equal(renderDeleteDialogHtml(null), '');
+
+  const checkingHtml = renderDeleteDialogHtml({
+    status: 'checking',
+    entityType: 'venues',
+    docId: 'v1',
+    entityId: 'v1',
+    name: 'Beatty Park',
+    linkedActivities: [],
+    error: null
+  });
+  assert.match(checkingHtml, /<h1 id="delete-dialog-title"/);
+  assert.match(checkingHtml, /Checking linked Activities/);
+  assert.match(checkingHtml, /data-action="cancel-delete"/);
+  assert.match(checkingHtml, /autofocus/);
+  assert.doesNotMatch(checkingHtml, /data-action="confirm-delete"/);
+
+  const blockedHtml = renderDeleteDialogHtml({
+    status: 'blocked',
+    entityType: 'venues',
+    docId: 'v1',
+    entityId: 'v1',
+    name: 'Beatty <script>alert(1)</script> Park',
+    linkedActivities: [
+      { id: 'act_1', docId: 'act_1', title: 'Aqua <img src=x onerror=alert(1)>' },
+      { id: 'act_2', docId: 'act_2', title: 'Lap Swimming' }
+    ],
+    error: null
+  });
+  assert.match(blockedHtml, /Cannot delete Venue/);
+  assert.match(blockedHtml, /2 Activities/);
+  assert.match(blockedHtml, /act_1/);
+  assert.match(blockedHtml, /Lap Swimming/);
+  assert.match(blockedHtml, /<form method="dialog"/);
+  assert.doesNotMatch(blockedHtml, /<script>alert\(1\)<\/script>/);
+  assert.doesNotMatch(blockedHtml, /<img src=x/);
+  assert.doesNotMatch(blockedHtml, /data-action="confirm-delete"/);
+
+  const errorHtml = renderDeleteDialogHtml({
+    status: 'error',
+    entityType: 'organizers',
+    docId: 'org_1',
+    entityId: 'org_1',
+    name: 'Perth Club',
+    linkedActivities: [],
+    error: 'Unable to check linked Activities right now.'
+  });
+  assert.match(errorHtml, /Unable to delete Organizer/);
+  assert.match(errorHtml, /role="alert"/);
+  assert.doesNotMatch(errorHtml, /data-action="confirm-delete"/);
+
+  const confirmVenueHtml = renderDeleteDialogHtml({
+    status: 'confirm',
+    entityType: 'venues',
+    docId: 'v1',
+    entityId: 'v1',
+    name: 'Beatty Park',
+    linkedActivities: [],
+    error: null
+  });
+  assert.match(confirmVenueHtml, /Delete Venue\?/);
+  assert.match(confirmVenueHtml, /No linked Activities reference this venue\./);
+  assert.match(confirmVenueHtml, /data-action="cancel-delete"[^>]*autofocus|autofocus[^>]*data-action="cancel-delete"/);
+  assert.match(confirmVenueHtml, /data-action="confirm-delete"/);
 });
