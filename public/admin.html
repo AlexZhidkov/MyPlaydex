@@ -7,111 +7,7 @@
     <title>Admin Workspace | MyPlaydex</title>
     <link rel="icon" href="/favicon.ico" sizes="48x48" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <style>
-      :root {
-        color-scheme: light dark;
-        --bg: #f9fafb;
-        --surface: #ffffff;
-        --surface-subtle: #f3f4f6;
-        --border: #e5e7eb;
-        --border-strong: #94a3b8;
-        --text: #0f172a;
-        --text-muted: #475569;
-        --primary: #0284c7;
-        font-family: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
-      }
-      @media (prefers-color-scheme: dark) {
-        :root {
-          --bg: #0b1120;
-          --surface: #111827;
-          --surface-subtle: #1e293b;
-          --border: #1f2937;
-          --border-strong: #475569;
-          --text: #f8fafc;
-          --text-muted: #94a3b8;
-        }
-      }
-      body {
-        margin: 0;
-        min-height: 100dvh;
-        background: var(--bg);
-        color: var(--text);
-        line-height: 1.5;
-        -webkit-font-smoothing: antialiased;
-      }
-      .admin-shell {
-        max-width: 960px;
-        margin: 0 auto;
-        padding: 2rem 1.25rem;
-      }
-      .admin-status {
-        margin: 2rem auto;
-        max-width: 420px;
-        padding: 1.75rem;
-        border-radius: 16px;
-        background: var(--surface);
-        border: 1px solid var(--border);
-        text-align: center;
-        font-size: 0.875rem;
-        color: var(--text-muted);
-      }
-      .admin-header {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        justify-content: space-between;
-        gap: 1rem;
-        padding: 1rem 1.25rem;
-        border-radius: 14px;
-        background: var(--surface);
-        border: 1px solid var(--border);
-      }
-      .admin-title {
-        margin: 0;
-        font-size: 1.15rem;
-        font-weight: 700;
-        letter-spacing: -0.02em;
-      }
-      .admin-account {
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-      }
-      .admin-email {
-        font-size: 0.875rem;
-        color: var(--text-muted);
-      }
-      .sign-out-btn {
-        padding: 0.45rem 0.9rem;
-        border-radius: 8px;
-        border: 1px solid var(--border-strong);
-        background: var(--surface);
-        color: var(--text);
-        font: inherit;
-        font-size: 0.8125rem;
-        font-weight: 600;
-        cursor: pointer;
-        transition: background-color 160ms cubic-bezier(0.22, 1, 0.36, 1);
-      }
-      .sign-out-btn:hover:not(:disabled) {
-        background: var(--surface-subtle);
-      }
-      .sign-out-btn:focus-visible {
-        outline: 2px solid var(--primary);
-        outline-offset: 2px;
-      }
-      .sign-out-btn:disabled {
-        opacity: 0.6;
-        cursor: not-allowed;
-      }
-      .curation-placeholder {
-        margin-top: 1.5rem;
-        min-height: 240px;
-        border-radius: 14px;
-        border: 1px dashed var(--border-strong);
-        background: var(--surface);
-      }
-    </style>
+    <link rel="stylesheet" href="./admin.css" />
   </head>
   <body>
     <main class="admin-shell">
@@ -127,7 +23,7 @@
             <button id="sign-out-btn" type="button" class="sign-out-btn">Sign out</button>
           </div>
         </header>
-        <section id="curation-placeholder" class="curation-placeholder" aria-label="Listing curation"></section>
+        <section id="admin-curation" class="admin-curation" aria-label="Listing curation"></section>
       </section>
     </main>
     <script type="module" src="./js/admin.js"></script>

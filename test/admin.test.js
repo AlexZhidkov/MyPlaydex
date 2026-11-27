@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { runAdminController } from '../public/js/admin.js';
+import { runAdminController, createAdminWorkspaceController } from '../public/js/admin.js';
 
 function createMockUser({ uid = 'user-1', email = 'admin@myplaydex.com', claims = {} } = {}) {
   return {
@@ -127,13 +127,68 @@ test('runAdminController handles auth errors gracefully without rendering worksp
   assert.ok(calls.statuses.at(-1).length > 0);
 });
 
-test('public/admin.html includes noindex/nofollow, email display, Sign out button, curation placeholder, and admin module', () => {
+test('public/admin.html includes noindex/nofollow, email display, Sign out button, admin-curation container, admin.css, and admin module', () => {
   const adminHtml = fs.readFileSync(path.resolve('public/admin.html'), 'utf8');
   assert.match(adminHtml, /<meta\s+name="robots"\s+content="noindex,\s*nofollow"\s*\/?>/i);
+  assert.match(adminHtml, /<link\s+rel="stylesheet"\s+href="\.\/admin\.css"\s*\/?>/);
   assert.match(adminHtml, /id="admin-status"/);
   assert.match(adminHtml, /id="admin-workspace"[^>]*hidden/);
   assert.match(adminHtml, /id="admin-email"/);
   assert.match(adminHtml, /<button[^>]*id="sign-out-btn"[^>]*>Sign out<\/button>/);
-  assert.match(adminHtml, /id="curation-placeholder"/);
+  assert.match(adminHtml, /id="admin-curation"/);
   assert.match(adminHtml, /<script\s+type="module"\s+src="\.\/js\/admin\.js"><\/script>/);
+});
+
+test('createAdminWorkspaceController hydrates both views, switches without reload, and handles Approve + errors', async () => {
+  const nowMs = Date.UTC(2026, 10, 27, 12, 0, 0);
+  const snapshots = [];
+  let shouldFailApprove = false;
+  const approvedCalls = [];
+
+  const repository = {
+    async fetchUnreviewedListings() {
+      return [
+        { key: 'activities:a1', docId: 'a1', entityType: 'activities', name: 'Social Netball', needsReview: true, reviewReason: 'unmatched_venue', createdAtMs: nowMs - 1000 }
+      ];
+    },
+    async fetchNewListingsLast24h() {
+      return [
+        { key: 'activities:a1', docId: 'a1', entityType: 'activities', name: 'Social Netball', needsReview: true, reviewReason: 'unmatched_venue', createdAtMs: nowMs - 1000 }
+      ];
+    },
+    async approveListing(entityType, docId) {
+      approvedCalls.push({ entityType, docId });
+      if (shouldFailApprove) {
+        throw new Error('permission-denied');
+      }
+    }
+  };
+
+  const controller = createAdminWorkspaceController({
+    repository,
+    onStateChange: (state) => snapshots.push(state),
+    now: () => nowMs
+  });
+
+  assert.equal(controller.getState().activeView, 'unreviewed');
+  await controller.loadAll();
+  assert.equal(controller.getState().unreviewed.length, 1);
+  assert.equal(controller.getState().newLast24h.length, 1);
+
+  controller.selectView('new_24h');
+  assert.equal(controller.getState().activeView, 'new_24h');
+
+  controller.selectView('unreviewed');
+  shouldFailApprove = true;
+  await controller.approve('activities', 'a1');
+  assert.match(controller.getState().actionError, /Unable to approve/i);
+  assert.equal(controller.getState().unreviewed.length, 1);
+
+  shouldFailApprove = false;
+  await controller.approve('activities', 'a1');
+  assert.equal(controller.getState().actionError, null);
+  assert.equal(controller.getState().unreviewed.length, 0);
+  assert.equal(controller.getState().newLast24h[0].needsReview, false);
+  assert.equal(approvedCalls.length, 2);
+  assert.ok(snapshots.length >= 4);
 });
