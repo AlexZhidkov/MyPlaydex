@@ -10,7 +10,7 @@ export const FIREBASE_APP_CDN_URL = `https://www.gstatic.com/firebasejs/${FIREBA
 export const FIREBASE_ANALYTICS_CDN_URL = `https://www.gstatic.com/firebasejs/${FIREBASE_SDK_VERSION}/firebase-analytics.js`;
 
 export const FIREBASE_WEB_CONFIG = Object.freeze({
-  apiKey: 'AIzaSyAho52K2faln4vu9vY1WAStgrdPa7s6zyA',
+  apiKey: 'AIzaSyCqAPPxKk0ZprjC7r0fIun2WiESu9GBbR8',
   authDomain: 'myplaydex.firebaseapp.com',
   projectId: 'myplaydex',
   storageBucket: 'myplaydex.firebasestorage.app',
