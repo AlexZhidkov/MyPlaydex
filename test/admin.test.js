@@ -546,3 +546,187 @@ test('createAdminWorkspaceController handles duplicate review: side-by-side load
   assert.equal(controller.getState().unreviewed.some((item) => item.docId === 'dup_2'), false);
   assert.equal(controller.getState().newLast24h.find((item) => item.docId === 'dup_2').needsReview, false);
 });
+
+test('createAdminWorkspaceController lazily loads canonical Venues/Organizers, applies picker selections, and cascades Venue/Organizer edits', async () => {
+  const nowMs = Date.UTC(2026, 10, 27, 12, 0, 0);
+  const fetchCanonicalCalls = [];
+  const savedCalls = [];
+
+  const canonicalVenue = {
+    key: 'venues:venue_loftus',
+    docId: 'venue_loftus',
+    id: 'venue_loftus',
+    entityType: 'venues',
+    name: 'Loftus Recreation Centre',
+    address: '99 Loftus St',
+    raw: {
+      id: 'venue_loftus',
+      name: 'Loftus Recreation Centre',
+      address: '99 Loftus St',
+      coordinates: { lat: -31.9369, lng: 115.8473 },
+      geohash: 'qd66hx000',
+      google_place_id: 'ChIJ_loftus_123'
+    }
+  };
+  const canonicalOrg = {
+    key: 'organizers:org_perth_futsal',
+    docId: 'org_perth_futsal',
+    id: 'org_perth_futsal',
+    entityType: 'organizers',
+    name: 'Perth Futsal Club',
+    raw: {
+      id: 'org_perth_futsal',
+      name: 'Perth Futsal Club',
+      coordinates: { lat: -31.9369, lng: 115.8473 },
+      geohash: 'qd66hx000'
+    }
+  };
+  const unlinkedActivityRaw = {
+    id: 'act_unlinked',
+    title: 'Friday Futsal',
+    description: 'Indoor 5-a-side',
+    region_id: 'perth',
+    category: 'sports',
+    subcategory: 'futsal',
+    source_url: 'https://example.com/futsal',
+    verified: true,
+    organizer: { id: null, name: 'Perth Futsal' },
+    venue: { id: null, name: 'Loftus', coordinates: { lat: -31.95, lng: 115.86 }, geohash: 'qd66hr000' },
+    schedule: { recurrence: 'weekly', start_date: '2026-12-04', day_of_week: 5 },
+    cost: { is_free: false, display_price: '$15' },
+    demographics: { gender: 'all', age: 'adults' },
+    needs_review: true,
+    review_reason: 'unmatched_venue',
+    created_at: '2026-11-27T00:00:00.000Z'
+  };
+
+  const repository = {
+    async fetchUnreviewedListings() {
+      return [
+        {
+          key: 'activities:act_unlinked',
+          docId: 'act_unlinked',
+          id: 'act_unlinked',
+          entityType: 'activities',
+          name: 'Friday Futsal',
+          venueName: 'Loftus',
+          organizerName: 'Perth Futsal',
+          needsReview: true,
+          reviewReason: 'unmatched_venue',
+          createdAtMs: nowMs - 1000,
+          raw: unlinkedActivityRaw
+        },
+        {
+          key: 'venues:venue_loftus',
+          docId: 'venue_loftus',
+          id: 'venue_loftus',
+          entityType: 'venues',
+          name: 'Loftus Recreation Centre',
+          needsReview: true,
+          reviewReason: 'crawler_created',
+          createdAtMs: nowMs - 2000,
+          raw: canonicalVenue.raw
+        },
+        {
+          key: 'organizers:org_perth_futsal',
+          docId: 'org_perth_futsal',
+          id: 'org_perth_futsal',
+          entityType: 'organizers',
+          name: 'Perth Futsal Club',
+          needsReview: true,
+          reviewReason: 'crawler_created',
+          createdAtMs: nowMs - 3000,
+          raw: canonicalOrg.raw
+        }
+      ];
+    },
+    async fetchNewListingsLast24h() {
+      return [];
+    },
+    async fetchCanonicalEntities(entityType) {
+      fetchCanonicalCalls.push(entityType);
+      return entityType === 'venues' ? [canonicalVenue] : [canonicalOrg];
+    },
+    async saveListing(entityType, docId, originalDoc, parsedValues) {
+      savedCalls.push({ entityType, docId, parsedValues });
+      if (entityType === 'activities') {
+        return {
+          nextRawDoc: {
+            ...originalDoc,
+            title: parsedValues.title,
+            venue: {
+              id: parsedValues.venue_id,
+              name: parsedValues.venue_name,
+              coordinates: { lat: parsedValues.lat, lng: parsedValues.lng },
+              geohash: 'qd66hx000',
+              ...(parsedValues.venue_google_place_id ? { google_place_id: parsedValues.venue_google_place_id } : {})
+            },
+            organizer: {
+              id: parsedValues.organizer_id,
+              name: parsedValues.organizer_name
+            },
+            needs_review: false,
+            review_reason: null,
+            updated_at: nowMs
+          }
+        };
+      }
+      if (entityType === 'venues') {
+        return {
+          nextRawDoc: {
+            ...originalDoc,
+            name: parsedValues.name,
+            coordinates: { lat: parsedValues.lat, lng: parsedValues.lng },
+            geohash: 'qd66hx111',
+            needs_review: false,
+            review_reason: null,
+            updated_at: nowMs
+          }
+        };
+      }
+      return {
+        nextRawDoc: {
+          ...originalDoc,
+          name: parsedValues.name,
+          needs_review: false,
+          review_reason: null,
+          updated_at: nowMs
+        }
+      };
+    }
+  };
+
+  const controller = createAdminWorkspaceController({ repository, now: () => nowMs });
+  await controller.loadAll();
+
+  // Opening Activity edit drawer triggers canonical fetch once
+  controller.openEdit('activities', 'act_unlinked');
+  await controller.loadCanonicalEntities();
+  assert.deepEqual(fetchCanonicalCalls.sort(), ['organizers', 'venues']);
+  assert.equal(controller.getState().canonicalEntitiesLoaded, true);
+  assert.equal(controller.getState().canonicalVenues.length, 1);
+
+  // Selecting canonical Venue & Organizer preserves in-progress form edits
+  const inProgressValues = {
+    ...controller.getState().editDrawer.values,
+    title: 'Friday Night Futsal'
+  };
+  controller.selectCanonicalVenue('venue_loftus', inProgressValues);
+  assert.equal(controller.getState().editDrawer.values.title, 'Friday Night Futsal');
+  assert.equal(controller.getState().editDrawer.values.venue_id, 'venue_loftus');
+  assert.equal(controller.getState().editDrawer.values.venue_name, 'Loftus Recreation Centre');
+  assert.equal(controller.getState().editDrawer.values.venue_google_place_id, 'ChIJ_loftus_123');
+  assert.equal(controller.getState().editDrawer.values.lat, '-31.9369');
+  assert.equal(controller.getState().editDrawer.readOnly.geohash, 'qd66hx000');
+
+  controller.selectCanonicalOrganizer('org_perth_futsal', controller.getState().editDrawer.values);
+  assert.equal(controller.getState().editDrawer.values.organizer_id, 'org_perth_futsal');
+  assert.equal(controller.getState().editDrawer.values.organizer_name, 'Perth Futsal Club');
+
+  // Save Activity -> persists linked Venue + Organizer
+  await controller.saveEdit(controller.getState().editDrawer.values);
+  assert.equal(savedCalls[0].entityType, 'activities');
+  assert.equal(savedCalls[0].parsedValues.venue_id, 'venue_loftus');
+  assert.equal(savedCalls[0].parsedValues.venue_google_place_id, 'ChIJ_loftus_123');
+  assert.equal(savedCalls[0].parsedValues.organizer_id, 'org_perth_futsal');
+});

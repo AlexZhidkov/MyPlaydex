@@ -11,9 +11,11 @@ import {
 } from './analytics.js';
 import { FIREBASE_AUTH_CONFIG } from './auth-client.js';
 import { normalizeCuratedFields } from '../shared/listing-domain.js';
-import { buildListingSavePayload } from './admin-edit.js';
+import { buildListingSavePayload, buildCascadeActivityUpdate } from './admin-edit.js';
 
 export const FIREBASE_FIRESTORE_CDN_URL = `https://www.gstatic.com/firebasejs/${FIREBASE_SDK_VERSION}/firebase-firestore.js`;
+
+export const FIRESTORE_BATCH_LIMIT = 500;
 
 export const ENTITY_TYPES = Object.freeze(['activities', 'organizers', 'venues']);
 
@@ -245,6 +247,23 @@ export function createAdminFirestoreRepository({ db, firestoreSdk, now = () => D
       return normalizeListingDoc(entityType, docSnap.id || docId, raw);
     },
 
+    async fetchCanonicalEntities(entityType) {
+      if (entityType !== 'venues' && entityType !== 'organizers') {
+        throw new Error(`Invalid canonical entityType: ${entityType}`);
+      }
+      const colRef = firestoreSdk.collection(db, entityType);
+      const snap = await firestoreSdk.getDocs(colRef);
+      return (snap?.docs || [])
+        .map((docSnap) =>
+          normalizeListingDoc(
+            entityType,
+            docSnap.id,
+            typeof docSnap.data === 'function' ? docSnap.data() : docSnap.data
+          )
+        )
+        .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+    },
+
     async approveListing(entityType, docId) {
       validateEntityAndDocId(entityType, docId);
 
@@ -309,7 +328,50 @@ export function createAdminFirestoreRepository({ db, firestoreSdk, now = () => D
 
       const docRef = firestoreSdk.doc(db, entityType, docId);
       await firestoreSdk.updateDoc(docRef, result.updatePayload);
-      return result;
+
+      const cascade = buildCascadeActivityUpdate(entityType, originalDoc, result.nextRawDoc, {
+        serverTimestamp: () => firestoreSdk.serverTimestamp()
+      });
+
+      if (cascade && typeof firestoreSdk.getDocs === 'function') {
+        const entityId = originalDoc?.id || docId;
+        const linkedActivities = await this.findLinkedActivities(entityType, entityId);
+        if (linkedActivities.length > 0) {
+          if (typeof firestoreSdk.writeBatch === 'function') {
+            for (let i = 0; i < linkedActivities.length; i += FIRESTORE_BATCH_LIMIT) {
+              const chunk = linkedActivities.slice(i, i + FIRESTORE_BATCH_LIMIT);
+              const batch = firestoreSdk.writeBatch(db);
+              for (const act of chunk) {
+                batch.update(
+                  firestoreSdk.doc(db, 'activities', act.docId),
+                  cascade.activityUpdatePayload
+                );
+              }
+              await batch.commit();
+            }
+          } else {
+            await Promise.all(
+              linkedActivities.map((act) =>
+                firestoreSdk.updateDoc(
+                  firestoreSdk.doc(db, 'activities', act.docId),
+                  cascade.activityUpdatePayload
+                )
+              )
+            );
+          }
+        }
+        return {
+          ...result,
+          cascadedActivityCount: linkedActivities.length,
+          cascadedActivityIds: linkedActivities.map((act) => act.docId)
+        };
+      }
+
+      return {
+        ...result,
+        cascadedActivityCount: 0,
+        cascadedActivityIds: []
+      };
     }
   };
 }

@@ -26,6 +26,7 @@ import {
   getNewListingsLast24hViewModel,
   shouldClearSurvivorDuplicateFlag
 } from './admin-state.js';
+import { filterCanonicalEntities } from './admin-edit.js';
 
 const ENTITY_SINGULAR_LABELS = Object.freeze({
   activities: 'Activity',
@@ -557,12 +558,99 @@ function renderReferralFieldset(values, fieldErrors, hasValidSourceUrl) {
 }
 
 /**
+ * Renders the searchable results list for a canonical Venue or Organizer picker.
+ *
+ * @param {'venue' | 'organizer'} pickerType
+ * @param {Array<object>} [entities=[]]
+ * @param {string} [query='']
+ * @param {string} [selectedId='']
+ * @param {{ loading?: boolean, error?: string | null }} [options={}]
+ * @returns {string}
+ */
+export function renderCanonicalPickerResultsHtml(
+  pickerType,
+  entities = [],
+  query = '',
+  selectedId = '',
+  { loading = false, error = null } = {}
+) {
+  const pluralLabel = pickerType === 'venue' ? 'venues' : 'organizers';
+  if (loading) {
+    return `<p class="picker-empty" role="status">Loading canonical ${pluralLabel}...</p>`;
+  }
+  if (error) {
+    return `<p class="picker-empty picker-error" role="alert">${escapeHtml(error)}</p>`;
+  }
+
+  const matches = filterCanonicalEntities(entities, query, 25);
+  if (matches.length === 0) {
+    return `<p class="picker-empty">No matching canonical ${pluralLabel} found.</p>`;
+  }
+
+  const action = pickerType === 'venue'
+    ? 'select-canonical-venue'
+    : 'select-canonical-organizer';
+
+  const itemsHtml = matches
+    .map((entity) => {
+      const entityId = entity.id || entity.docId;
+      const isSelected = Boolean(selectedId) && selectedId === entityId;
+      const metaParts = [
+        entity.address || entity.raw?.address || '',
+        entity.subcategory || entity.raw?.subcategory || '',
+        entityId
+      ].filter(Boolean);
+
+      return `<li>
+        <button
+          type="button"
+          class="picker-option${isSelected ? ' is-selected' : ''}"
+          data-action="${action}"
+          data-entity-id="${escapeHtml(entityId)}"
+          aria-pressed="${isSelected ? 'true' : 'false'}"
+        >
+          <span class="picker-option-name">${escapeHtml(entity.name || entityId)}</span>
+          <span class="picker-option-meta">${escapeHtml(metaParts.join(' · '))}</span>
+        </button>
+      </li>`;
+    })
+    .join('');
+
+  return `<ul class="picker-results-list">${itemsHtml}</ul>`;
+}
+
+function renderCanonicalPicker({ pickerType, label, entities, selectedId, loading, error }) {
+  const inputId = `edit-picker-${pickerType}`;
+  const resultsHtml = renderCanonicalPickerResultsHtml(pickerType, entities, '', selectedId, { loading, error });
+
+  return `<div class="entity-picker">
+    <div class="picker-header">
+      <label for="${escapeHtml(inputId)}" class="edit-label">${escapeHtml(label)}</label>
+      <span class="picker-status">${selectedId ? `Linked: <code>${escapeHtml(selectedId)}</code>` : 'Unlinked'}</span>
+    </div>
+    <input
+      id="${escapeHtml(inputId)}"
+      type="search"
+      class="picker-search-input"
+      placeholder="Search by name, address, subcategory, or ID..."
+      data-role="picker-search"
+      data-picker-type="${escapeHtml(pickerType)}"
+      autocomplete="off"
+    />
+    <div class="picker-results" data-role="picker-results" data-picker-type="${escapeHtml(pickerType)}">
+      ${resultsHtml}
+    </div>
+  </div>`;
+}
+
+/**
  * Renders the slide-over edit drawer HTML for an Activity, Organizer, or Venue.
  *
  * @param {object | null | undefined} editDrawer
+ * @param {{ canonicalVenues?: Array<object>, canonicalOrganizers?: Array<object>, loading?: boolean, error?: string | null }} [pickerContext={}]
  * @returns {string}
  */
-export function renderEditDrawerHtml(editDrawer) {
+export function renderEditDrawerHtml(editDrawer, pickerContext = {}) {
   if (!editDrawer) return '';
 
   const {
@@ -615,6 +703,15 @@ export function renderEditDrawerHtml(editDrawer) {
       ${renderReferralFieldset(values, fieldErrors, hasValidSourceUrl)}
       <fieldset class="edit-fieldset">
         <legend>Venue &amp; coordinates</legend>
+        ${renderCanonicalPicker({
+          pickerType: 'venue',
+          label: 'Link canonical Venue',
+          entities: pickerContext.canonicalVenues || [],
+          selectedId: values.venue_id,
+          loading: Boolean(pickerContext.loading),
+          error: pickerContext.error || null
+        })}
+        <input type="hidden" name="venue_google_place_id" value="${escapeHtml(values.venue_google_place_id || '')}" />
         <div class="edit-row-2">
           ${renderFormField({ name: 'venue_name', label: 'Venue name', value: values.venue_name })}
           ${renderFormField({ name: 'venue_id', label: 'Venue ID', value: values.venue_id, autocorrectOff: true })}
@@ -626,6 +723,14 @@ export function renderEditDrawerHtml(editDrawer) {
       </fieldset>
       <fieldset class="edit-fieldset">
         <legend>Organizer</legend>
+        ${renderCanonicalPicker({
+          pickerType: 'organizer',
+          label: 'Link canonical Organizer',
+          entities: pickerContext.canonicalOrganizers || [],
+          selectedId: values.organizer_id,
+          loading: Boolean(pickerContext.loading),
+          error: pickerContext.error || null
+        })}
         <div class="edit-row-2">
           ${renderFormField({ name: 'organizer_name', label: 'Organizer name', value: values.organizer_name })}
           ${renderFormField({ name: 'organizer_id', label: 'Organizer ID', value: values.organizer_id, autocorrectOff: true })}

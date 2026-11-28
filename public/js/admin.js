@@ -31,6 +31,8 @@ import {
   openEditDrawer,
   setEditDrawerState,
   closeEditDrawer,
+  setCanonicalEntitiesState,
+  applyCanonicalSelectionToDrawer,
   openDuplicateReview,
   setDuplicateReviewState,
   closeDuplicateReview,
@@ -39,12 +41,19 @@ import {
   applyListingDeleted,
   applyListingSaved
 } from './admin-state.js';
-import { createEditDraft, parseEditFormValues } from './admin-edit.js';
+import {
+  createEditDraft,
+  parseEditFormValues,
+  buildVenueSnapshot,
+  applyCanonicalVenueToDraftValues,
+  applyCanonicalOrganizerToDraftValues
+} from './admin-edit.js';
 import { isValidHttpUrl } from '../shared/listing-domain.js';
 import {
   renderWorkspaceHtml,
   renderDeleteDialogHtml,
   renderEditDrawerHtml,
+  renderCanonicalPickerResultsHtml,
   renderDuplicateReviewDialogHtml
 } from './admin-ui.js';
 
@@ -120,6 +129,7 @@ export function createAdminWorkspaceController({
   now = () => Date.now()
 }) {
   let state = createAdminWorkspaceState();
+  let canonicalLoadPromise = null;
 
   function commit(nextState) {
     state = nextState;
@@ -127,13 +137,64 @@ export function createAdminWorkspaceController({
     return state;
   }
 
+  async function loadCanonicalEntities({ force = false } = {}) {
+    if (typeof repository.fetchCanonicalEntities !== 'function') return state;
+    if (!force && state.canonicalEntitiesLoaded) return state;
+    if (canonicalLoadPromise) return canonicalLoadPromise;
+
+    commit(
+      setCanonicalEntitiesState(state, {
+        canonicalEntitiesLoading: true,
+        canonicalEntitiesError: null
+      })
+    );
+
+    canonicalLoadPromise = (async () => {
+      try {
+        const [canonicalVenues, canonicalOrganizers] = await Promise.all([
+          repository.fetchCanonicalEntities('venues'),
+          repository.fetchCanonicalEntities('organizers')
+        ]);
+        return commit(
+          setCanonicalEntitiesState(state, {
+            canonicalVenues,
+            canonicalOrganizers,
+            canonicalEntitiesLoaded: true,
+            canonicalEntitiesLoading: false,
+            canonicalEntitiesError: null
+          })
+        );
+      } catch {
+        return commit(
+          setCanonicalEntitiesState(state, {
+            canonicalEntitiesLoading: false,
+            canonicalEntitiesError: 'Unable to load canonical Venues and Organizers right now.'
+          })
+        );
+      } finally {
+        canonicalLoadPromise = null;
+      }
+    })();
+
+    return canonicalLoadPromise;
+  }
+
   return {
     getState() {
       return state;
     },
 
+    loadCanonicalEntities,
+
     async loadAll() {
-      commit({ ...state, loading: true, error: null, actionError: null });
+      commit({
+        ...state,
+        loading: true,
+        error: null,
+        actionError: null,
+        canonicalEntitiesLoaded: false,
+        canonicalEntitiesError: null
+      });
       try {
         const nowMs = now();
         const [unreviewed, newLast24h] = await Promise.all([
@@ -288,12 +349,56 @@ export function createAdminWorkspaceController({
 
       const originalDoc = listing.raw || listing;
       const draft = createEditDraft(entityType, listing);
-      return commit(
+      const nextState = commit(
         openEditDrawer(state, {
           entityType,
           docId,
           originalDoc,
           draft
+        })
+      );
+      if (entityType === 'activities') {
+        void loadCanonicalEntities();
+      }
+      return nextState;
+    },
+
+    selectCanonicalVenue(venueId, currentFormValues) {
+      const drawer = state.editDrawer;
+      if (!drawer || drawer.entityType !== 'activities') return state;
+      const venue = (state.canonicalVenues || []).find(
+        (item) => item.id === venueId || item.docId === venueId
+      );
+      if (!venue) return state;
+
+      const baseValues = currentFormValues && typeof currentFormValues === 'object'
+        ? currentFormValues
+        : drawer.values;
+      const snapshot = buildVenueSnapshot(venue);
+      return commit(
+        applyCanonicalSelectionToDrawer(state, {
+          values: applyCanonicalVenueToDraftValues(baseValues, venue),
+          readOnly: { geohash: snapshot.geohash },
+          clearErrorFields: ['venue_id', 'venue_name', 'lat', 'lng']
+        })
+      );
+    },
+
+    selectCanonicalOrganizer(organizerId, currentFormValues) {
+      const drawer = state.editDrawer;
+      if (!drawer || drawer.entityType !== 'activities') return state;
+      const organizer = (state.canonicalOrganizers || []).find(
+        (item) => item.id === organizerId || item.docId === organizerId
+      );
+      if (!organizer) return state;
+
+      const baseValues = currentFormValues && typeof currentFormValues === 'object'
+        ? currentFormValues
+        : drawer.values;
+      return commit(
+        applyCanonicalSelectionToDrawer(state, {
+          values: applyCanonicalOrganizerToDraftValues(baseValues, organizer),
+          clearErrorFields: ['organizer_id', 'organizer_name']
         })
       );
     },
@@ -572,20 +677,33 @@ function bindWorkspaceEvents({ curationEl, deleteDialogEl, editDialogEl, duplica
     editDialogEl.addEventListener('click', (event) => {
       const target = event.target?.closest?.('[data-action]');
       if (!target) return;
-      if (target.dataset.action === 'close-edit') {
+      const action = target.dataset.action;
+      if (action === 'close-edit') {
         controller.closeEdit();
+      } else if (action === 'select-canonical-venue') {
+        const formEl = editDialogEl.querySelector('#admin-edit-form');
+        const currentValues = formEl ? readFormValues(formEl) : undefined;
+        controller.selectCanonicalVenue(target.dataset.entityId, currentValues);
+      } else if (action === 'select-canonical-organizer') {
+        const formEl = editDialogEl.querySelector('#admin-edit-form');
+        const currentValues = formEl ? readFormValues(formEl) : undefined;
+        controller.selectCanonicalOrganizer(target.dataset.entityId, currentValues);
       }
     });
 
     editDialogEl.addEventListener('input', (event) => {
       const target = event.target;
-      if (target?.dataset?.role !== 'source-url') return;
-      const verifiedEl = editDialogEl.querySelector('[data-role="verified-toggle"]');
-      if (!verifiedEl) return;
-      const validUrl = isValidHttpUrl(target.value);
-      verifiedEl.disabled = !validUrl;
-      if (!validUrl) {
-        verifiedEl.checked = false;
+      const role = target?.dataset?.role;
+      if (role === 'source-url') {
+        const verifiedEl = editDialogEl.querySelector('[data-role="verified-toggle"]');
+        if (!verifiedEl) return;
+        const validUrl = isValidHttpUrl(target.value);
+        verifiedEl.disabled = !validUrl;
+        if (!validUrl) {
+          verifiedEl.checked = false;
+        }
+      } else if (role === 'picker-search') {
+        updatePickerResultsDom(editDialogEl, target.dataset.pickerType, controller.getState(), target.value);
       }
     });
 
@@ -652,6 +770,37 @@ function syncDialogElement(dialogEl, htmlContent) {
   }
 }
 
+function updatePickerResultsDom(editDialogEl, pickerType, state, queryOverride) {
+  if (!editDialogEl) return;
+  const resultsEl = editDialogEl.querySelector(
+    `[data-role="picker-results"][data-picker-type="${pickerType}"]`
+  );
+  if (!resultsEl) return;
+  const searchInput = editDialogEl.querySelector(
+    `[data-role="picker-search"][data-picker-type="${pickerType}"]`
+  );
+  const query = typeof queryOverride === 'string' ? queryOverride : (searchInput?.value || '');
+  const entities = pickerType === 'venue' ? state.canonicalVenues : state.canonicalOrganizers;
+  const selectedId = pickerType === 'venue'
+    ? (editDialogEl.querySelector('input[name="venue_id"]')?.value || state.editDrawer?.values?.venue_id || '')
+    : (editDialogEl.querySelector('input[name="organizer_id"]')?.value || state.editDrawer?.values?.organizer_id || '');
+  resultsEl.innerHTML = renderCanonicalPickerResultsHtml(
+    pickerType,
+    entities,
+    query,
+    selectedId,
+    {
+      loading: state.canonicalEntitiesLoading,
+      error: state.canonicalEntitiesError
+    }
+  );
+}
+
+function refreshActivityPickerResultsInPlace(editDialogEl, state) {
+  updatePickerResultsDom(editDialogEl, 'venue', state);
+  updatePickerResultsDom(editDialogEl, 'organizer', state);
+}
+
 /**
  * Initializes the /admin page in the browser.
  *
@@ -715,6 +864,9 @@ export async function initAdminPage(options = {}) {
       if (curationEl) {
         const { firestoreSdk, db } = await loadFirestore();
         const repository = createAdminFirestoreRepository({ db, firestoreSdk });
+        let lastRenderedDrawerKey = null;
+        let lastRenderedDrawerRevision = null;
+        let lastRenderedDrawerStatus = null;
         const controller = createAdminWorkspaceController({
           repository,
           onStateChange: (nextState) => {
@@ -723,10 +875,40 @@ export async function initAdminPage(options = {}) {
               deleteDialogEl,
               nextState.deleteDialog ? renderDeleteDialogHtml(nextState.deleteDialog) : ''
             );
-            syncDialogElement(
-              editDialogEl,
-              nextState.editDrawer ? renderEditDrawerHtml(nextState.editDrawer) : ''
-            );
+
+            const drawer = nextState.editDrawer;
+            if (!drawer) {
+              lastRenderedDrawerKey = null;
+              lastRenderedDrawerRevision = null;
+              lastRenderedDrawerStatus = null;
+              syncDialogElement(editDialogEl, '');
+            } else {
+              const drawerKey = `${drawer.entityType}:${drawer.docId}`;
+              const drawerRevision = drawer.revision || 0;
+              const sameMountedDrawer =
+                editDialogEl?.open &&
+                lastRenderedDrawerKey === drawerKey &&
+                lastRenderedDrawerRevision === drawerRevision &&
+                lastRenderedDrawerStatus === drawer.status;
+
+              if (sameMountedDrawer && drawer.entityType === 'activities') {
+                refreshActivityPickerResultsInPlace(editDialogEl, nextState);
+              } else {
+                lastRenderedDrawerKey = drawerKey;
+                lastRenderedDrawerRevision = drawerRevision;
+                lastRenderedDrawerStatus = drawer.status;
+                syncDialogElement(
+                  editDialogEl,
+                  renderEditDrawerHtml(drawer, {
+                    canonicalVenues: nextState.canonicalVenues,
+                    canonicalOrganizers: nextState.canonicalOrganizers,
+                    loading: nextState.canonicalEntitiesLoading,
+                    error: nextState.canonicalEntitiesError
+                  })
+                );
+              }
+            }
+
             syncDialogElement(
               duplicateDialogEl,
               nextState.duplicateReview ? renderDuplicateReviewDialogHtml(nextState.duplicateReview) : ''

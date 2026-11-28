@@ -826,6 +826,119 @@ dialog::backdrop {
   accent-color: var(--primary);
 }
 
+.entity-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.picker-status {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.picker-status code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: var(--text-sm);
+  color: var(--text);
+  background: var(--surface-subtle);
+  padding: 0.1rem 0.3rem;
+  border-radius: 4px;
+}
+
+.picker-search-input {
+  width: 100%;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: max(1rem, 1em);
+}
+
+.picker-search-input:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.picker-results {
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+}
+
+.picker-results-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.picker-results-list li + li {
+  border-top: 1px solid var(--border);
+}
+
+.picker-option {
+  width: 100%;
+  padding: 0.5rem 0.7rem;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font: inherit;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+
+.picker-option:hover {
+  background: var(--surface);
+}
+
+.picker-option:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+.picker-option.is-selected {
+  background: var(--surface);
+  box-shadow: inset 3px 0 0 var(--primary);
+}
+
+.picker-option-name {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.picker-option-meta {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.picker-empty {
+  margin: 0;
+  padding: 0.65rem 0.75rem;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.picker-error {
+  color: var(--accent-danger);
+}
+
 .admin-duplicate-dialog {
   width: min(100% - 2rem, 880px);
 }
@@ -1015,7 +1128,8 @@ dialog::backdrop {
   .save-btn,
   .delete-btn,
   .dialog-cancel-btn,
-  .dialog-confirm-delete-btn {
+  .dialog-confirm-delete-btn,
+  .picker-option {
     transition: none;
   }
 }

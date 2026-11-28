@@ -5,7 +5,13 @@ import {
   IMMUTABLE_FIELDS,
   createEditDraft,
   parseEditFormValues,
-  buildListingSavePayload
+  buildListingSavePayload,
+  buildVenueSnapshot,
+  buildOrganizerSnapshot,
+  applyCanonicalVenueToDraftValues,
+  applyCanonicalOrganizerToDraftValues,
+  filterCanonicalEntities,
+  buildCascadeActivityUpdate
 } from '../public/js/admin-edit.js';
 
 const baseActivityDoc = {
@@ -301,4 +307,261 @@ test('buildListingSavePayload recomputes top-level geohash for Venue/Organizer c
   assert.equal(weeklySave.updatePayload.schedule.recurrence, 'weekly');
   assert.equal(weeklySave.updatePayload.schedule.day_of_week, 4);
   assert.equal(weeklySave.updatePayload.expire_at, null);
+});
+
+test('buildVenueSnapshot and buildOrganizerSnapshot construct embedded Activity snapshots', () => {
+  const venueWithPlace = {
+    id: 'venue_loftus_qd66hx',
+    name: 'Loftus Recreation Centre',
+    coordinates: { lat: -31.9369, lng: 115.8473 },
+    google_place_id: '  ChIJ_loftus_123  '
+  };
+  const snapWithPlace = buildVenueSnapshot(venueWithPlace);
+  assert.deepEqual(snapWithPlace, {
+    id: 'venue_loftus_qd66hx',
+    name: 'Loftus Recreation Centre',
+    coordinates: { lat: -31.9369, lng: 115.8473 },
+    geohash: encodeGeohash(-31.9369, 115.8473, 9),
+    google_place_id: 'ChIJ_loftus_123'
+  });
+
+  const venueWithoutPlace = {
+    docId: 'venue_langley_qd66hr',
+    name: 'Langley Park',
+    raw: {
+      coordinates: { lat: -31.9598, lng: 115.8693 },
+      geohash: 'qd66hr999',
+      google_place_id: ''
+    }
+  };
+  const snapWithoutPlace = buildVenueSnapshot(venueWithoutPlace);
+  assert.deepEqual(snapWithoutPlace, {
+    id: 'venue_langley_qd66hr',
+    name: 'Langley Park',
+    coordinates: { lat: -31.9598, lng: 115.8693 },
+    geohash: 'qd66hr999'
+  });
+  assert.equal(Object.hasOwn(snapWithoutPlace, 'google_place_id'), false);
+
+  assert.deepEqual(
+    buildOrganizerSnapshot({ id: 'org_perth_fc', name: 'Perth Social FC' }),
+    { id: 'org_perth_fc', name: 'Perth Social FC' }
+  );
+});
+
+test('applyCanonicalVenueToDraftValues and applyCanonicalOrganizerToDraftValues update only linked fields', () => {
+  const baseValues = {
+    title: 'Edited Activity Title',
+    description: 'Keep me',
+    venue_id: 'old_v',
+    venue_name: 'Old Venue',
+    venue_google_place_id: 'ChIJ_old',
+    lat: '-31.90',
+    lng: '115.80',
+    organizer_id: 'old_o',
+    organizer_name: 'Old Org'
+  };
+
+  const afterVenue = applyCanonicalVenueToDraftValues(baseValues, {
+    id: 'venue_beatty',
+    name: 'Beatty Park',
+    raw: {
+      coordinates: { lat: -31.937, lng: 115.85 },
+      google_place_id: 'ChIJ_beatty'
+    }
+  });
+  assert.equal(afterVenue.title, 'Edited Activity Title');
+  assert.equal(afterVenue.description, 'Keep me');
+  assert.equal(afterVenue.venue_id, 'venue_beatty');
+  assert.equal(afterVenue.venue_name, 'Beatty Park');
+  assert.equal(afterVenue.lat, '-31.937');
+  assert.equal(afterVenue.lng, '115.85');
+  assert.equal(afterVenue.venue_google_place_id, 'ChIJ_beatty');
+
+  const afterVenueNoPlace = applyCanonicalVenueToDraftValues(afterVenue, {
+    id: 'venue_park',
+    name: 'Local Park',
+    coordinates: { lat: -31.94, lng: 115.86 }
+  });
+  assert.equal(afterVenueNoPlace.venue_google_place_id, '');
+
+  const afterOrg = applyCanonicalOrganizerToDraftValues(afterVenueNoPlace, {
+    id: 'org_new',
+    name: 'Swan River Runners'
+  });
+  assert.equal(afterOrg.title, 'Edited Activity Title');
+  assert.equal(afterOrg.venue_id, 'venue_park');
+  assert.equal(afterOrg.organizer_id, 'org_new');
+  assert.equal(afterOrg.organizer_name, 'Swan River Runners');
+});
+
+test('filterCanonicalEntities matches name/address/id/subcategory, ranks name prefixes first, and caps limit', () => {
+  const entities = [
+    { id: 'venue_1', name: 'Subiaco Oval', address: 'Subiaco Rd', subcategory: 'football' },
+    { id: 'venue_2', name: 'Perth Hockey Stadium', address: 'Bentley', subcategory: 'hockey' },
+    { id: 'venue_3', name: 'North Perth Tennis Club', address: 'Vincent St', subcategory: 'tennis' },
+    { id: 'venue_4', name: 'Perth Arena', address: 'Wellington St', subcategory: 'basketball' }
+  ];
+
+  const perthResults = filterCanonicalEntities(entities, 'perth', 10);
+  assert.deepEqual(
+    perthResults.map((e) => e.id),
+    ['venue_4', 'venue_2', 'venue_3']
+  );
+
+  assert.deepEqual(
+    filterCanonicalEntities(entities, 'hockey', 10).map((e) => e.id),
+    ['venue_2']
+  );
+
+  assert.deepEqual(
+    filterCanonicalEntities(entities, 'venue_1', 10).map((e) => e.id),
+    ['venue_1']
+  );
+
+  assert.equal(filterCanonicalEntities(entities, '', 2).length, 2);
+});
+
+test('Activity draft/parse/save handles venue.google_place_id preservation, update, and omission', () => {
+  const activityWithPlace = {
+    ...baseActivityDoc,
+    venue: {
+      ...baseActivityDoc.venue,
+      google_place_id: 'ChIJ_langley_1'
+    }
+  };
+  const draft = createEditDraft('activities', { raw: activityWithPlace });
+  assert.equal(draft.values.venue_google_place_id, 'ChIJ_langley_1');
+
+  // When venue_google_place_id is omitted from formValues and venue_id is unchanged, preserve existing
+  const parsedPreserved = parseEditFormValues('activities', {
+    title: activityWithPlace.title,
+    description: activityWithPlace.description,
+    region_id: 'perth',
+    category: 'sports',
+    subcategory: 'soccer',
+    source_url: activityWithPlace.source_url,
+    verified: true,
+    organizer_id: 'org_perth_fc',
+    organizer_name: 'Perth Social FC',
+    venue_id: 'venue_langley_qd66hr',
+    venue_name: 'Langley Park',
+    lat: '-31.9598',
+    lng: '115.8693',
+    recurrence: 'none',
+    start_date: '2026-12-01',
+    end_date: '2026-12-01',
+    start_time: '18:00',
+    end_time: '19:30',
+    day_of_week: '2',
+    is_free: false,
+    display_price: '$15',
+    gender: 'all',
+    age: 'adults'
+  });
+  assert.equal(parsedPreserved.values.venue_google_place_id, undefined);
+  const savePreserved = buildListingSavePayload('activities', activityWithPlace, parsedPreserved.values);
+  assert.equal(savePreserved.updatePayload.venue.google_place_id, 'ChIJ_langley_1');
+  assert.deepEqual(savePreserved.curatedFields, ['description']);
+
+  // When venue_google_place_id is explicitly updated
+  const parsedUpdated = parseEditFormValues('activities', {
+    ...draft.values,
+    venue_id: 'venue_new',
+    venue_name: 'New Venue',
+    venue_google_place_id: 'ChIJ_new_place'
+  });
+  const saveUpdated = buildListingSavePayload('activities', activityWithPlace, parsedUpdated.values);
+  assert.equal(saveUpdated.updatePayload.venue.google_place_id, 'ChIJ_new_place');
+  assert.equal(saveUpdated.curatedFields.includes('venue.google_place_id'), true);
+
+  // When venue_google_place_id is cleared, omit from venue snapshot
+  const parsedCleared = parseEditFormValues('activities', {
+    ...draft.values,
+    venue_google_place_id: ''
+  });
+  const saveCleared = buildListingSavePayload('activities', activityWithPlace, parsedCleared.values);
+  assert.equal(Object.hasOwn(saveCleared.updatePayload.venue, 'google_place_id'), false);
+  assert.equal(saveCleared.curatedFields.includes('venue.google_place_id'), true);
+});
+
+test('buildCascadeActivityUpdate builds cascade payload only when Venue/Organizer snapshot fields change', () => {
+  const serverTimestampToken = { __type: 'serverTimestamp' };
+  const originalVenue = {
+    id: 'venue_1',
+    name: 'Beatty Park',
+    description: 'Old desc',
+    coordinates: { lat: -31.937, lng: 115.85 },
+    geohash: encodeGeohash(-31.937, 115.85, 9),
+    google_place_id: 'ChIJ_beatty'
+  };
+
+  // Activity never cascades
+  assert.equal(
+    buildCascadeActivityUpdate('activities', baseActivityDoc, baseActivityDoc, {
+      serverTimestamp: () => serverTimestampToken
+    }),
+    null
+  );
+
+  // Venue non-snapshot edit -> null
+  assert.equal(
+    buildCascadeActivityUpdate('venues', originalVenue, {
+      ...originalVenue,
+      description: 'New desc'
+    }),
+    null
+  );
+
+  // Venue name/coordinate edit -> cascade payload
+  const newCoords = { lat: -31.938, lng: 115.851 };
+  const newGeohash = encodeGeohash(newCoords.lat, newCoords.lng, 9);
+  const venueCascade = buildCascadeActivityUpdate(
+    'venues',
+    originalVenue,
+    {
+      ...originalVenue,
+      name: 'Beatty Park Leisure Centre',
+      coordinates: newCoords,
+      geohash: newGeohash
+    },
+    { serverTimestamp: () => serverTimestampToken }
+  );
+  assert.deepEqual(venueCascade, {
+    linkedField: 'venue.id',
+    entityId: 'venue_1',
+    activityUpdatePayload: {
+      venue: {
+        id: 'venue_1',
+        name: 'Beatty Park Leisure Centre',
+        coordinates: newCoords,
+        geohash: newGeohash,
+        google_place_id: 'ChIJ_beatty'
+      },
+      updated_at: serverTimestampToken
+    }
+  });
+
+  // Organizer non-name edit -> null
+  const originalOrg = { id: 'org_1', name: 'Perth FC', description: 'Old' };
+  assert.equal(
+    buildCascadeActivityUpdate('organizers', originalOrg, { ...originalOrg, description: 'New' }),
+    null
+  );
+
+  // Organizer name edit -> cascade payload
+  const orgCascade = buildCascadeActivityUpdate(
+    'organizers',
+    originalOrg,
+    { ...originalOrg, name: 'Perth Social FC' },
+    { serverTimestamp: () => serverTimestampToken }
+  );
+  assert.deepEqual(orgCascade, {
+    linkedField: 'organizer.id',
+    entityId: 'org_1',
+    activityUpdatePayload: {
+      organizer: { id: 'org_1', name: 'Perth Social FC' },
+      updated_at: serverTimestampToken
+    }
+  });
 });

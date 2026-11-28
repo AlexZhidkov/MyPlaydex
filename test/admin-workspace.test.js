@@ -565,9 +565,10 @@ import {
   setEditDrawerState,
   closeEditDrawer,
   markSaving,
-  applyListingSaved
+  applyListingSaved,
+  setCanonicalEntitiesState
 } from '../public/js/admin-state.js';
-import { renderEditDrawerHtml } from '../public/js/admin-ui.js';
+import { renderEditDrawerHtml, renderCanonicalPickerResultsHtml } from '../public/js/admin-ui.js';
 
 test('normalizeListingDoc preserves raw document, sourceId, and curatedFields', () => {
   const raw = {
@@ -991,4 +992,425 @@ test('renderDuplicateReviewDialogHtml renders side-by-side cards, missing-candid
   assert.match(confirmHtml, /Twilight Social Futsal/);
   assert.match(confirmHtml, /data-action="confirm-delete-duplicate"/);
   assert.match(confirmHtml, /data-action="cancel-delete-duplicate"/);
+});
+
+test('createAdminFirestoreRepository.fetchCanonicalEntities fetches, normalizes, and sorts venues/organizers and rejects activities', async () => {
+  const docsByCollection = {
+    venues: [
+      { id: 'v_z', data: () => ({ id: 'v_z', name: 'Zebra Park', address: '1 Z St' }) },
+      { id: 'v_a', data: () => ({ id: 'v_a', name: 'Alpha Court', address: '2 A St' }) }
+    ],
+    organizers: [
+      { id: 'o_b', data: () => ({ id: 'o_b', name: 'Bayswater FC' }) },
+      { id: 'o_a', data: () => ({ id: 'o_a', name: 'Applecross Tennis' }) }
+    ]
+  };
+
+  const firestoreSdk = {
+    collection(db, name) {
+      return { db, name };
+    },
+    async getDocs(colRef) {
+      return { docs: docsByCollection[colRef.name] || [] };
+    }
+  };
+
+  const repo = createAdminFirestoreRepository({ db: { name: 'mock-db' }, firestoreSdk });
+
+  await assert.rejects(() => repo.fetchCanonicalEntities('activities'), /Invalid canonical entityType/);
+
+  const venues = await repo.fetchCanonicalEntities('venues');
+  assert.deepEqual(venues.map((v) => v.id), ['v_a', 'v_z']);
+  assert.equal(venues[0].entityType, 'venues');
+
+  const organizers = await repo.fetchCanonicalEntities('organizers');
+  assert.deepEqual(organizers.map((o) => o.id), ['o_a', 'o_b']);
+});
+
+test('createAdminFirestoreRepository.saveListing batch-cascades Venue and Organizer snapshot edits and skips non-snapshot edits', async () => {
+  const updateCalls = [];
+  const batchCommits = [];
+  const queryCalls = [];
+
+  let linkedDocs = [
+    { id: 'act_1', data: () => ({ id: 'act_1', title: 'Soccer' }) },
+    { id: 'act_2', data: () => ({ id: 'act_2', title: 'Futsal' }) }
+  ];
+
+  const firestoreSdk = {
+    collection(db, name) {
+      return { db, name };
+    },
+    where(field, op, value) {
+      return { field, op, value };
+    },
+    query(colRef, constraint) {
+      return { colRef, constraint };
+    },
+    async getDocs(q) {
+      queryCalls.push(q);
+      return { docs: linkedDocs };
+    },
+    doc(db, colName, docId) {
+      return { db, colName, docId };
+    },
+    async updateDoc(docRef, payload) {
+      updateCalls.push({ docRef, payload });
+    },
+    writeBatch(db) {
+      const ops = [];
+      return {
+        update(docRef, payload) {
+          ops.push({ docRef, payload });
+        },
+        async commit() {
+          batchCommits.push({ db, ops });
+        }
+      };
+    },
+    serverTimestamp() {
+      return { __type: 'serverTimestamp' };
+    },
+    deleteField() {
+      return { __type: 'deleteField' };
+    }
+  };
+
+  const repo = createAdminFirestoreRepository({ db: { name: 'mock-db' }, firestoreSdk });
+
+  const originalVenue = {
+    id: 'venue_1',
+    name: 'Beatty Park',
+    description: 'Pool',
+    address: '220 Vincent St',
+    region_id: 'perth',
+    category: 'sports',
+    subcategory: 'swimming',
+    subcategories: ['swimming'],
+    coordinates: { lat: -31.937, lng: 115.85 },
+    geohash: 'qd66h1234',
+    google_place_id: 'ChIJ_beatty',
+    source_url: null,
+    verified: false
+  };
+
+  // 1. Non-snapshot Venue edit (description only) -> no linked activity query or batch
+  const nonSnapshotRes = await repo.saveListing('venues', 'venue_1', originalVenue, {
+    name: 'Beatty Park',
+    description: 'Updated pool description',
+    address: '220 Vincent St',
+    region_id: 'perth',
+    category: 'sports',
+    subcategory: 'swimming',
+    subcategories: ['swimming'],
+    lat: -31.937,
+    lng: 115.85,
+    source_url: null,
+    verified: false
+  });
+  assert.equal(nonSnapshotRes.cascadedActivityCount, 0);
+  assert.equal(queryCalls.length, 0);
+  assert.equal(batchCommits.length, 0);
+
+  // 2. Snapshot Venue edit (name + coordinates) -> batch-updates linked Activities
+  const venueCascadeRes = await repo.saveListing('venues', 'venue_1', originalVenue, {
+    name: 'Beatty Park Leisure Centre',
+    description: 'Pool',
+    address: '220 Vincent St',
+    region_id: 'perth',
+    category: 'sports',
+    subcategory: 'swimming',
+    subcategories: ['swimming'],
+    lat: -31.938,
+    lng: 115.851,
+    source_url: null,
+    verified: false
+  });
+  assert.equal(venueCascadeRes.cascadedActivityCount, 2);
+  assert.deepEqual(venueCascadeRes.cascadedActivityIds, ['act_2', 'act_1']);
+  assert.equal(queryCalls.length, 1);
+  assert.deepEqual(queryCalls[0].constraint, { field: 'venue.id', op: '==', value: 'venue_1' });
+  assert.equal(batchCommits.length, 1);
+  assert.equal(batchCommits[0].ops.length, 2);
+  assert.equal(batchCommits[0].ops[0].payload.venue.name, 'Beatty Park Leisure Centre');
+  assert.equal(batchCommits[0].ops[0].payload.venue.google_place_id, 'ChIJ_beatty');
+  assert.deepEqual(batchCommits[0].ops[0].payload.updated_at, { __type: 'serverTimestamp' });
+
+  // 3. Snapshot Organizer edit (name) -> batch-updates linked Activities
+  const originalOrg = {
+    id: 'org_1',
+    name: 'Perth FC',
+    description: '',
+    address: '',
+    region_id: 'perth',
+    category: 'sports',
+    subcategory: 'soccer',
+    subcategories: ['soccer'],
+    coordinates: { lat: -31.95, lng: 115.86 },
+    geohash: 'qd66hr123',
+    website: null,
+    contact: { email: null, phone: null, facebook: null },
+    cost_description: '',
+    demographics: { gender: 'all', age: 'all' },
+    source_url: null,
+    verified: false
+  };
+  const orgCascadeRes = await repo.saveListing('organizers', 'org_1', originalOrg, {
+    name: 'Perth Social FC',
+    description: '',
+    address: '',
+    region_id: 'perth',
+    category: 'sports',
+    subcategory: 'soccer',
+    subcategories: ['soccer'],
+    lat: -31.95,
+    lng: 115.86,
+    website: null,
+    contact_email: null,
+    contact_phone: null,
+    contact_facebook: null,
+    cost_description: '',
+    gender: 'all',
+    age: 'all',
+    source_url: null,
+    verified: false
+  });
+  assert.equal(orgCascadeRes.cascadedActivityCount, 2);
+  assert.equal(queryCalls[1].constraint.field, 'organizer.id');
+  assert.equal(batchCommits.length, 2);
+  assert.deepEqual(batchCommits[1].ops[0].payload.organizer, { id: 'org_1', name: 'Perth Social FC' });
+
+  // 4. Chunking over 500 linked Activities (505 -> 2 batches: 500 + 5)
+  linkedDocs = Array.from({ length: 505 }, (_, i) => ({
+    id: `act_${String(i).padStart(3, '0')}`,
+    data: () => ({ id: `act_${String(i).padStart(3, '0')}`, title: `Activity ${i}` })
+  }));
+  const chunkedRes = await repo.saveListing('organizers', 'org_1', originalOrg, {
+    name: 'Perth United FC',
+    description: '',
+    address: '',
+    region_id: 'perth',
+    category: 'sports',
+    subcategory: 'soccer',
+    subcategories: ['soccer'],
+    lat: -31.95,
+    lng: 115.86,
+    website: null,
+    contact_email: null,
+    contact_phone: null,
+    contact_facebook: null,
+    cost_description: '',
+    gender: 'all',
+    age: 'all',
+    source_url: null,
+    verified: false
+  });
+  assert.equal(chunkedRes.cascadedActivityCount, 505);
+  assert.equal(batchCommits.length, 4);
+  assert.equal(batchCommits[2].ops.length, 500);
+  assert.equal(batchCommits[3].ops.length, 5);
+});
+
+test('admin-state canonical cache initializes, cascades Venue/Organizer edits to linked Activities, and removes deleted entities', () => {
+  let state = createAdminWorkspaceState();
+  assert.deepEqual(state.canonicalVenues, []);
+  assert.deepEqual(state.canonicalOrganizers, []);
+  assert.equal(state.canonicalEntitiesLoaded, false);
+  assert.equal(state.canonicalEntitiesLoading, false);
+  assert.equal(state.canonicalEntitiesError, null);
+
+  state = setCanonicalEntitiesState(state, {
+    canonicalVenues: [
+      { key: 'venues:v_1', docId: 'v_1', id: 'v_1', entityType: 'venues', name: 'Old Venue' }
+    ],
+    canonicalOrganizers: [
+      { key: 'organizers:o_1', docId: 'o_1', id: 'o_1', entityType: 'organizers', name: 'Old Org' }
+    ],
+    canonicalEntitiesLoaded: true,
+    canonicalEntitiesLoading: false
+  });
+
+  state = {
+    ...state,
+    unreviewed: [
+      {
+        key: 'activities:act_1',
+        docId: 'act_1',
+        id: 'act_1',
+        entityType: 'activities',
+        name: 'Social Soccer',
+        venueName: 'Old Venue',
+        organizerName: 'Old Org',
+        raw: {
+          id: 'act_1',
+          title: 'Social Soccer',
+          venue: { id: 'v_1', name: 'Old Venue', coordinates: { lat: -31.95, lng: 115.86 }, geohash: 'qd66hr000' },
+          organizer: { id: 'o_1', name: 'Old Org' }
+        }
+      }
+    ],
+    newLast24h: [
+      {
+        key: 'activities:act_1',
+        docId: 'act_1',
+        id: 'act_1',
+        entityType: 'activities',
+        name: 'Social Soccer',
+        venueName: 'Old Venue',
+        organizerName: 'Old Org',
+        raw: {
+          id: 'act_1',
+          title: 'Social Soccer',
+          venue: { id: 'v_1', name: 'Old Venue', coordinates: { lat: -31.95, lng: 115.86 }, geohash: 'qd66hr000' },
+          organizer: { id: 'o_1', name: 'Old Org' }
+        }
+      }
+    ]
+  };
+
+  // Cascade Venue edit
+  state = applyListingSaved(state, 'venues', 'v_1', {
+    key: 'venues:v_1',
+    docId: 'v_1',
+    id: 'v_1',
+    entityType: 'venues',
+    name: 'New Venue',
+    updatedAtMs: 2000,
+    raw: {
+      id: 'v_1',
+      name: 'New Venue',
+      coordinates: { lat: -31.96, lng: 115.87 },
+      geohash: 'qd66hr999',
+      google_place_id: 'ChIJ_new'
+    }
+  });
+
+  assert.equal(state.unreviewed[0].venueName, 'New Venue');
+  assert.equal(state.unreviewed[0].raw.venue.google_place_id, 'ChIJ_new');
+  assert.equal(state.newLast24h[0].venueName, 'New Venue');
+  assert.equal(state.canonicalVenues[0].name, 'New Venue');
+
+  // Cascade Organizer edit
+  state = applyListingSaved(state, 'organizers', 'o_1', {
+    key: 'organizers:o_1',
+    docId: 'o_1',
+    id: 'o_1',
+    entityType: 'organizers',
+    name: 'New Org',
+    updatedAtMs: 3000,
+    raw: { id: 'o_1', name: 'New Org' }
+  });
+  assert.equal(state.unreviewed[0].organizerName, 'New Org');
+  assert.equal(state.newLast24h[0].organizerName, 'New Org');
+  assert.equal(state.canonicalOrganizers[0].name, 'New Org');
+
+  // Approve retains canonical entity in cache and marks it reviewed
+  const afterApprove = applyListingApproved(
+    {
+      ...state,
+      unreviewed: [{ key: 'venues:v_1', docId: 'v_1', id: 'v_1', entityType: 'venues', name: 'New Venue', needsReview: true }],
+      canonicalVenues: [{ key: 'venues:v_1', docId: 'v_1', id: 'v_1', entityType: 'venues', name: 'New Venue', needsReview: true }]
+    },
+    'venues',
+    'v_1',
+    4000
+  );
+  assert.equal(afterApprove.canonicalVenues.length, 1);
+  assert.equal(afterApprove.canonicalVenues[0].needsReview, false);
+
+  // Delete removes from canonical cache
+  state = applyListingDeleted(state, 'venues', 'v_1');
+  assert.equal(state.canonicalVenues.length, 0);
+  state = applyListingDeleted(state, 'organizers', 'o_1');
+  assert.equal(state.canonicalOrganizers.length, 0);
+});
+
+test('renderCanonicalPickerResultsHtml and renderEditDrawerHtml render searchable Venue/Organizer pickers with XSS escaping', () => {
+  const loadingHtml = renderCanonicalPickerResultsHtml('venue', [], '', '', { loading: true });
+  assert.match(loadingHtml, /Loading canonical venues/i);
+
+  const errorHtml = renderCanonicalPickerResultsHtml('organizer', [], '', '', { error: 'Failed to load' });
+  assert.match(errorHtml, /Failed to load/);
+
+  const venues = [
+    { id: 'v_1', docId: 'v_1', name: 'Beatty <script>alert(1)</script> Park', address: '220 Vincent St', subcategory: 'swimming' },
+    { id: 'v_2', docId: 'v_2', name: 'Langley Park', address: 'Riverside Dr', subcategory: 'soccer' }
+  ];
+  const resultsHtml = renderCanonicalPickerResultsHtml('venue', venues, 'park', 'v_2');
+  assert.match(resultsHtml, /data-action="select-canonical-venue"/);
+  assert.match(resultsHtml, /data-entity-id="v_2"/);
+  assert.match(resultsHtml, /class="picker-option is-selected"/);
+  assert.doesNotMatch(resultsHtml, /<script>alert\(1\)<\/script>/);
+  assert.match(resultsHtml, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+
+  const activityDrawerHtml = renderEditDrawerHtml(
+    {
+      status: 'editing',
+      entityType: 'activities',
+      docId: 'act_1',
+      readOnly: { id: 'act_1', geohash: 'qd66hr000', curated_fields: [] },
+      values: {
+        title: 'Soccer',
+        description: '',
+        region_id: 'perth',
+        category: 'sports',
+        subcategory: 'soccer',
+        source_url: '',
+        verified: false,
+        organizer_id: 'o_1',
+        organizer_name: 'Perth FC',
+        venue_id: 'v_2',
+        venue_name: 'Langley Park',
+        venue_google_place_id: 'ChIJ_langley',
+        lat: '-31.9598',
+        lng: '115.8693',
+        recurrence: 'none',
+        start_date: '2026-12-01',
+        end_date: '2026-12-01',
+        start_time: '18:00',
+        end_time: '19:30',
+        day_of_week: '2',
+        is_free: true,
+        display_price: 'Free',
+        gender: 'all',
+        age: 'adults'
+      },
+      fieldErrors: {},
+      error: null
+    },
+    {
+      canonicalVenues: venues,
+      canonicalOrganizers: [{ id: 'o_1', docId: 'o_1', name: 'Perth FC', subcategory: 'soccer' }],
+      loading: false,
+      error: null
+    }
+  );
+  assert.match(activityDrawerHtml, /data-role="picker-search"[^>]*data-picker-type="venue"/);
+  assert.match(activityDrawerHtml, /data-role="picker-results"[^>]*data-picker-type="venue"/);
+  assert.match(activityDrawerHtml, /name="venue_google_place_id"[^>]*value="ChIJ_langley"/);
+  assert.match(activityDrawerHtml, /data-role="picker-search"[^>]*data-picker-type="organizer"/);
+  assert.match(activityDrawerHtml, /data-role="picker-results"[^>]*data-picker-type="organizer"/);
+
+  const venueDrawerHtml = renderEditDrawerHtml({
+    status: 'editing',
+    entityType: 'venues',
+    docId: 'v_2',
+    readOnly: { id: 'v_2', geohash: 'qd66hr000', curated_fields: [] },
+    values: {
+      name: 'Langley Park',
+      description: '',
+      address: 'Riverside Dr',
+      region_id: 'perth',
+      category: 'sports',
+      subcategory: 'soccer',
+      subcategories: 'soccer',
+      lat: '-31.9598',
+      lng: '115.8693',
+      source_url: '',
+      verified: false
+    },
+    fieldErrors: {},
+    error: null
+  });
+  assert.doesNotMatch(venueDrawerHtml, /data-role="picker-search"/);
 });

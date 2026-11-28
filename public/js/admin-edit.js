@@ -167,6 +167,7 @@ export function createEditDraft(entityType, listing = {}) {
         organizer_name: asString(raw.organizer?.name || listing.organizerName, ''),
         venue_id: asString(raw.venue?.id, ''),
         venue_name: asString(raw.venue?.name || listing.venueName, ''),
+        venue_google_place_id: asString(raw.venue?.google_place_id, ''),
         lat: asCoordString(coords.lat),
         lng: asCoordString(coords.lng),
         recurrence: asString(schedule.recurrence, 'none'),
@@ -306,6 +307,9 @@ export function parseEditFormValues(entityType, formValues = {}) {
         organizer_name: asTrimmedString(formValues.organizer_name),
         venue_id: asTrimmedOrNull(formValues.venue_id),
         venue_name: asTrimmedString(formValues.venue_name),
+        venue_google_place_id: Object.hasOwn(formValues, 'venue_google_place_id')
+          ? asTrimmedOrNull(formValues.venue_google_place_id)
+          : undefined,
         lat: latParsed.value,
         lng: lngParsed.value,
         recurrence,
@@ -443,6 +447,15 @@ export function buildListingSavePayload(entityType, originalDoc = {}, parsedValu
     recordIfChanged('venue.id', prevVenue.id ?? null, parsedValues.venue_id);
     recordIfChanged('venue.name', prevVenue.name ?? '', parsedValues.venue_name);
 
+    const prevVenueGooglePlaceId = asTrimmedOrNull(prevVenue.google_place_id);
+    let nextVenueGooglePlaceId = null;
+    if (parsedValues.venue_google_place_id !== undefined) {
+      nextVenueGooglePlaceId = parsedValues.venue_google_place_id;
+    } else if (parsedValues.venue_id === (prevVenue.id ?? null)) {
+      nextVenueGooglePlaceId = prevVenueGooglePlaceId;
+    }
+    recordIfChanged('venue.google_place_id', prevVenueGooglePlaceId, nextVenueGooglePlaceId);
+
     const venueCoordsEdited = coordsChanged(prevVenue.coordinates, parsedValues.lat, parsedValues.lng);
     const venueGeohash = venueCoordsEdited || !prevVenue.geohash
       ? encodeGeohash(parsedValues.lat, parsedValues.lng, 9)
@@ -514,7 +527,8 @@ export function buildListingSavePayload(entityType, originalDoc = {}, parsedValu
         id: parsedValues.venue_id,
         name: parsedValues.venue_name,
         coordinates: { lat: parsedValues.lat, lng: parsedValues.lng },
-        geohash: venueGeohash
+        geohash: venueGeohash,
+        ...(nextVenueGooglePlaceId ? { google_place_id: nextVenueGooglePlaceId } : {})
       },
       schedule: nextSchedule,
       expire_at: nextExpireAtPayload,
@@ -630,4 +644,185 @@ export function buildListingSavePayload(entityType, originalDoc = {}, parsedValu
     curatedFields,
     derived
   };
+}
+
+/**
+ * Builds the embedded `venue` snapshot for an Activity from a canonical Venue record.
+ *
+ * @param {object} venue
+ * @returns {{ id: string, name: string, coordinates: { lat: number | null, lng: number | null }, geohash: string, google_place_id?: string }}
+ */
+export function buildVenueSnapshot(venue = {}) {
+  const raw = venue?.raw && typeof venue.raw === 'object' ? venue.raw : venue;
+  const id = asString(raw.id || venue.id || venue.docId, '');
+  const name = asString(raw.name || venue.name, '');
+  const coords = raw.coordinates || venue.coordinates || {};
+  const lat = typeof coords.lat === 'number' && Number.isFinite(coords.lat) ? coords.lat : null;
+  const lng = typeof coords.lng === 'number' && Number.isFinite(coords.lng) ? coords.lng : null;
+  const existingGeohash = asTrimmedString(raw.geohash || venue.geohash);
+  const geohash = existingGeohash || (lat !== null && lng !== null ? encodeGeohash(lat, lng, 9) : '');
+  const googlePlaceId = asTrimmedOrNull(raw.google_place_id ?? venue.google_place_id);
+
+  return {
+    id,
+    name,
+    coordinates: { lat, lng },
+    geohash,
+    ...(googlePlaceId ? { google_place_id: googlePlaceId } : {})
+  };
+}
+
+/**
+ * Builds the embedded `organizer` snapshot for an Activity from a canonical Organizer record.
+ *
+ * @param {object} organizer
+ * @returns {{ id: string, name: string }}
+ */
+export function buildOrganizerSnapshot(organizer = {}) {
+  const raw = organizer?.raw && typeof organizer.raw === 'object' ? organizer.raw : organizer;
+  return {
+    id: asString(raw.id || organizer.id || organizer.docId, ''),
+    name: asString(raw.name || organizer.name, '')
+  };
+}
+
+/**
+ * Applies a canonical Venue selection onto an Activity edit draft's form values
+ * while preserving all unrelated in-progress fields.
+ *
+ * @param {object} [values={}]
+ * @param {object} [venue={}]
+ * @returns {object}
+ */
+export function applyCanonicalVenueToDraftValues(values = {}, venue = {}) {
+  const snapshot = buildVenueSnapshot(venue);
+  return {
+    ...values,
+    venue_id: snapshot.id,
+    venue_name: snapshot.name,
+    venue_google_place_id: snapshot.google_place_id || '',
+    lat: asCoordString(snapshot.coordinates.lat),
+    lng: asCoordString(snapshot.coordinates.lng)
+  };
+}
+
+/**
+ * Applies a canonical Organizer selection onto an Activity edit draft's form values
+ * while preserving all unrelated in-progress fields.
+ *
+ * @param {object} [values={}]
+ * @param {object} [organizer={}]
+ * @returns {object}
+ */
+export function applyCanonicalOrganizerToDraftValues(values = {}, organizer = {}) {
+  const snapshot = buildOrganizerSnapshot(organizer);
+  return {
+    ...values,
+    organizer_id: snapshot.id,
+    organizer_name: snapshot.name
+  };
+}
+
+/**
+ * Filters and ranks canonical Venues or Organizers for picker search.
+ * Name prefix matches rank first, then other matches, sorted alphabetically.
+ *
+ * @param {Array<object>} [entities=[]]
+ * @param {string} [query='']
+ * @param {number} [limit=25]
+ * @returns {Array<object>}
+ */
+export function filterCanonicalEntities(entities = [], query = '', limit = 25) {
+  const normalizedQuery = asTrimmedString(query).toLowerCase();
+  const maxResults = Number.isInteger(limit) && limit > 0 ? limit : 25;
+
+  const scored = [];
+  for (const entity of entities) {
+    if (!entity || typeof entity !== 'object') continue;
+    const name = asString(entity.name, '');
+    const address = asString(entity.address || entity.raw?.address, '');
+    const id = asString(entity.id || entity.docId, '');
+    const subcategory = asString(entity.subcategory || entity.raw?.subcategory, '');
+
+    if (!normalizedQuery) {
+      scored.push({ entity, rank: 1, name });
+      continue;
+    }
+
+    const nameLower = name.toLowerCase();
+    const matches =
+      nameLower.includes(normalizedQuery) ||
+      address.toLowerCase().includes(normalizedQuery) ||
+      id.toLowerCase().includes(normalizedQuery) ||
+      subcategory.toLowerCase().includes(normalizedQuery);
+
+    if (matches) {
+      const rank = nameLower.startsWith(normalizedQuery) ? 0 : 1;
+      scored.push({ entity, rank, name });
+    }
+  }
+
+  return scored
+    .sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name))
+    .slice(0, maxResults)
+    .map((entry) => entry.entity);
+}
+
+/**
+ * Builds a batch update payload for linked Activities when a canonical Venue's
+ * `name`/`coordinates`/`geohash` or an Organizer's `name` changes.
+ * Returns `null` when no cascade is needed.
+ *
+ * @param {'activities' | 'organizers' | 'venues'} entityType
+ * @param {object} [originalDoc={}]
+ * @param {object} [nextRawDoc={}]
+ * @param {object} [options={}]
+ * @returns {{ linkedField: string, entityId: string, activityUpdatePayload: object } | null}
+ */
+export function buildCascadeActivityUpdate(entityType, originalDoc = {}, nextRawDoc = {}, options = {}) {
+  const { serverTimestamp = () => new Date().toISOString() } = options;
+
+  if (entityType === 'venues') {
+    const prevName = asString(originalDoc.name, '');
+    const nextName = asString(nextRawDoc.name, '');
+    const prevCoords = originalDoc.coordinates || {};
+    const nextCoords = nextRawDoc.coordinates || {};
+    const prevGeohash = asString(originalDoc.geohash, '');
+    const nextGeohash = asString(nextRawDoc.geohash, '');
+
+    const snapshotChanged =
+      prevName !== nextName ||
+      coordsChanged(prevCoords, nextCoords.lat, nextCoords.lng) ||
+      prevGeohash !== nextGeohash;
+
+    if (!snapshotChanged) return null;
+
+    const snapshot = buildVenueSnapshot(nextRawDoc);
+    return {
+      linkedField: 'venue.id',
+      entityId: snapshot.id,
+      activityUpdatePayload: {
+        venue: snapshot,
+        updated_at: serverTimestamp()
+      }
+    };
+  }
+
+  if (entityType === 'organizers') {
+    const prevName = asString(originalDoc.name, '');
+    const nextName = asString(nextRawDoc.name, '');
+    if (prevName === nextName) return null;
+
+    const snapshot = buildOrganizerSnapshot(nextRawDoc);
+    return {
+      linkedField: 'organizer.id',
+      entityId: snapshot.id,
+      activityUpdatePayload: {
+        organizer: snapshot,
+        updated_at: serverTimestamp()
+      }
+    };
+  }
+
+  return null;
 }

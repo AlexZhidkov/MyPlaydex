@@ -9,6 +9,10 @@ import {
   formatReviewReason,
   isWithinLast24Hours
 } from './admin-data.js';
+import {
+  buildVenueSnapshot,
+  buildOrganizerSnapshot
+} from './admin-edit.js';
 
 export const VIEWS = Object.freeze({
   UNREVIEWED: 'unreviewed',
@@ -29,6 +33,11 @@ export function createAdminWorkspaceState() {
     reasonFilter: 'all',
     unreviewed: [],
     newLast24h: [],
+    canonicalVenues: [],
+    canonicalOrganizers: [],
+    canonicalEntitiesLoaded: false,
+    canonicalEntitiesLoading: false,
+    canonicalEntitiesError: null,
     loading: false,
     error: null,
     actionError: null,
@@ -336,6 +345,7 @@ export function openEditDrawer(state, { entityType, docId, originalDoc, draft })
     actionError: null,
     editDrawer: {
       status: 'editing',
+      revision: 0,
       entityType,
       docId,
       originalDoc: originalDoc || {},
@@ -345,6 +355,46 @@ export function openEditDrawer(state, { entityType, docId, originalDoc, draft })
       error: null
     }
   };
+}
+
+/**
+ * Updates canonical Venue/Organizer cache fields on workspace state.
+ *
+ * @param {object} state
+ * @param {object} patch
+ * @returns {object}
+ */
+export function setCanonicalEntitiesState(state, patch) {
+  return {
+    ...state,
+    ...patch
+  };
+}
+
+/**
+ * Applies a canonical Venue or Organizer selection onto the open Activity edit drawer,
+ * clearing specified field errors and bumping `revision`.
+ *
+ * @param {object} state
+ * @param {{ values: object, readOnly?: object, clearErrorFields?: string[] }} patch
+ * @returns {object}
+ */
+export function applyCanonicalSelectionToDrawer(state, { values, readOnly, clearErrorFields = [] }) {
+  const drawer = state.editDrawer;
+  if (!drawer) return state;
+
+  const nextFieldErrors = { ...drawer.fieldErrors };
+  for (const field of clearErrorFields) {
+    delete nextFieldErrors[field];
+  }
+
+  return setEditDrawerState(state, {
+    revision: (drawer.revision || 0) + 1,
+    values,
+    ...(readOnly ? { readOnly: { ...drawer.readOnly, ...readOnly } } : {}),
+    fieldErrors: nextFieldErrors,
+    error: null
+  });
 }
 
 /**
@@ -452,9 +502,48 @@ export function shouldClearSurvivorDuplicateFlag(targetRole, targetListing, surv
   );
 }
 
+function cascadeEntitySnapshotToActivities(listings, entityType, updatedListing) {
+  if (!Array.isArray(listings) || listings.length === 0) return listings;
+  if (entityType !== 'venues' && entityType !== 'organizers') return listings;
+
+  const isVenue = entityType === 'venues';
+  const snapshot = isVenue
+    ? buildVenueSnapshot(updatedListing)
+    : buildOrganizerSnapshot(updatedListing);
+  if (!snapshot.id) return listings;
+
+  return listings.map((item) => {
+    if (item?.entityType !== 'activities') return item;
+    const raw = item.raw || {};
+    const linkedId = isVenue ? raw.venue?.id : raw.organizer?.id;
+    if (linkedId !== snapshot.id) return item;
+
+    return {
+      ...item,
+      ...(isVenue ? { venueName: snapshot.name } : { organizerName: snapshot.name }),
+      updatedAtMs: updatedListing.updatedAtMs ?? item.updatedAtMs,
+      raw: {
+        ...raw,
+        ...(isVenue ? { venue: snapshot } : { organizer: snapshot })
+      }
+    };
+  });
+}
+
+function upsertCanonicalEntity(list, updatedListing, docId) {
+  const key = updatedListing.key || `${updatedListing.entityType}:${docId}`;
+  const filtered = (list || []).filter((item) => item.key !== key && item.docId !== docId);
+  return [...filtered, updatedListing].sort((a, b) =>
+    String(a.name || '').localeCompare(String(b.name || '')) ||
+    String(a.id || '').localeCompare(String(b.id || ''))
+  );
+}
+
 /**
  * Applies a successful Listing save & auto-approve mutation to local state:
- * removes the row from Unreviewed, updates matching row in New (Last 24h), and closes the drawer.
+ * removes the row from Unreviewed, updates matching row in New (Last 24h),
+ * cascades Venue/Organizer snapshot changes to linked Activities in memory,
+ * and closes the drawer.
  *
  * @param {object} state
  * @param {'activities' | 'organizers' | 'venues'} entityType
@@ -464,21 +553,32 @@ export function shouldClearSurvivorDuplicateFlag(targetRole, targetListing, surv
  */
 export function applyListingSaved(state, entityType, docId, updatedListing) {
   const key = `${entityType}:${docId}`;
-  const nextUnreviewed = (state.unreviewed || []).filter((item) => item.key !== key);
+  const filteredUnreviewed = (state.unreviewed || []).filter((item) => item.key !== key);
+  const nextUnreviewed = cascadeEntitySnapshotToActivities(filteredUnreviewed, entityType, updatedListing);
   const nextReasonFilter = resolveRemainingReasonFilter(
     nextUnreviewed,
     state.entityFilter,
     state.reasonFilter
   );
 
-  const nextNewLast24h = (state.newLast24h || []).map((item) =>
+  const mappedNewLast24h = (state.newLast24h || []).map((item) =>
     item.key === key ? { ...item, ...updatedListing } : item
   );
+  const nextNewLast24h = cascadeEntitySnapshotToActivities(mappedNewLast24h, entityType, updatedListing);
+
+  const nextCanonicalVenues = entityType === 'venues' && state.canonicalEntitiesLoaded
+    ? upsertCanonicalEntity(state.canonicalVenues, updatedListing, docId)
+    : state.canonicalVenues;
+  const nextCanonicalOrganizers = entityType === 'organizers' && state.canonicalEntitiesLoaded
+    ? upsertCanonicalEntity(state.canonicalOrganizers, updatedListing, docId)
+    : state.canonicalOrganizers;
 
   return {
     ...state,
     unreviewed: nextUnreviewed,
     newLast24h: nextNewLast24h,
+    canonicalVenues: nextCanonicalVenues,
+    canonicalOrganizers: nextCanonicalOrganizers,
     reasonFilter: nextReasonFilter,
     savingKeys: updateKeySet(state.savingKeys, key, false),
     editDrawer: null,
@@ -507,21 +607,32 @@ export function applyListingApproved(state, entityType, docId, nowMs = Date.now(
     state.reasonFilter
   );
 
-  const nextNewLast24h = (state.newLast24h || []).map((item) => {
-    if (item.key !== key) return item;
-    return {
-      ...item,
-      needsReview: false,
-      reviewReason: null,
-      duplicateCandidateId: null,
-      updatedAtMs: nowMs
-    };
-  });
+  const markApprovedInList = (list) =>
+    (list || []).map((item) => {
+      if (item.key !== key && item.docId !== docId) return item;
+      return {
+        ...item,
+        needsReview: false,
+        reviewReason: null,
+        duplicateCandidateId: null,
+        updatedAtMs: nowMs
+      };
+    });
+
+  const nextNewLast24h = markApprovedInList(state.newLast24h);
+  const nextCanonicalVenues = entityType === 'venues'
+    ? markApprovedInList(state.canonicalVenues)
+    : state.canonicalVenues;
+  const nextCanonicalOrganizers = entityType === 'organizers'
+    ? markApprovedInList(state.canonicalOrganizers)
+    : state.canonicalOrganizers;
 
   return {
     ...state,
     unreviewed: nextUnreviewed,
     newLast24h: nextNewLast24h,
+    canonicalVenues: nextCanonicalVenues,
+    canonicalOrganizers: nextCanonicalOrganizers,
     reasonFilter: nextReasonFilter,
     approvingKeys: nextKeys,
     actionError: null
@@ -547,10 +658,19 @@ export function applyListingDeleted(state, entityType, docId) {
     state.reasonFilter
   );
 
+  const nextCanonicalVenues = entityType === 'venues'
+    ? (state.canonicalVenues || []).filter((item) => item.key !== key && item.docId !== docId)
+    : state.canonicalVenues;
+  const nextCanonicalOrganizers = entityType === 'organizers'
+    ? (state.canonicalOrganizers || []).filter((item) => item.key !== key && item.docId !== docId)
+    : state.canonicalOrganizers;
+
   return {
     ...state,
     unreviewed: nextUnreviewed,
     newLast24h: nextNewLast24h,
+    canonicalVenues: nextCanonicalVenues,
+    canonicalOrganizers: nextCanonicalOrganizers,
     reasonFilter: nextReasonFilter,
     approvingKeys: updateKeySet(state.approvingKeys, key, false),
     deletingKeys: updateKeySet(state.deletingKeys, key, false),
