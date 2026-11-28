@@ -147,3 +147,36 @@ test('paginateCouncilPages enforces 20-page / 200-Activity caps and injectable i
   });
   assert.deepEqual(resultEmptyFirst, [{ id: 'p2_1' }]);
 });
+
+test('paginateCouncilPages applies symmetric pageDelayJitterMs and clamps to >= 0', async () => {
+  const delays = [];
+  const randomValues = [0, 0.5, 1];
+  let randomIdx = 0;
+
+  await paginateCouncilPages({
+    maxPages: 4,
+    pageDelayMs: 5000,
+    pageDelayJitterMs: 1000,
+    randomFn: () => randomValues[randomIdx++],
+    delayFn: async (ms) => { delays.push(ms); },
+    fetchPage: async (page) => ({
+      items: [{ id: `p${page}` }],
+      hasMore: page < 4
+    })
+  });
+  assert.deepEqual(delays, [4000, 5000, 6000]);
+
+  const clampedDelays = [];
+  await paginateCouncilPages({
+    maxPages: 2,
+    pageDelayMs: 500,
+    pageDelayJitterMs: 2000,
+    randomFn: () => 0,
+    delayFn: async (ms) => { clampedDelays.push(ms); },
+    fetchPage: async (page) => ({
+      items: [{ id: `p${page}` }],
+      hasMore: page < 2
+    })
+  });
+  assert.deepEqual(clampedDelays, [0]);
+});

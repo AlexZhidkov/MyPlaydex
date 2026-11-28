@@ -202,6 +202,7 @@ test('Optimizely SSR Adapter throws descriptive errors on HTTP failure or missin
     },
     {
       pageDelayMs: 0,
+      delayFn: async () => {},
       fetchFn: async () => ({
         ok: false,
         status: 503,
@@ -465,4 +466,219 @@ test('Optimizely SSR Adapter emits empty cost when Cost and Free/Ticketed tags a
   const paid = items.find(i => i.source_id === 'guid-explicit-cost');
   assert.equal(paid.display_price, '$30');
   assert.equal(paid.is_free, false);
+});
+
+test('Optimizely SSR Adapter retries transient 503/429 responses respecting Retry-After (seconds and HTTP-date) with maxRetryDelayMs cap and jitter', async () => {
+  const visitPerthTestConfig = {
+    source: 'visit_perth',
+    label: 'Visit Perth',
+    endpoint: 'https://www.visitperth.com/events/',
+    baseUrl: 'https://www.visitperth.com'
+  };
+  const makePageHtml = (page, totalRecords, pageSize = 1) => wrapAppStateHtml({
+    schemaVersion: 1,
+    results: {
+      totalRecords,
+      page,
+      pageSize,
+      results: [
+        {
+          contentGuid: `guid-page-${page}`,
+          properties: {
+            Name: `Event Page ${page}`,
+            Url: `/events/event-${page}`,
+            Categories: [{ name: 'Community' }],
+            Location: 'Perth Town Hall',
+            EventListing: { dateParts: [{ isoDateTime: '2026-11-22' }] }
+          }
+        }
+      ]
+    }
+  });
+
+  // Case 1: Page 2 hits 503 with retry-after: 120, then succeeds on retry (with non-zero jitter)
+  const retryDelays = [];
+  const pageAttempts = { 1: 0, 2: 0 };
+  const crawler = createOptimizelySsrCrawler(
+    visitPerthTestConfig,
+    {
+      now: TEST_NOW,
+      pageDelayMs: 0,
+      retryJitterMs: 1000,
+      randomFn: () => 0.5,
+      delayFn: async (ms) => { retryDelays.push(ms); },
+      fetchFn: async (url) => {
+        const page = Number(new URL(url).searchParams.get('page'));
+        pageAttempts[page] = (pageAttempts[page] || 0) + 1;
+        if (page === 2 && pageAttempts[2] === 1) {
+          return {
+            ok: false,
+            status: 503,
+            statusText: 'Service Unavailable',
+            headers: new Headers({
+              server: 'cloudflare',
+              'cf-ray': 'a612de267d0d1469-PER',
+              'retry-after': '120'
+            })
+          };
+        }
+        return { ok: true, async text() { return makePageHtml(page, 2, 1); } };
+      }
+    }
+  );
+
+  const items = await crawler.fetchListings();
+  assert.equal(items.length, 2);
+  assert.equal(pageAttempts[1], 1);
+  assert.equal(pageAttempts[2], 2);
+  assert.deepEqual(retryDelays, [120500]);
+
+  // Case 2: HTTP-date Retry-After and maxRetryDelayMs clamping
+  const clampedDelays = [];
+  let attemptCount = 0;
+  const fixedNowMs = Date.parse('2026-11-01T08:00:00Z');
+  const httpDateIn45s = new Date(fixedNowMs + 45000).toUTCString();
+  const clampedCrawler = createOptimizelySsrCrawler(
+    visitPerthTestConfig,
+    {
+      now: () => new Date(fixedNowMs),
+      pageDelayMs: 0,
+      maxRetries: 3,
+      maxRetryDelayMs: 150000,
+      randomFn: () => 0,
+      delayFn: async (ms) => { clampedDelays.push(ms); },
+      fetchFn: async () => {
+        attemptCount += 1;
+        if (attemptCount === 1) {
+          return {
+            ok: false,
+            status: 429,
+            statusText: 'Too Many Requests',
+            headers: new Headers({ 'retry-after': httpDateIn45s })
+          };
+        }
+        if (attemptCount === 2) {
+          return {
+            ok: false,
+            status: 503,
+            statusText: 'Service Unavailable',
+            headers: new Headers({ 'retry-after': '600' })
+          };
+        }
+        return { ok: true, async text() { return makePageHtml(1, 1, 1); } };
+      }
+    }
+  );
+
+  const clampedItems = await clampedCrawler.fetchListings();
+  assert.equal(clampedItems.length, 1);
+  assert.equal(attemptCount, 3);
+  assert.deepEqual(clampedDelays, [45000, 150000]);
+});
+
+test('Optimizely SSR Adapter throws after exhausting retries, skips retries on 404, and retries transient network errors with backoff', async () => {
+  const visitPerthTestConfig = {
+    source: 'visit_perth',
+    label: 'Visit Perth',
+    endpoint: 'https://www.visitperth.com/events/',
+    baseUrl: 'https://www.visitperth.com'
+  };
+
+  // 1. Exhausted retries on persistent 503 throws descriptive error with headers
+  const exhaustedDelays = [];
+  let exhaustedCalls = 0;
+  const exhaustedCrawler = createOptimizelySsrCrawler(
+    visitPerthTestConfig,
+    {
+      pageDelayMs: 0,
+      maxRetries: 2,
+      retryBaseDelayMs: 1000,
+      randomFn: () => 0,
+      delayFn: async (ms) => { exhaustedDelays.push(ms); },
+      fetchFn: async () => {
+        exhaustedCalls += 1;
+        return {
+          ok: false,
+          status: 503,
+          statusText: 'Service Unavailable',
+          headers: new Headers({
+            server: 'cloudflare',
+            'cf-ray': 'exhaust-PER',
+            'retry-after': '15'
+          })
+        };
+      }
+    }
+  );
+  await assert.rejects(
+    () => exhaustedCrawler.fetchListings(),
+    /Visit Perth responded with HTTP 503: Service Unavailable \(https:\/\/www\.visitperth\.com\/events\/\?page=1, server=cloudflare, cf-ray=exhaust-PER, retry-after=15\)/
+  );
+  assert.equal(exhaustedCalls, 3);
+  assert.deepEqual(exhaustedDelays, [15000, 15000]);
+
+  // 2. Non-retryable 404 fails immediately without retrying or sleeping
+  const notFoundDelays = [];
+  let notFoundCalls = 0;
+  const notFoundCrawler = createOptimizelySsrCrawler(
+    visitPerthTestConfig,
+    {
+      pageDelayMs: 0,
+      maxRetries: 3,
+      delayFn: async (ms) => { notFoundDelays.push(ms); },
+      fetchFn: async () => {
+        notFoundCalls += 1;
+        return { ok: false, status: 404, statusText: 'Not Found', headers: new Headers() };
+      }
+    }
+  );
+  await assert.rejects(() => notFoundCrawler.fetchListings(), /HTTP 404: Not Found/);
+  assert.equal(notFoundCalls, 1);
+  assert.deepEqual(notFoundDelays, []);
+
+  // 3. Transient network errors retry with exponential backoff and recover
+  const netDelays = [];
+  let netCalls = 0;
+  const html = wrapAppStateHtml({
+    schemaVersion: 1,
+    results: {
+      totalRecords: 1,
+      page: 1,
+      pageSize: 24,
+      results: [
+        {
+          contentGuid: 'guid-net-ok',
+          properties: {
+            Name: 'Recovered Event',
+            Url: '/events/recovered',
+            Categories: [{ name: 'Community' }],
+            Location: 'Perth',
+            EventListing: { dateParts: [{ isoDateTime: '2026-11-22' }] }
+          }
+        }
+      ]
+    }
+  });
+  const netCrawler = createOptimizelySsrCrawler(
+    visitPerthTestConfig,
+    {
+      now: TEST_NOW,
+      pageDelayMs: 0,
+      maxRetries: 2,
+      retryBaseDelayMs: 2000,
+      randomFn: () => 0,
+      delayFn: async (ms) => { netDelays.push(ms); },
+      fetchFn: async () => {
+        netCalls += 1;
+        if (netCalls <= 2) {
+          throw new Error('fetch failed: ECONNRESET');
+        }
+        return { ok: true, async text() { return html; } };
+      }
+    }
+  );
+  const recovered = await netCrawler.fetchListings();
+  assert.equal(recovered.length, 1);
+  assert.equal(netCalls, 3);
+  assert.deepEqual(netDelays, [2000, 4000]);
 });

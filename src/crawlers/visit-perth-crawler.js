@@ -22,7 +22,10 @@ export const VISIT_PERTH_CONFIG = {
   fallbackCentroid: VISIT_PERTH_LGA_CENTROID,
   minExpectedListings: 1,
   defaultOrganizer: null,
-  pageDelayMs: 5000,
+  pageDelayMs: 7000,
+  pageDelayJitterMs: 2000,
+  maxRetries: 3,
+  maxRetryDelayMs: 150000,
   userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 (compatible; MyPlaydexCrawler/1.0; +https://myplaydex.com/bot)'
 };
 

@@ -227,5 +227,8 @@ test('getDefaultCrawlers excludes visit_perth by default and registers it under 
   const visitPerth = optedIn.find(c => c.name === 'visit_perth');
   assert.ok(visitPerth, 'visit_perth should be registered when includeVisitPerth is true');
   assert.equal(visitPerth.group, 'councils');
-  assert.equal(VISIT_PERTH_CONFIG.pageDelayMs, 5000);
+  assert.equal(VISIT_PERTH_CONFIG.pageDelayMs, 7000);
+  assert.equal(VISIT_PERTH_CONFIG.pageDelayJitterMs, 2000);
+  assert.equal(VISIT_PERTH_CONFIG.maxRetries, 3);
+  assert.equal(VISIT_PERTH_CONFIG.maxRetryDelayMs, 150000);
 });

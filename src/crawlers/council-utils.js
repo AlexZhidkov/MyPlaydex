@@ -17,6 +17,11 @@ export const DEFAULT_MAX_PAGES = 20;
 export const DEFAULT_MAX_ACTIVITIES = 200;
 export const DEFAULT_HORIZON_DAYS = 90;
 export const DEFAULT_PAGE_DELAY_MS = 1200;
+export const DEFAULT_MAX_RETRIES = 2;
+export const DEFAULT_RETRY_BASE_DELAY_MS = 2000;
+export const DEFAULT_MAX_RETRY_DELAY_MS = 150000;
+export const DEFAULT_RETRY_JITTER_MS = 1000;
+export const RETRYABLE_HTTP_STATUS_CODES = new Set([429, 502, 503, 504]);
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -218,6 +223,113 @@ export function sleepMs(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function getHeaderCaseInsensitive(headers, name) {
+  if (!headers) return null;
+  if (typeof headers.get === 'function') {
+    return headers.get(name);
+  }
+  const target = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === target) {
+      return value;
+    }
+  }
+  return null;
+}
+
+/**
+ * Parses an HTTP Retry-After header (numeric seconds or HTTP-date) into milliseconds.
+ *
+ * @param {string | null | undefined} headerValue
+ * @param {number} [nowMs=Date.now()]
+ * @returns {number | null}
+ */
+export function parseRetryAfterMs(headerValue, nowMs = Date.now()) {
+  if (typeof headerValue !== 'string') return null;
+  const trimmed = headerValue.trim();
+  if (!trimmed) return null;
+
+  if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
+    const seconds = Number(trimmed);
+    return Number.isFinite(seconds) && seconds >= 0 ? Math.round(seconds * 1000) : null;
+  }
+
+  const parsedMs = Date.parse(trimmed);
+  if (Number.isNaN(parsedMs)) return null;
+  return Math.max(0, parsedMs - nowMs);
+}
+
+/**
+ * Computes bounded retry delay in ms, honoring Retry-After when present or exponential backoff.
+ *
+ * @param {object} params
+ * @returns {number}
+ */
+export function computeRetryDelayMs({ response, attempt, policy, nowMs }) {
+  const retryAfterHeader = getHeaderCaseInsensitive(response?.headers, 'retry-after');
+  const retryAfterMs = parseRetryAfterMs(retryAfterHeader, nowMs);
+  const baseMs = retryAfterMs !== null ? retryAfterMs : policy.baseDelayMs * (2 ** attempt);
+  const jitterMs = policy.jitterMs > 0 ? Math.round(policy.randomFn() * policy.jitterMs) : 0;
+  return Math.max(0, Math.min(policy.maxDelayMs, baseMs + jitterMs));
+}
+
+/**
+ * Executes a fetch call with bounded retries on transient HTTP statuses (429/502/503/504)
+ * and network/timeout errors, respecting Retry-After headers.
+ *
+ * @param {object} params
+ * @param {() => Promise<Response>} params.requestFn
+ * @param {number} [params.maxRetries=2]
+ * @param {number} [params.retryBaseDelayMs=2000]
+ * @param {number} [params.maxRetryDelayMs=150000]
+ * @param {number} [params.retryJitterMs=1000]
+ * @param {(ms: number) => Promise<void>} [params.delayFn=sleepMs]
+ * @param {() => number} [params.randomFn=Math.random]
+ * @param {Date | string | number | (() => Date)} [params.now]
+ * @param {AbortSignal} [params.signal]
+ * @returns {Promise<Response>}
+ */
+export async function fetchWithRetry({
+  requestFn,
+  maxRetries = DEFAULT_MAX_RETRIES,
+  retryBaseDelayMs = DEFAULT_RETRY_BASE_DELAY_MS,
+  maxRetryDelayMs = DEFAULT_MAX_RETRY_DELAY_MS,
+  retryJitterMs = DEFAULT_RETRY_JITTER_MS,
+  delayFn = sleepMs,
+  randomFn = Math.random,
+  now,
+  signal
+}) {
+  const policy = {
+    baseDelayMs: retryBaseDelayMs,
+    maxDelayMs: maxRetryDelayMs,
+    jitterMs: retryJitterMs,
+    randomFn
+  };
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    let response = null;
+    try {
+      response = await requestFn();
+      if (response.ok || !RETRYABLE_HTTP_STATUS_CODES.has(response.status) || attempt >= maxRetries) {
+        return response;
+      }
+    } catch (err) {
+      if (signal?.aborted || attempt >= maxRetries) {
+        throw err;
+      }
+    }
+
+    const retryDelayMs = computeRetryDelayMs({
+      response,
+      attempt,
+      policy,
+      nowMs: resolveNowDate(now).getTime()
+    });
+    await delayFn(retryDelayMs);
+  }
+}
+
 /**
  * Paginates a council feed with polite inter-page delay and safety caps (20 pages / 200 items).
  *
@@ -226,7 +338,9 @@ export function sleepMs(ms) {
  * @param {number} [params.maxPages=20]
  * @param {number} [params.maxActivities=200]
  * @param {number} [params.pageDelayMs=1200]
+ * @param {number} [params.pageDelayJitterMs=0]
  * @param {(ms: number) => Promise<void>} [params.delayFn=sleepMs]
+ * @param {() => number} [params.randomFn=Math.random]
  * @returns {Promise<Array<any>>}
  */
 export async function paginateCouncilPages({
@@ -234,13 +348,18 @@ export async function paginateCouncilPages({
   maxPages = DEFAULT_MAX_PAGES,
   maxActivities = DEFAULT_MAX_ACTIVITIES,
   pageDelayMs = DEFAULT_PAGE_DELAY_MS,
-  delayFn = sleepMs
+  pageDelayJitterMs = 0,
+  delayFn = sleepMs,
+  randomFn = Math.random
 }) {
   const collected = [];
 
   for (let page = 1; page <= maxPages; page++) {
     if (page > 1 && pageDelayMs > 0) {
-      await delayFn(pageDelayMs);
+      const delayMs = pageDelayJitterMs > 0
+        ? Math.max(0, Math.round(pageDelayMs + (randomFn() * 2 - 1) * pageDelayJitterMs))
+        : pageDelayMs;
+      await delayFn(delayMs);
     }
 
     const { items = [], hasMore = false } = await fetchPage(page);

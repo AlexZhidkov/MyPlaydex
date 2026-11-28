@@ -9,11 +9,17 @@ import {
   DEFAULT_HORIZON_DAYS,
   DEFAULT_MAX_ACTIVITIES,
   DEFAULT_MAX_PAGES,
+  DEFAULT_MAX_RETRIES,
+  DEFAULT_MAX_RETRY_DELAY_MS,
   DEFAULT_PAGE_DELAY_MS,
+  DEFAULT_RETRY_BASE_DELAY_MS,
+  DEFAULT_RETRY_JITTER_MS,
   deriveDeterministicCouncilSourceId,
+  fetchWithRetry,
   filterCouncilItem,
   paginateCouncilPages,
-  resolveCouncilCategoryAndSubcategory
+  resolveCouncilCategoryAndSubcategory,
+  sleepMs
 } from './council-utils.js';
 
 const DEFAULT_USER_AGENT = 'Mozilla/5.0 (compatible; MyPlaydexCrawler/1.0; +https://myplaydex.com/bot)';
@@ -212,7 +218,14 @@ export function createOptimizelySsrCrawler(config, options = {}) {
   const maxPages = options.maxPages ?? config.maxPages ?? DEFAULT_MAX_PAGES;
   const maxItems = options.maxItems ?? config.maxItems ?? DEFAULT_MAX_ACTIVITIES;
   const pageDelayMs = options.pageDelayMs ?? config.pageDelayMs ?? DEFAULT_PAGE_DELAY_MS;
+  const pageDelayJitterMs = options.pageDelayJitterMs ?? config.pageDelayJitterMs ?? 0;
   const horizonDays = options.horizonDays ?? config.horizonDays ?? DEFAULT_HORIZON_DAYS;
+  const maxRetries = options.maxRetries ?? config.maxRetries ?? DEFAULT_MAX_RETRIES;
+  const retryBaseDelayMs = options.retryBaseDelayMs ?? config.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS;
+  const maxRetryDelayMs = options.maxRetryDelayMs ?? config.maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS;
+  const retryJitterMs = options.retryJitterMs ?? config.retryJitterMs ?? DEFAULT_RETRY_JITTER_MS;
+  const delayFn = options.delayFn || sleepMs;
+  const randomFn = options.randomFn || Math.random;
   const minExpectedListings = typeof options.minExpectedListings === 'number'
     ? options.minExpectedListings
     : config.minExpectedListings;
@@ -239,15 +252,28 @@ export function createOptimizelySsrCrawler(config, options = {}) {
         maxPages,
         maxActivities: maxItems,
         pageDelayMs,
-        delayFn: options.delayFn,
+        pageDelayJitterMs,
+        delayFn,
+        randomFn,
         fetchPage: async (page) => {
           const pageUrl = buildPageUrl(config.endpoint, page);
-          const signal = options.signal || (typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(timeoutMs) : undefined);
-
-          const response = await fetchFn(pageUrl, {
-            method: 'GET',
-            headers,
-            ...(signal ? { signal } : {})
+          const response = await fetchWithRetry({
+            requestFn: () => {
+              const signal = options.signal || (typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(timeoutMs) : undefined);
+              return fetchFn(pageUrl, {
+                method: 'GET',
+                headers,
+                ...(signal ? { signal } : {})
+              });
+            },
+            maxRetries,
+            retryBaseDelayMs,
+            maxRetryDelayMs,
+            retryJitterMs,
+            delayFn,
+            randomFn,
+            now: options.now,
+            signal: options.signal
           });
 
           if (!response.ok) {
